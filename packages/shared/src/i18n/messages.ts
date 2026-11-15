@@ -7,6 +7,10 @@ import { updateCenterMessages } from "./updateCenterMessages.ts";
 const chineseComposerShortcutHints = "@ 引用文件，$ 选择技能，/ 打开命令，↑ 上一句";
 
 const messages = {
+  "composer.typeAnswer": ["Type your answer", "输入你的回答"],
+  "composer.compactionUnavailable": ["Compacting is unavailable right now", "当前无法压缩上下文"],
+  "thread.autoSettle.followSettings": ["Follow settings", "遵循设置"],
+  "thread.autoSettle.never": ["Never", "从不"],
   ...threadMessages,
   ...settingsDetailMessages,
   ...updateCenterMessages,

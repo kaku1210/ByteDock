@@ -3,7 +3,13 @@ import {
   type ManagedPolicySummary,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { type LucideIcon, LockIcon, PenLineIcon, ShieldOffIcon, SparklesIcon } from "lucide-react";
+import {
+  type LucideIcon,
+  LockIcon,
+  PenLineIcon,
+  ShieldCheckIcon,
+  ShieldOffIcon,
+} from "lucide-react";
 import type { UiLanguage } from "@t3tools/shared/uiLanguage";
 import { translate, type MessageKey } from "@t3tools/shared/i18n/messages";
 
@@ -33,7 +39,7 @@ export const runtimeModeConfig: Record<
   },
   auto: {
     ...runtimeModeCopy("en", "auto"),
-    icon: SparklesIcon,
+    icon: ShieldCheckIcon,
   },
   "full-access": {
     ...runtimeModeCopy("en", "full-access"),

@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { DEFAULT_UI_LANGUAGE_PREFERENCE } from "@t3tools/contracts/settings";
-import { resolveUiLanguage } from "@t3tools/shared/uiLanguage";
+import {
+  plusLanguagePreference,
+  resolveLanguagePreference,
+  resolveUiLanguage,
+} from "@t3tools/shared/uiLanguage";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { AppState } from "react-native";
@@ -23,7 +27,7 @@ function subscribeSystemLocale(refresh: () => void) {
 export function UiLanguageProvider({ children }: { readonly children: ReactNode }) {
   const stored = useAtomValue(mobilePreferencesAtom);
   const preference = AsyncResult.isSuccess(stored)
-    ? (stored.value.uiLanguage ?? DEFAULT_UI_LANGUAGE_PREFERENCE)
+    ? plusLanguagePreference(resolveLanguagePreference(stored.value))
     : DEFAULT_UI_LANGUAGE_PREFERENCE;
   const locale = useSyncExternalStore(subscribeSystemLocale, systemLocale);
   return (

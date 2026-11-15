@@ -73,7 +73,6 @@ const environment: EnvironmentUsageStatus = {
   isPending: false,
   isConnected: true,
   canReadDiagnostics: true,
-  needsCursorKeychainAccess: false,
   error: null,
   summary: {
     contractVersion: USAGE_CONTRACT_VERSION,

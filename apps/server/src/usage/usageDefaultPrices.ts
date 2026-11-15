@@ -11,6 +11,7 @@ const tokens = (input: number, output: number, read: number, write = input): Tok
   outputCostPerToken: output / 1_000_000,
   cacheReadCostPerToken: read / 1_000_000,
   cacheCreationCostPerToken: write / 1_000_000,
+  cacheCreation1hCostPerToken: write / 1_000_000,
 });
 
 /** Public standard token rates, with time-bounded quota exemptions kept separate from API value. */
@@ -26,6 +27,7 @@ export const DEFAULT_MODEL_PRICES: ReadonlyArray<{
       ...tokens(4, 20, 0.2),
       fast: tokens(7.2, 36, 0.36),
       ultrafast: null,
+      contextTiers: [],
       introductory: { untilMs: DECEMBER, ...tokens(2, 10, 0.1), fast: tokens(3.6, 18, 0.18) },
     },
   })),
@@ -36,6 +38,7 @@ export const DEFAULT_MODEL_PRICES: ReadonlyArray<{
       ...tokens(3, 15, 0.3),
       fast: null,
       ultrafast: null,
+      contextTiers: [],
       quotaFree: { provider: "devin", plans: ["free", "pro", "max", "teams"], untilMs: DECEMBER },
     },
   },
@@ -46,6 +49,7 @@ export const DEFAULT_MODEL_PRICES: ReadonlyArray<{
       ...tokens(0.1, 0.5, 0.01, 0.125),
       fast: null,
       ultrafast: null,
+      contextTiers: [],
       quotaFree: {
         provider: "devin",
         plans: ["free", "pro", "max", "teams"],

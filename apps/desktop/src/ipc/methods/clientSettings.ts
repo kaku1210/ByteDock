@@ -1,4 +1,5 @@
 import { ClientSettingsSchema } from "@t3tools/contracts";
+import { plusLanguagePreference, resolveLanguagePreference } from "@t3tools/shared/uiLanguage";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -29,6 +30,8 @@ export const setClientSettings = DesktopIpc.makeIpcMethod({
     const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
     yield* clientSettings.set(settings);
     yield* snapShot.configure(settings);
-    yield* applicationMenu.applyLanguage(settings.uiLanguage);
+    yield* applicationMenu.applyLanguage(
+      plusLanguagePreference(resolveLanguagePreference(settings)),
+    );
   }),
 });

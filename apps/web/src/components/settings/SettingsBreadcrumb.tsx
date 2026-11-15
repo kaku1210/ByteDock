@@ -1,34 +1,39 @@
+import { msg, useMessages } from "gt-react";
+
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { SETTINGS_SECTION_LABELS } from "./settingsSearch";
-import { settingsPageLabel } from "@t3tools/shared/i18n/settingsCopy";
-import { useUiLanguage } from "../../i18n/useUiLanguage";
+
+const SETTINGS_LABEL = msg("Settings");
 
 const SETTINGS_BREADCRUMB_LABELS: Readonly<Record<string, string>> = {
   ...SETTINGS_SECTION_LABELS,
-  "/settings/diagnostics": "Diagnostics",
-  "/settings/open-source-licenses": "Open source licenses",
+  "/settings/diagnostics": msg("Diagnostics"),
+  "/settings/open-source-licenses": msg("Open source licenses"),
 };
 
-export function SettingsBreadcrumb({ pathname }: { pathname: string }) {
-  const { language, t } = useUiLanguage();
+function settingsBreadcrumbLabel(pathname: string): string | null {
   const normalizedPathname = pathname.replace(/\/+$/, "") || "/";
-  const sourceLabel = SETTINGS_BREADCRUMB_LABELS[normalizedPathname];
-  const sectionLabel = sourceLabel && settingsPageLabel(language, normalizedPathname, sourceLabel);
+  return SETTINGS_BREADCRUMB_LABELS[normalizedPathname] ?? null;
+}
+
+export function SettingsBreadcrumb({ pathname }: { pathname: string }) {
+  const m = useMessages();
+  const sectionLabel = settingsBreadcrumbLabel(pathname);
 
   return (
-    <WorkspaceBreadcrumb ariaLabel={t("settings.breadcrumb")}>
+    <WorkspaceBreadcrumb ariaLabel="Settings breadcrumb">
       {sectionLabel ? (
         <>
-          <WorkspaceBreadcrumbItem>{t("navigation.settings")}</WorkspaceBreadcrumbItem>
+          <WorkspaceBreadcrumbItem>{m(SETTINGS_LABEL)}</WorkspaceBreadcrumbItem>
           <WorkspaceBreadcrumbSeparator />
         </>
       ) : null}
       <WorkspaceBreadcrumbItem current className="truncate">
-        {sectionLabel ?? t("navigation.settings")}
+        {m(sectionLabel ?? SETTINGS_LABEL)}
       </WorkspaceBreadcrumbItem>
     </WorkspaceBreadcrumb>
   );

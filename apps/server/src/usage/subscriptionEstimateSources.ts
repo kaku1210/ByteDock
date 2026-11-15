@@ -208,6 +208,11 @@ export function subscriptionEstimateSources(
             model: record.model,
             ...(record.rateModel ? { rateModel: record.rateModel } : {}),
             totals: record.totals,
+            ...(record.cacheCreation1hTokens === undefined
+              ? {}
+              : {
+                  cacheCreation1hTokens: record.cacheCreation1hTokens,
+                }),
             speed: record.speed,
             speedKnown: true,
           });

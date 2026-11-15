@@ -1,5 +1,6 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
+import { resolveLanguagePreference } from "@t3tools/shared/uiLanguage";
 import {
   DEFAULT_UI_LANGUAGE_PREFERENCE,
   type UiLanguagePreference,
@@ -23,7 +24,7 @@ export function LanguageSection() {
   const update = useAtomSet(updateMobilePreferencesAtom);
   const ready = AsyncResult.isSuccess(stored) && !stored.waiting;
   const selected = AsyncResult.isSuccess(stored)
-    ? (stored.value.uiLanguage ?? DEFAULT_UI_LANGUAGE_PREFERENCE)
+    ? resolveLanguagePreference(stored.value)
     : DEFAULT_UI_LANGUAGE_PREFERENCE;
   return (
     <SettingsSection title={text("Interface language")}>
@@ -31,10 +32,15 @@ export function LanguageSection() {
         <ListChoiceRow
           key={entry.value}
           label={text(entry.label)}
-          selected={entry.value === selected}
+          selected={(entry.value === "zh-CN" ? "zh" : entry.value) === selected}
           separated={index > 0}
           disabled={!ready}
-          onPress={() => update({ uiLanguage: entry.value })}
+          onPress={() =>
+            update({
+              language: entry.value === "zh-CN" ? "zh" : entry.value,
+              uiLanguage: entry.value,
+            })
+          }
         />
       ))}
     </SettingsSection>

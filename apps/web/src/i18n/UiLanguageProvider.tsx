@@ -1,5 +1,9 @@
-import { resolveUiLanguage } from "@t3tools/shared/uiLanguage";
-import { type ReactNode, useEffect, useSyncExternalStore } from "react";
+import {
+  plusLanguagePreference,
+  resolveLanguagePreference,
+  resolveUiLanguage,
+} from "@t3tools/shared/uiLanguage";
+import { type ReactNode, useSyncExternalStore } from "react";
 
 import { useClientSettings } from "../hooks/useSettings";
 import { UiLanguageContext } from "./useUiLanguage";
@@ -18,14 +22,11 @@ function subscribeToSystemLocale(refresh: () => void) {
 }
 
 export function UiLanguageProvider({ children }: { children: ReactNode }) {
-  const preference = useClientSettings((settings) => settings.uiLanguage);
+  const preference = useClientSettings((settings) =>
+    plusLanguagePreference(resolveLanguagePreference(settings)),
+  );
   const systemLocale = useSyncExternalStore(subscribeToSystemLocale, readSystemLocale);
   const language = resolveUiLanguage(preference, systemLocale);
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- informs assistive technology of the current document language
-  useEffect(() => {
-    document.documentElement.lang = language;
-  }, [language]);
 
   return <UiLanguageContext value={language}>{children}</UiLanguageContext>;
 }

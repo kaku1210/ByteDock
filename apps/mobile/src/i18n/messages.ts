@@ -3,6 +3,15 @@ import { translateUiText } from "@t3tools/shared/i18n/messages";
 
 // Only app-owned interface copy is looked up. User text, code and remote errors keep their source.
 const mobileCopy: Readonly<Record<string, string>> = {
+  "Long-press the send button to use the other option for a single message. With a hardware keyboard, hold":
+    "长按发送按钮，可为本条消息选择另一种发送方式。使用实体键盘时，按住",
+  "while sending.": "再发送。",
+  "Agents here can then launch, message and wait on threads there. It appears under Authorized clients in that machine's Sharing & access, where it can be revoked.":
+    "此处的代理随后可以在目标机器上创建会话、发送消息并等待结果。你可以在目标机器的“共享与访问 → 已授权客户端”中撤销授权。",
+  ". The agent can use that link as it is; change its access in Settings → Environments.":
+    "。代理可以直接使用现有连接；如需修改访问权限，请前往“设置 → 环境”。",
+  ": Settings → Sharing & access → Authorized clients → Create link, then paste its code here.":
+    "：设置 → 共享与访问 → 已授权客户端 → 创建连接，然后将连接代码粘贴到此处。",
   "Follow system": "跟随系统",
   "Interface language": "界面语言",
   Chats: "会话",

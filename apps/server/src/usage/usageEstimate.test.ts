@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { EstimateSource } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { parseCodexEstimateTranscript } from "./codexEstimateTranscript.ts";
 import { withDefaultPrices } from "./usageDefaultPrices.ts";
@@ -8,7 +9,7 @@ import {
   estimateUsageCycle,
   selectUsageEstimateCycleSamples,
   type EstimateEvent,
-  type EstimatePricing,
+  EstimatePricing,
 } from "./usageEstimate.ts";
 
 const start = Date.parse("2026-11-09T00:00:00Z");
@@ -20,7 +21,7 @@ const source: EstimateSource = {
   accountId: "account-a",
   coverage: "device",
 };
-const pricing: EstimatePricing = {
+const pricing = {
   id: "fixture-prices",
   description: "Deterministic test rates",
   rates: {
@@ -28,12 +29,14 @@ const pricing: EstimatePricing = {
       inputCostPerToken: 0.00001,
       cacheReadCostPerToken: 0.000001,
       cacheCreationCostPerToken: 0.00001,
+      cacheCreation1hCostPerToken: 0.00001,
+      contextTiers: [],
       outputCostPerToken: 0.00003,
       fast: null,
       ultrafast: null,
     },
   },
-};
+} satisfies EstimatePricing;
 const quota = (
   id: string,
   timestampMs: number,
@@ -235,6 +238,54 @@ describe("cycle-to-date local estimates", () => {
 });
 
 describe("local usage interval estimates", () => {
+  it("replays legacy snapshots and preserves context tiers and 1-hour cache prices in new snapshots", () => {
+    const legacyRate = {
+      inputCostPerToken: 1,
+      outputCostPerToken: 2,
+      cacheReadCostPerToken: 3,
+      cacheCreationCostPerToken: 4,
+      fast: null,
+      ultrafast: null,
+    };
+    const cachedUsage = {
+      ...usage,
+      totals: { ...usage.totals, uncachedInputTokens: 100, cacheCreationTokens: 20 },
+      cacheCreation1hTokens: 10,
+    };
+    const data = [events[0]!, cachedUsage, events[2]!];
+    const jsonSchema = Schema.fromJsonString(EstimatePricing);
+    const legacy = Schema.decodeSync(jsonSchema)(
+      JSON.stringify({
+        ...pricing,
+        rates: { "fixture-model": legacyRate },
+      }),
+    );
+    expect(estimateUsageInterval(source, data, legacy, bounds).costUsd).toBe(180);
+    const current = Schema.decodeSync(jsonSchema)(
+      Schema.encodeSync(jsonSchema)({
+        ...pricing,
+        rates: {
+          "fixture-model": {
+            ...legacyRate,
+            cacheCreation1hCostPerToken: 5,
+            contextTiers: [
+              {
+                thresholdTokens: 50,
+                rate: {
+                  ...legacyRate,
+                  inputCostPerToken: 2,
+                  cacheCreationCostPerToken: 8,
+                  cacheCreation1hCostPerToken: 10,
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    expect(estimateUsageInterval(source, data, current, bounds).costUsd).toBe(380);
+  });
+
   it("prices only (start,end] and keeps recorded cost separate from extrapolation", () => {
     const result = estimateUsageInterval(
       source,

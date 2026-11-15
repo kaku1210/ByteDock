@@ -5,33 +5,6 @@ import { settingsDetailMessages } from "./settingsDetailMessages.ts";
 type CopyPair = readonly [source: string, simplifiedChinese: string];
 type SettingCopy = Readonly<Partial<Record<"title" | "description", CopyPair>>>;
 
-const pageCopy: Readonly<Partial<Record<string, CopyPair>>> = {
-  "/settings/diagnostics": ["Diagnostics", "诊断"],
-  "/settings/projects": ["Projects", "项目"],
-  "/settings/general": ["General", "常规"],
-  "/settings/appearance": ["Appearance", "外观"],
-  "/settings/chat": ["Chat", "聊天"],
-  "/settings/diffs": ["Diffs & pull requests", "差异与拉取请求"],
-  "/settings/keybindings": ["Keybindings", "快捷键"],
-  "/settings/snap-shot": ["SnapShots", "快照"],
-  "/settings/providers": ["Providers", "模型服务商"],
-  "/settings/threads": ["Threads", "会话"],
-  "/settings/browser": ["Browser", "浏览器"],
-  "/settings/devices": ["Devices", "设备"],
-  "/settings/scheduled-tasks": ["Scheduled tasks", "计划任务"],
-  "/settings/source-control": ["Source control", "源代码管理"],
-  "/settings/worktrees": ["Worktrees", "工作树"],
-  "/settings/connections": ["Environments", "环境"],
-  "/settings/access": ["Sharing & access", "共享与访问"],
-  "/settings/secrets": ["Secrets", "机密"],
-  "/settings/maintenance": ["Maintenance", "维护"],
-  "/settings/labs": ["Labs", "实验室"],
-  "/settings/about": ["About", "关于"],
-  "/settings/voice": ["Voice", "语音"],
-  "/settings/archived": ["Archive", "归档"],
-  "/settings/open-source-licenses": ["Open source licenses", "开源许可证"],
-};
-
 const sectionCopy: Readonly<Partial<Record<string, CopyPair>>> = {
   notifications: ["Notifications", "通知"],
   sidebar: ["Sidebar", "侧栏"],
@@ -58,12 +31,6 @@ const sectionCopy: Readonly<Partial<Record<string, CopyPair>>> = {
   "legacy-features": ["Legacy", "旧版功能"],
   providers: ["Providers", "模型服务商"],
   "usage-providers": ["Usage providers", "用量来源"],
-};
-
-const groupCopy: Readonly<Partial<Record<string, CopyPair>>> = {
-  Agents: ["Agents", "代理"],
-  Code: ["Code", "代码"],
-  Connections: ["Connections", "连接"],
 };
 
 const settingCopy: Readonly<Partial<Record<string, SettingCopy>>> = {
@@ -493,14 +460,6 @@ const settingCopy: Readonly<Partial<Record<string, SettingCopy>>> = {
 // change with new semantics cannot keep displaying an older translation.
 function translated(language: UiLanguage, copy: CopyPair | undefined, source: string): string {
   return language === "zh-CN" && copy?.[0] === source ? copy[1] : source;
-}
-
-export function settingsPageLabel(language: UiLanguage, path: string, source: string): string {
-  return translated(language, pageCopy[path], source);
-}
-
-export function settingsGroupLabel(language: UiLanguage, source: string): string {
-  return translated(language, groupCopy[source], source);
 }
 
 export function settingsSectionTitle(

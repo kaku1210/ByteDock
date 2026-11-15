@@ -16,8 +16,9 @@ const TokenRates = Schema.Struct({
   outputCostPerToken: Price,
   cacheReadCostPerToken: Price,
   cacheCreationCostPerToken: Price,
+  cacheCreation1hCostPerToken: Schema.optionalKey(Price),
 });
-const ModelRateSchema = Schema.Struct({
+const SpeedRateSchema = Schema.Struct({
   ...TokenRates.fields,
   fast: Schema.NullOr(TokenRates),
   ultrafast: Schema.NullOr(TokenRates),
@@ -28,6 +29,62 @@ const ModelRateSchema = Schema.Struct({
     Schema.Struct({ provider: Id, plans: Schema.Array(Id), untilMs: Timestamp }),
   ),
 });
+const ModelRateSchema = Schema.Struct({
+  ...SpeedRateSchema.fields,
+  contextTiers: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        thresholdTokens: Timestamp,
+        rate: SpeedRateSchema,
+      }),
+    ),
+  ),
+});
+
+function restoreTokenRates(rates: typeof TokenRates.Type) {
+  return {
+    ...rates,
+    cacheCreation1hCostPerToken:
+      rates.cacheCreation1hCostPerToken ?? rates.cacheCreationCostPerToken,
+  };
+}
+
+function restoreSpeedRates(rate: typeof SpeedRateSchema.Type) {
+  return {
+    ...restoreTokenRates(rate),
+    fast: rate.fast === null ? null : restoreTokenRates(rate.fast),
+    ultrafast: rate.ultrafast === null ? null : restoreTokenRates(rate.ultrafast),
+    ...(rate.introductory === undefined
+      ? {}
+      : {
+          introductory: {
+            ...restoreTokenRates(rate.introductory),
+            untilMs: rate.introductory.untilMs,
+            fast:
+              rate.introductory.fast === null ? null : restoreTokenRates(rate.introductory.fast),
+          },
+        }),
+    ...(rate.quotaFree === undefined ? {} : { quotaFree: rate.quotaFree }),
+  };
+}
+
+// Old snapshots predate context tiers and the separate 1-hour cache price.
+function restoreRateTable(
+  stored: Readonly<Record<string, typeof ModelRateSchema.Type>>,
+): RateTable {
+  return new Map(
+    Object.entries(stored).map(([model, rate]): [string, ModelRate] => [
+      model,
+      {
+        ...restoreSpeedRates(rate),
+        contextTiers: (rate.contextTiers ?? []).map((tier) => ({
+          thresholdTokens: tier.thresholdTokens,
+          rate: restoreSpeedRates(tier.rate),
+        })),
+      },
+    ]),
+  );
+}
 
 const EventFields = { id: Id, timestampMs: Timestamp, sessionId: Id };
 export const EstimateEvent = Schema.Union([
@@ -39,6 +96,7 @@ export const EstimateEvent = Schema.Union([
     totals: UsageTokenTotals,
     speed: Schema.Literals(["standard", "fast", "ultrafast"]),
     speedKnown: Schema.Boolean,
+    cacheCreation1hTokens: Schema.optionalKey(Timestamp),
   }),
   Schema.Struct({
     ...EventFields,
@@ -153,8 +211,8 @@ function estimateUsage(
             : event.timestampMs > first.timestampMs) && event.timestampMs <= last.timestampMs,
       )
     : [];
-  const rates: RateTable = new Map<string, ModelRate>(Object.entries(pricing.rates));
-  const overrides: RateTable = new Map(Object.entries(pricing.overrides ?? {}));
+  const rates = restoreRateTable(pricing.rates);
+  const overrides = restoreRateTable(pricing.overrides ?? {});
   const models = new Map<
     string,
     { model: string; records: number; costUsd: number | null; quotaFreeRecords?: number }

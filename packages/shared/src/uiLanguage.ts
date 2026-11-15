@@ -2,6 +2,21 @@ import type { UiLanguagePreference } from "@t3tools/contracts/settings";
 
 export type UiLanguage = Exclude<UiLanguagePreference, "system">;
 
+/** Older Plus settings store uiLanguage; an explicit upstream locale takes precedence. */
+export function resolveLanguagePreference(settings: {
+  readonly language?: string;
+  readonly uiLanguage?: UiLanguagePreference;
+}): string {
+  return (
+    settings.language || (settings.uiLanguage === "zh-CN" ? "zh" : settings.uiLanguage) || "system"
+  );
+}
+
+/** Plus catalogs cover English and Simplified Chinese; other locales retain their upstream catalog. */
+export function plusLanguagePreference(language: string): UiLanguagePreference {
+  return language === "system" ? "system" : resolveUiLanguage("system", language);
+}
+
 /** Resolves the two supported UI languages using locale APIs also available in Hermes. */
 export function resolveUiLanguage(
   preference: UiLanguagePreference,

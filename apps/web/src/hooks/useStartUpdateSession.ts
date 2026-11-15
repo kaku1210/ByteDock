@@ -14,6 +14,7 @@ import {
   type RuntimeMode,
   type ServerProvider,
   type ServerSettings,
+  type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
@@ -29,9 +30,9 @@ import {
   formatOutgoingPrompt,
   getAntigravitySendBlockReason,
   resolveComposerProviderSelection,
-  threadShellHasStarted,
-  waitForStartedServerThread,
 } from "../components/ChatView.logic";
+import { threadHasStarted } from "../lib/chatThreadActions";
+import { waitForAtomValue } from "../state/waitForAtomValue";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -46,7 +47,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readProjects, readThreadShell } from "../state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { environmentServerConfigsAtom } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { createNewThreadHandler } from "./useHandleNewThread";
@@ -54,6 +55,18 @@ import { createScratchProjectActions } from "./useScratchProject";
 import { getClientSettings } from "./useSettings";
 
 export type UpdateSessionKind = "upstream" | "repository";
+
+function waitForStartedServerThread(
+  threadRef: ScopedThreadRef,
+  timeoutMs: number,
+): Promise<boolean> {
+  return waitForAtomValue({
+    registry: appAtomRegistry,
+    atom: environmentThreadShells.threadShellAtom(threadRef),
+    predicate: threadHasStarted,
+    timeoutMs,
+  });
+}
 
 const shortRevision = (value: string | null | undefined) =>
   value && /^[a-f0-9]{40}$/i.test(value) ? value.slice(0, 12) : (value ?? null);
@@ -530,6 +543,7 @@ export function resolveReadyScratchSendTarget(input: {
   const selectedInstanceId = selectedEntry.instanceId;
   const selectedProvider = selectedEntry.driverKind;
   const modelState = deriveEffectiveComposerModelState({
+    threadStarted: false,
     draft: {
       modelSelectionByProvider: stickyState.stickyModelSelectionByProvider,
       activeProvider: stickyState.stickyActiveProvider,
@@ -558,7 +572,6 @@ export function resolveReadyScratchSendTarget(input: {
     models: selectedEntry.models,
     promptInjectionState: getComposerPromptInjectionState(prompt),
     modelOptions: modelState.modelOptions?.[selectedInstanceId],
-    planModeEnabled: false,
   });
 
   const modelSelection = createModelSelection(
@@ -636,7 +649,7 @@ export function useStartUpdateSession() {
       if (
         existingShell !== null &&
         existingShell.deletedAt == null &&
-        (existingAttempt.accepted || threadShellHasStarted(existingShell))
+        (existingAttempt.accepted || threadHasStarted(existingShell))
       ) {
         existingAttempt.accepted = true;
         if (router) {
@@ -770,7 +783,7 @@ export function useStartUpdateSession() {
           recoveredVisible ||
           (recoveredShell !== null &&
             recoveredShell.deletedAt == null &&
-            threadShellHasStarted(recoveredShell))
+            threadHasStarted(recoveredShell))
         ) {
           attempt.accepted = true;
           if (router && !routeChangedSinceRequest()) {

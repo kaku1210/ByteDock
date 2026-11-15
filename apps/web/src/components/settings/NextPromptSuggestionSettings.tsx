@@ -114,7 +114,6 @@ export function NextPromptSuggestionSettings() {
                   model={configured.model}
                   modelOptions={configured.options}
                   allowPromptInjectedEffort={false}
-                  planModeEnabled={false}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   onModelOptionsChange={(options) =>
                     updateSettings({

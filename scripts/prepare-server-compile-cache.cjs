@@ -6,9 +6,13 @@ const os = require("node:os");
 
 // Run against the final ASAR layout: after EXE editing on Windows, before signing on macOS.
 module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => {
-  // Linux packaging and relocated AppImage cache reuse still need native validation.
-  if (electronPlatformName !== "darwin" && electronPlatformName !== "win32") {
+  if (!["darwin", "win32", "linux"].includes(electronPlatformName)) {
     console.log(`[server-compile-cache] Skipping unsupported target ${electronPlatformName}`);
+    return;
+  }
+  // Generating the cache runs the bundle, and a PR preview's bundle must never run next to signing secrets.
+  if (process.env.T3CODE_DESKTOP_UNTRUSTED_BUNDLE === "true") {
+    console.log("[server-compile-cache] Skipping untrusted bundle");
     return;
   }
   const targetArch = ["ia32", "x64", "armv7l", "arm64", "universal"][arch];
