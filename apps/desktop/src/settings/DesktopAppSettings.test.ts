@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -96,19 +97,19 @@ function writeSettingsPatch(patch: typeof DesktopSettingsPatch.Type) {
 }
 
 describe("DesktopSettings", () => {
-  it.effect("persists update-center switches and this machine's CMD path across reloads", () =>
+  it.effect("persists update-center switches and this machine's source path across reloads", () =>
     withSettings(
       Effect.gen(function* () {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         assert.deepEqual((yield* settings.load).updateCenter, {
           checkingEnabled: true,
           quickUpdateEnabled: false,
-          commandPath: null,
+          sourcePath: null,
         });
         const preferences = {
           checkingEnabled: false,
           quickUpdateEnabled: true,
-          commandPath: "D:\\开发\\Migrate-T3-Code-Plus.cmd",
+          sourcePath: "D:\\开发\\t3codeplus",
         };
         yield* settings.setUpdateCenter(preferences);
         assert.deepEqual((yield* settings.load).updateCenter, preferences);
@@ -117,6 +118,31 @@ describe("DesktopSettings", () => {
           (yield* settings.load).updateCenter,
           DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS.updateCenter,
         );
+      }),
+    ),
+  );
+  it.effect("keeps update-center switches saved with the retired CMD path", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          environment.desktopSettingsPath,
+          JSON.stringify({
+            updateCenter: {
+              checkingEnabled: false,
+              quickUpdateEnabled: true,
+              commandPath: "D:\\开发\\Migrate-T3-Code-Plus.cmd",
+            },
+          }),
+        );
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        assert.deepEqual((yield* settings.load).updateCenter, {
+          checkingEnabled: false,
+          quickUpdateEnabled: true,
+          sourcePath: null,
+        });
       }),
     ),
   );
@@ -274,32 +300,34 @@ describe("DesktopSettings", () => {
     ),
   );
 
-  it.effect("saves through a symlinked settings file without replacing the link", () =>
-    withSettings(
-      Effect.gen(function* () {
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const settings = yield* DesktopAppSettings.DesktopAppSettings;
-        const dotfiles = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-desktop-settings-dotfiles-",
-        });
-        const linkedSettingsPath = environment.path.join(dotfiles, "desktop-settings.json");
-        yield* fileSystem.writeFileString(linkedSettingsPath, "{}\n");
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.symlink(linkedSettingsPath, environment.desktopSettingsPath);
+  it.effect.skipIf(!symlinksSupported)(
+    "saves through a symlinked settings file without replacing the link",
+    () =>
+      withSettings(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const settings = yield* DesktopAppSettings.DesktopAppSettings;
+          const dotfiles = yield* fileSystem.makeTempDirectoryScoped({
+            prefix: "t3-desktop-settings-dotfiles-",
+          });
+          const linkedSettingsPath = environment.path.join(dotfiles, "desktop-settings.json");
+          yield* fileSystem.writeFileString(linkedSettingsPath, "{}\n");
+          yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+          yield* fileSystem.symlink(linkedSettingsPath, environment.desktopSettingsPath);
 
-        yield* settings.setServerExposureMode("network-accessible");
+          yield* settings.setServerExposureMode("network-accessible");
 
-        assert.equal(
-          yield* fileSystem.readLink(environment.desktopSettingsPath),
-          linkedSettingsPath,
-        );
-        const persisted = yield* decodeDesktopSettingsPatch(
-          yield* fileSystem.readFileString(linkedSettingsPath),
-        );
-        assert.equal(persisted.serverExposureMode, "network-accessible");
-      }),
-    ),
+          assert.equal(
+            yield* fileSystem.readLink(environment.desktopSettingsPath),
+            linkedSettingsPath,
+          );
+          const persisted = yield* decodeDesktopSettingsPatch(
+            yield* fileSystem.readFileString(linkedSettingsPath),
+          );
+          assert.equal(persisted.serverExposureMode, "network-accessible");
+        }),
+      ),
   );
 
   it.effect("removes its temporary file when replacing the settings file fails", () =>
