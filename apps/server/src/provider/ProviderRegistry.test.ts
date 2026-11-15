@@ -451,7 +451,8 @@ it.layer(
   describe("checkCodexProviderStatus", () => {
     it.effect.each([
       { delay: 4_000, available: true },
-      { delay: 6_000, available: false },
+      { delay: 6_000, available: true },
+      { delay: 20_000, available: false },
     ])("bounds the quota request without discarding a $delay ms response too early", (fixture) =>
       Effect.gen(function* () {
         const requested = yield* Deferred.make<void>();
@@ -471,7 +472,10 @@ it.layer(
           }
           const responses: Record<string, unknown> = {
             initialize: { userAgent: "codex/0.167.0", codexHome: home },
-            "account/read": makeCodexProbeSnapshot().account,
+            "account/read": {
+              ...makeCodexProbeSnapshot().account,
+              requiresOpenaiAuth: true,
+            },
             "model/list": { data: [], nextCursor: null },
             "skills/list": { data: [] },
             "config/read": { config: {} },
@@ -493,7 +497,7 @@ it.layer(
             notify: () => Effect.void,
           }),
         );
-        const fiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
+        const fiber = yield* checkCodexProviderStatus(defaultCodexSettings, undefined, {}).pipe(
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
             ChildProcessSpawner.make(() =>
@@ -503,7 +507,7 @@ it.layer(
           Effect.forkChild,
         );
         yield* Deferred.await(requested);
-        yield* TestClock.adjust("6 seconds");
+        yield* TestClock.adjust("25 seconds");
         const status = yield* Fiber.join(fiber);
         assert.equal(status.status, "ready");
         assert.equal(status.auth.status, "authenticated");
@@ -1003,7 +1007,10 @@ it.layer(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.forkChild,
         );
-        yield* Deferred.await(usageRequested);
+        yield* Effect.raceFirst(
+          Deferred.await(usageRequested),
+          Fiber.join(fiber).pipe(Effect.flatMap((status) => Effect.die(JSON.stringify(status)))),
+        );
         yield* TestClock.adjust("25 seconds");
         const status = yield* Fiber.join(fiber);
 

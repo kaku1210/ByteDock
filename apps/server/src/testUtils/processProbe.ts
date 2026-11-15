@@ -6,7 +6,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 export const makeProcessProbe = Effect.gen(function* () {
   const started = yield* Deferred.make<number>();
-  const exited = yield* Deferred.make<void>();
+  const exited = yield* Deferred.make<void, Error>();
   const sockets = new Set<NodeNet.Socket>();
   const server = NodeNet.createServer((socket) => {
     sockets.add(socket);
@@ -18,6 +18,13 @@ export const makeProcessProbe = Effect.gen(function* () {
         if (Number.isSafeInteger(pid) && pid > 0) {
           Deferred.doneUnsafe(started, Effect.succeed(pid));
         }
+      }
+    });
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      // Windows may reset the connection when the observed fixture is killed.
+      // The close event still marks its exit; other failures must reach the test.
+      if (error.code !== "ECONNRESET") {
+        Deferred.doneUnsafe(exited, Effect.fail(error));
       }
     });
     socket.on("close", () => {
