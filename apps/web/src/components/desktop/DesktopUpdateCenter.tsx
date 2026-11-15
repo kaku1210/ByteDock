@@ -1,5 +1,5 @@
 import { isReleaseBuild, type DesktopUpdateSource } from "@t3tools/contracts";
-import { DownloadIcon, RefreshCwIcon, SparklesIcon } from "lucide-react";
+import { DownloadIcon, RefreshCwIcon, BotIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
   useStartUpdateSession,
@@ -301,7 +301,7 @@ export function DesktopUpdateCenter() {
       disabled={startingKind !== null || source.status === "checking" || state.installing}
       onClick={() => startQuickUpdate(kind)}
     >
-      <SparklesIcon className="size-3" />
+      <BotIcon className="size-3" />
       {t(startingKind === kind ? "updates.aiQuickUpdating" : "updates.aiQuickUpdate")}
     </Button>
   );

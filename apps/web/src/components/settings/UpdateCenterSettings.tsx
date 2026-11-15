@@ -1,5 +1,5 @@
 import { isReleaseBuild } from "@t3tools/contracts";
-import { SparklesIcon } from "lucide-react";
+import { BotIcon } from "lucide-react";
 import { useState } from "react";
 import {
   useStartUpdateSession,
@@ -74,7 +74,7 @@ export function UpdateCenterSettings() {
                 }
                 onClick={() => startQuickUpdate("upstream")}
               >
-                <SparklesIcon className="size-3" />
+                <BotIcon className="size-3" />
                 {t(
                   startingKind === "upstream"
                     ? "updates.aiQuickUpdating"
@@ -96,7 +96,7 @@ export function UpdateCenterSettings() {
                 }
                 onClick={() => startQuickUpdate("repository")}
               >
-                <SparklesIcon className="size-3" />
+                <BotIcon className="size-3" />
                 {t(
                   startingKind === "repository"
                     ? "updates.aiQuickUpdating"
