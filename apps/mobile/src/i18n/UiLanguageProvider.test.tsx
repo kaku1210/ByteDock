@@ -119,8 +119,8 @@ it("switches interface copy through saved choices and follows system changes onl
   await act(async () => mocks.onAppStateChange?.("active"));
   expect(language()).toBe("en");
   expect(mocks.saved).toEqual([
-    { uiLanguage: "zh-CN" },
-    { uiLanguage: "en" },
-    { uiLanguage: "system" },
+    { language: "zh", uiLanguage: "zh-CN" },
+    { language: "en", uiLanguage: "en" },
+    { language: "system", uiLanguage: "system" },
   ]);
 });

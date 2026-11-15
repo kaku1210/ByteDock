@@ -118,7 +118,11 @@ vi.mock("../../state/entities", () => ({
       [
         "environment",
         {
-          environment: { platform: { os: "linux" }, capabilities: {} },
+          // This fixture creates real folders, so its remote paths use the host's syntax.
+          environment: {
+            platform: { os: NodePath.sep === "\\" ? "windows" : "linux" },
+            capabilities: {},
+          },
           newProjectsRoot: state.newProjectsRoot,
           settings: { addProjectBaseDirectory: state.baseDirectory },
         },

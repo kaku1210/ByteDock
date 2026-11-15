@@ -140,7 +140,8 @@ const browserTestProject = {
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      // UI assertions use English even when the host's system language differs.
+      provider: playwright({ contextOptions: { locale: "en-US" } }),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
       commands: {
