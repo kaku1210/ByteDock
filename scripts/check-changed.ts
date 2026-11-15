@@ -484,6 +484,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const typecheckWorkers = Math.min(concurrency, affected.length);
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
+  // Browser startup and bundle transforms can starve the Windows subprocess
+  // integration tests. Keep both suites in the gate, with separate worker budgets.
+  const testGroups = [
+    { name: "unit tests", files: vitestTests.filter((file) => !file.includes(".browser.test.")) },
+    { name: "browser tests", files: vitestTests.filter((file) => file.includes(".browser.test.")) },
+  ];
 
   const steps: Array<Step<never>> = [
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
@@ -518,21 +524,20 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         ]
       : []),
     // From the repo root, the root vite.config.ts hands each file to its package's config.
-    ...(vitestTests.length > 0
-      ? [
-          {
-            ...command(`test (${vitestTests.length} files)`, [
-              "test",
-              "run",
-              "--passWithNoTests",
-              "--maxWorkers",
-              String(concurrency),
-              ...vitestTests,
-            ]),
-            serial: true,
-          },
-        ]
-      : []),
+    ...testGroups
+      .filter((group) => group.files.length > 0)
+      .map((group) => ({
+        ...command(`${group.name} (${group.files.length} files)`, [
+          "test",
+          "run",
+          "--passWithNoTests",
+          "--maxWorkers",
+          String(concurrency),
+          ...group.files,
+        ]),
+        weight: concurrency,
+        serial: true,
+      })),
     ...(nodeTests.length > 0
       ? [
           command(`node --test (${nodeTests.length} files)`, [
