@@ -172,22 +172,43 @@ const make = Effect.gen(function* () {
       if (!source)
         yield* sql`INSERT INTO usage_estimate_sources VALUES (${batch.source.id},${encodedSource},0)`;
       let inserted = 0;
+      let enriched = false;
       for (const event of batch.events) {
         const payload = yield* encodeEvent(event);
         const existing = yield* sql<{
           payload: string;
         }>`SELECT payload FROM usage_estimate_events WHERE source_id=${batch.source.id} AND id=${event.id}`;
         if (existing[0]) {
-          if (!NodeUtil.isDeepStrictEqual(yield* decodeEventJson(existing[0].payload), event))
+          const previous = yield* decodeEventJson(existing[0].payload);
+          if (NodeUtil.isDeepStrictEqual(previous, event)) continue;
+          if (previous.kind !== "usage" || event.kind !== "usage")
             return yield* new UsageEstimateIntegrityError({ reason: "event_conflict" });
+
+          // Readers can learn a pricing alias after recording the same usage. Only fill a
+          // missing alias: measured usage stays immutable, and stale scans cannot erase it.
+          const { rateModel: previousRateModel, ...previousUsage } = previous;
+          const { rateModel, ...usage } = event;
+          if (
+            !NodeUtil.isDeepStrictEqual(previousUsage, usage) ||
+            (previousRateModel !== undefined &&
+              rateModel !== undefined &&
+              previousRateModel !== rateModel)
+          )
+            return yield* new UsageEstimateIntegrityError({ reason: "event_conflict" });
+          if (previousRateModel === undefined && rateModel !== undefined) {
+            yield* sql`UPDATE usage_estimate_events SET payload=${payload},revision=${revision + 1} WHERE source_id=${batch.source.id} AND id=${event.id}`;
+            enriched = true;
+          }
           continue;
         }
         yield* sql`INSERT INTO usage_estimate_events VALUES (${batch.source.id},${event.id},${event.timestampMs},${revision + 1},${payload})`;
         inserted++;
       }
-      if (inserted > 0)
-        yield* sql`UPDATE usage_estimate_sources SET revision=${revision + 1} WHERE id=${batch.source.id}`;
-      return { inserted, revision: revision + (inserted > 0 ? 1 : 0) };
+      // A new revision recomputes current estimates; already saved results keep their prices.
+      const nextRevision = revision + (inserted > 0 || enriched ? 1 : 0);
+      if (nextRevision !== revision)
+        yield* sql`UPDATE usage_estimate_sources SET revision=${nextRevision} WHERE id=${batch.source.id}`;
+      return { inserted, revision: nextRevision };
     },
     sql.withTransaction,
     Effect.mapError((cause) => new UsageEstimateStoreError({ operation: "ingest", cause })),

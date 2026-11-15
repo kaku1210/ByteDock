@@ -210,6 +210,65 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
+it.effect("enriches pricing metadata without duplicating usage or rewriting saved history", () =>
+  Effect.gen(function* () {
+    const store = yield* UsageEstimateStore.UsageEstimateStore;
+    const enriched = { ...events[1], rateModel: "base-model" };
+    yield* store.ingest({ source, events });
+    yield* store.savePricing({
+      ...pricing,
+      rates: {
+        ...pricing.rates,
+        "base-model": { ...pricing.rates["fixture-model"], inputCostPerToken: 2 },
+      },
+    });
+    const input = {
+      sources: [{ id: source.id, path: "/test/antigravity" }],
+      pricingId: pricing.id,
+      nowMs: end,
+    };
+    const [before] = yield* store.readSeries(input);
+    expect(before?.current?.result.costUsd).toBe(75);
+
+    // Enrichment is part of the same transaction as immutable observations.
+    yield* Effect.flip(
+      store.ingest({ source, events: [enriched, { ...events[0], usedPercent: 99 }] }),
+    );
+    expect(yield* store.ingest({ source, events })).toEqual({ inserted: 0, revision: 1 });
+    expect(yield* store.readSeries(input)).toEqual([before]);
+
+    expect(yield* store.ingest({ source, events: [enriched] })).toEqual({
+      inserted: 0,
+      revision: 2,
+    });
+    const [after] = yield* store.readSeries(input);
+    expect(after?.current?.result.costUsd).toBe(150);
+    expect(after?.history).toEqual(before?.history);
+
+    // Repeated or stale scans retain the richer metadata and the same revision.
+    expect(yield* store.ingest({ source, events: [enriched] })).toEqual({
+      inserted: 0,
+      revision: 2,
+    });
+    expect(yield* store.ingest({ source, events })).toEqual({ inserted: 0, revision: 2 });
+    expect(yield* store.readSeries(input)).toEqual([after]);
+    for (const conflict of [
+      { ...enriched, rateModel: "different-base-model" },
+      { ...enriched, totals: { ...events[1]?.totals, outputTokens: 1 } },
+    ]) {
+      expect((yield* Effect.flip(store.ingest({ source, events: [conflict] }))).operation).toBe(
+        "ingest",
+      );
+    }
+    expect(yield* store.readSeries(input)).toEqual([after]);
+  }).pipe(
+    Effect.provide(
+      Layer.provide(UsageEstimateStore.layer, NodeSqliteClient.layer({ filename: ":memory:" })),
+    ),
+    Effect.scoped,
+  ),
+);
+
 it.effect("rejects identity and event conflicts atomically while keeping devices separate", () =>
   Effect.gen(function* () {
     const store = yield* UsageEstimateStore.UsageEstimateStore;

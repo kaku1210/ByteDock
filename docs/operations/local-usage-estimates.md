@@ -116,8 +116,11 @@ Session-cached quota values remain marked as cached, even when stored during a l
 The database contains source identity/revisions, normalized usage and quota
 observations, immutable price versions, and saved interval results. It contains no
 chat transcript or login credentials. Origin event identifiers survive a log move
-and repeat import. Conflicting content for the same identifier aborts the entire
-import. New data advances the source revision; duplicate data does not. Results
+and repeat import. Conflicting observations for the same identifier abort the entire
+import. Readers may fill a previously missing pricing model (`rateModel`) without
+changing the measured usage; stale imports cannot erase it, and contradictory known
+pricing models still fail. New data or pricing metadata advances the source revision;
+duplicate data does not. Results
 reference that revision and price version, so old results remain unchanged after
 late imports or repricing. Identical evaluation requests return the saved result.
 
