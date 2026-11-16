@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
 import { flushSync } from "react-dom";
 
@@ -51,6 +52,7 @@ export function ZoomableImage({
   onError: () => void;
   ref?: Ref<ZoomableImageHandle>;
 }) {
+  const { text: uiText } = useUiLanguage();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
   const viewerSize = useSyncExternalStore(subscribeViewerSize, getViewerSize);
@@ -254,7 +256,8 @@ export function ZoomableImage({
         />
       </div>
       <span className="sr-only" aria-live="polite">
-        {Math.round(zoom * 100)}% zoom
+        {Math.round(zoom * 100)}
+        {uiText("% zoom")}
       </span>
     </div>
   );

@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import {
   listBrowserMicrophones,
@@ -45,6 +46,7 @@ export function VoiceInputSetup(props: {
   onCancelDownload(): void;
   onStartRecording(): void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const navigate = useNavigate();
   const environment = useEnvironment(props.environmentId);
   const canManage = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
@@ -116,13 +118,13 @@ export function VoiceInputSetup(props: {
                     {model.recommended && props.language
                       ? `Recommended for ${languageLabel(props.language)}. `
                       : ""}
-                    Includes a 1.2 MB silence detector.
+                    {uiText("Includes a 1.2 MB silence detector.")}
                   </p>
                   {props.downloading ? (
                     <div role="status" className="space-y-1.5">
                       <div
                         role="progressbar"
-                        aria-label="Speech model download progress"
+                        aria-label={uiText("Speech model download progress")}
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={progress ?? undefined}
@@ -145,7 +147,7 @@ export function VoiceInputSetup(props: {
                 </div>
               ) : !props.error ? (
                 <p role="status" className="text-muted-foreground">
-                  Loading transcription models…
+                  {uiText("Loading transcription models…")}
                 </p>
               ) : null}
               {props.error ? (
@@ -158,7 +160,7 @@ export function VoiceInputSetup(props: {
           ) : (
             <section className="space-y-2 text-sm">
               <label className="sr-only" htmlFor="voice-setup-microphone">
-                Microphone
+                {uiText("Microphone")}
               </label>
               <div className="flex items-center gap-2">
                 <Select
@@ -182,17 +184,17 @@ export function VoiceInputSetup(props: {
                   <SelectTrigger
                     id="voice-setup-microphone"
                     size="sm"
-                    aria-label="Microphone"
+                    aria-label={uiText("Microphone")}
                     className="min-w-0 flex-1"
                   >
                     <MicIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
                     <SelectValue>{selectedMicrophoneLabel}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup align="end" alignItemWithTrigger={false}>
-                    <SelectItem value="system-default">System default</SelectItem>
+                    <SelectItem value="system-default">{uiText("System default")}</SelectItem>
                     {selectedIsUnavailable ? (
                       <SelectItem value={`device:${selectedMicrophone}`}>
-                        Selected microphone (Unavailable)
+                        {uiText("Selected microphone (Unavailable)")}
                       </SelectItem>
                     ) : null}
                     {microphones.map((device) => (
@@ -207,7 +209,7 @@ export function VoiceInputSetup(props: {
                   variant="ghost"
                   size="icon-sm"
                   disabled={loadingMicrophones}
-                  aria-label="Refresh microphones"
+                  aria-label={uiText("Refresh microphones")}
                   onClick={() => void refreshMicrophones()}
                 >
                   <RefreshCwIcon className="size-3.5" />
@@ -215,7 +217,7 @@ export function VoiceInputSetup(props: {
               </div>
               {selectedIsUnavailable ? (
                 <p className="text-xs text-destructive">
-                  That microphone is unplugged. Pick another one.
+                  {uiText("That microphone is unplugged. Pick another one.")}
                 </p>
               ) : null}
               {microphoneError ? (
@@ -235,11 +237,11 @@ export function VoiceInputSetup(props: {
             }
           >
             {props.onRetryCatalog ? (
-              <Button onClick={props.onRetryCatalog}>Retry loading models</Button>
+              <Button onClick={props.onRetryCatalog}>{uiText("Retry loading models")}</Button>
             ) : null}
             {props.downloading ? (
               <Button variant="outline" disabled={!canManage} onClick={props.onCancelDownload}>
-                Cancel download
+                {uiText("Cancel download")}
               </Button>
             ) : null}
             {model ? (
@@ -261,13 +263,13 @@ export function VoiceInputSetup(props: {
           <WizardFooter
             leading={
               <Button variant="ghost" onClick={() => openSettings("")}>
-                Voice settings
+                {uiText("Voice settings")}
               </Button>
             }
           >
             <Button onClick={props.onStartRecording}>
               <MicIcon />
-              Start dictating
+              {uiText("Start dictating")}
             </Button>
           </WizardFooter>
         )}

@@ -154,7 +154,8 @@ export function AddProviderInstanceDialog({
   onCreated,
   showMoreProviders: initialShowMoreProviders = false,
 }: AddProviderInstanceDialogProps) {
-  const { t } = useUiLanguage();
+  const { text: uiText, t } = useUiLanguage();
+
   const settings = useEnvironmentSettings(environmentId);
   const secretSources = useSecretSources(environmentId);
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
@@ -531,7 +532,9 @@ export function AddProviderInstanceDialog({
                               </h3>
                               <p className="mt-0.5 text-xs text-muted-foreground">
                                 {isLocalAcp
-                                  ? `Run an installed ACP executable on ${environmentLabel}.`
+                                  ? uiText("Run an installed ACP executable on {value0}.", {
+                                      value0: environmentLabel,
+                                    })
                                   : t("settings.addProvider.manualHelp")}
                               </p>
                             </div>
@@ -601,7 +604,10 @@ export function AddProviderInstanceDialog({
                   <div className="flex shrink-0 gap-2 text-2xs">
                     {selectedAcp.website ? (
                       <a
-                        aria-label={`Open documentation for ${selectedAcp.name} (${selectedAcp.id})`}
+                        aria-label={uiText("Open documentation for {value0} ({value1})", {
+                          value0: selectedAcp.name,
+                          value1: selectedAcp.id,
+                        })}
                         className="text-muted-foreground hover:text-foreground"
                         href={selectedAcp.website}
                         rel="noreferrer"
@@ -612,7 +618,10 @@ export function AddProviderInstanceDialog({
                     ) : null}
                     {selectedAcp.repository ? (
                       <a
-                        aria-label={`Open source for ${selectedAcp.name} (${selectedAcp.id})`}
+                        aria-label={uiText("Open source for {value0} ({value1})", {
+                          value0: selectedAcp.name,
+                          value1: selectedAcp.id,
+                        })}
                         className="text-muted-foreground hover:text-foreground"
                         href={selectedAcp.repository}
                         rel="noreferrer"
@@ -682,7 +691,7 @@ export function AddProviderInstanceDialog({
                       }
                       size="sm"
                       className="w-full @min-[32rem]/settings-row:w-56"
-                      placeholder={`${driver}_work`}
+                      placeholder={uiText("{value0}_work", { value0: driver })}
                       value={instanceId}
                       onChange={(event) => {
                         setIdentityDraft({ instanceIdOverride: event.target.value });

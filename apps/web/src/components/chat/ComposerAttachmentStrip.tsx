@@ -62,10 +62,11 @@ function ComposerAttachmentUploadProgress({
 }
 
 function ComposerImageFallback() {
+  const { text: uiText } = useUiLanguage();
   return (
     <span
       role="img"
-      aria-label="Image attachment"
+      aria-label={uiText("Image attachment")}
       className="flex size-full items-center justify-center p-3 text-secondary-label"
     >
       <ImageIcon aria-hidden="true" className="size-4" />
@@ -173,6 +174,7 @@ export function ComposerAttachmentMediaRow({
   readonly onRemoveImage: (imageId: string) => void;
   readonly onRemoveFile: (fileId: string) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const uploadsByImageId = useAttachmentUploadStore((state) => state.uploadsByImageId);
   const pendingSnapShotIdSet = new Set(pendingSnapShotIds);
   const nonPersistedImageIdSet = new Set(nonPersistedImageIds);
@@ -267,7 +269,7 @@ export function ComposerAttachmentMediaRow({
                     render={
                       <span
                         role="img"
-                        aria-label="Draft attachment may not persist"
+                        aria-label={uiText("Draft attachment may not persist")}
                         className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-warning-foreground"
                       >
                         <CircleAlertIcon className="size-3" />
@@ -275,7 +277,9 @@ export function ComposerAttachmentMediaRow({
                     }
                   />
                   <TooltipPopup side="top">
-                    Draft attachment could not be saved locally and may be lost on navigation.
+                    {uiText(
+                      "Draft attachment could not be saved locally and may be lost on navigation.",
+                    )}
                   </TooltipPopup>
                 </Tooltip>
               )}

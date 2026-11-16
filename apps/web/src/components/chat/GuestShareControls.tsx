@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -70,6 +71,7 @@ function GuestShareDialog({
   readonly threadRef: ScopedThreadRef;
   readonly onClose: () => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const activeShare = useThreadGuestShare(threadRef);
   const canCreate = useAtomValue(
     serverEnvironment.createGuestShare.permissionAtom(threadRef.environmentId),
@@ -110,10 +112,11 @@ function GuestShareDialog({
     >
       <DialogPopup className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Share with guest</DialogTitle>
+          <DialogTitle>{uiText("Share with guest")}</DialogTitle>
           <DialogDescription>
-            The guest sees the thread as you do, including command output and the agent&apos;s
-            reasoning. Each message they send waits for you.
+            {uiText(
+              "The guest sees the thread as you do, including command output and the agent's reasoning. Each message they send waits for you.",
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -121,7 +124,7 @@ function GuestShareDialog({
             <div className="flex items-center gap-2">
               <Input
                 readOnly
-                aria-label="Guest link"
+                aria-label={uiText("Guest link")}
                 value={state.url}
                 onFocus={(event) => event.currentTarget.select()}
               />
@@ -146,7 +149,7 @@ function GuestShareDialog({
         <DialogFooter>
           {state.status === "created" ? (
             <Button size="sm" onClick={onClose}>
-              Done
+              {uiText("Done")}
             </Button>
           ) : (
             <>
@@ -156,7 +159,7 @@ function GuestShareDialog({
                 onClick={onClose}
                 disabled={state.status === "creating"}
               >
-                Cancel
+                {uiText("Cancel")}
               </Button>
               <Button
                 size="sm"
@@ -175,6 +178,7 @@ function GuestShareDialog({
 
 /** Header status for a shared thread, with the way to end the share. */
 export function GuestShareIndicator({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
+  const { text: uiText } = useUiLanguage();
   const share = useThreadGuestShare(threadRef);
   const closeGuestShare = useOrchestrationCommand(threadEnvironment.closeGuestShare, {
     label: "stop guest share",
@@ -198,16 +202,17 @@ export function GuestShareIndicator({ threadRef }: { readonly threadRef: ScopedT
           setClosing(false);
         }}
       >
-        Stop sharing
+        {uiText("Stop sharing")}
       </Button>
     </div>
   );
 }
 
 function GuestShareStatus({ share }: { readonly share: ThreadGuestShare }) {
+  const { text: uiText } = useUiLanguage();
   const nowMinute = useNowMinute();
   // The share stays on the thread after it expires, until the owner clears it.
-  if (share.expiresAt.slice(0, 16) <= nowMinute) return <span>Guest link expired</span>;
+  if (share.expiresAt.slice(0, 16) <= nowMinute) return <span>{uiText("Guest link expired")}</span>;
   return (
     <span>{share.guestName !== null ? `${share.guestName} is a guest` : "Guest link active"}</span>
   );
@@ -226,6 +231,7 @@ export function GuestPendingMessages({
   readonly onImageExpand: (preview: ExpandedImagePreview) => void;
   readonly onFileOpen: (attachment: ChatFileAttachment) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const share = useThreadGuestShare(threadRef);
   const canOperate = useEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope);
   const resolveGuestMessage = useOrchestrationCommand(threadEnvironment.resolveGuestMessage, {
@@ -306,7 +312,7 @@ export function GuestPendingMessages({
                   aria-label={`Dismiss message from ${guestName}`}
                   onClick={() => void resolve(message.id, "dismiss")}
                 >
-                  Dismiss
+                  {uiText("Dismiss")}
                 </Button>
                 <Button
                   size="xs"
@@ -314,7 +320,7 @@ export function GuestPendingMessages({
                   aria-label={`Send message from ${guestName}`}
                   onClick={() => void resolve(message.id, "send")}
                 >
-                  Send
+                  {uiText("Send")}
                 </Button>
               </div>
             ) : null}

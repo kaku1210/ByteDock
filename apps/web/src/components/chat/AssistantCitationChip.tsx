@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { AssistantCitation, ResponseContextRecord } from "@t3tools/contracts";
 import {
@@ -192,6 +193,7 @@ export function AssistantCitationChip({
     onRestoreFocus?: () => void;
   };
 }) {
+  const { text: uiText } = useUiLanguage();
   const sourceLinkProps = useCitationSourceLinkProps(citation);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const commentPopupRef = useRef<HTMLDivElement>(null);
@@ -323,7 +325,7 @@ export function AssistantCitationChip({
                   : undefined
               }
               ref={commentPopupRef}
-              aria-label="Edit citation comment"
+              aria-label={uiText("Edit citation comment")}
               width="md"
               padding="compact"
               onPointerDown={(event) => event.stopPropagation()}

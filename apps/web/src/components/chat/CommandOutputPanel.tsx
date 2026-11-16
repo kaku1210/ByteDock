@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { CommandOutputView } from "@t3tools/client-runtime/state/command-output";
 import type { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { TERMINAL_PALETTES, terminalOutputSpans } from "@t3tools/shared/terminalOutput";
@@ -30,6 +31,7 @@ export function CommandOutputPanel(props: {
   readonly itemId: TurnItemId;
   readonly source?: TurnItemSource["commandOutput"] | undefined;
 }) {
+  const { text: uiText } = useUiLanguage();
   const input = { threadId: props.threadId, itemId: props.itemId };
   const { data, error } = useEnvironmentQuery<CommandOutputView, unknown>(
     props.source
@@ -49,9 +51,18 @@ export function CommandOutputPanel(props: {
   });
 
   if (text.length === 0) {
-    if (error) return <div className="text-destructive">Couldn&apos;t load output: {error}</div>;
-    if (data === null) return <div className="text-muted-foreground italic">Loading output…</div>;
-    return data.running ? null : <div className="text-muted-foreground italic">No output.</div>;
+    if (error)
+      return (
+        <div className="text-destructive">
+          {uiText("Couldn't load output: ")}
+          {error}
+        </div>
+      );
+    if (data === null)
+      return <div className="text-muted-foreground italic">{uiText("Loading output…")}</div>;
+    return data.running ? null : (
+      <div className="text-muted-foreground italic">{uiText("No output.")}</div>
+    );
   }
   // Parse after all hooks to preserve the text/theme compiler cache.
   const spans = terminalOutputSpans(text, TERMINAL_PALETTES[resolvedTheme]);
@@ -65,7 +76,9 @@ export function CommandOutputPanel(props: {
       }}
       className="max-h-80 overflow-auto text-muted-foreground"
     >
-      {data?.output.truncated ? <div className="italic">Earlier output not shown</div> : null}
+      {data?.output.truncated ? (
+        <div className="italic">{uiText("Earlier output not shown")}</div>
+      ) : null}
       {spans.map((span, index) =>
         span.style === null ? (
           span.text

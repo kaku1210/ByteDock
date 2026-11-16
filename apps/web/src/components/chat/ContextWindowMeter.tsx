@@ -30,8 +30,9 @@ export function ContextWindowMeter(props: {
   compactDisabled?: boolean | undefined;
   compactDisabledReason?: string | null | undefined;
 }) {
+  const { text: uiText, language, t } = useUiLanguage();
   const { usage, modelDisplayName, onCompact, compactDisabled, compactDisabledReason } = props;
-  const { language, t } = useUiLanguage();
+
   const usedPercentage = formatPercentage(usage?.usedPercentage ?? null);
   const normalizedPercentage = Math.max(0, Math.min(100, usage?.usedPercentage ?? 0));
   const radius = 9.75;
@@ -120,7 +121,8 @@ export function ContextWindowMeter(props: {
             )}
           </div>
           <p className="font-mono text-xs tabular-nums">
-            {fullTokens(usage?.usedTokens)} / {fullTokens(usage?.maxTokens)} tokens
+            {fullTokens(usage?.usedTokens)} / {fullTokens(usage?.maxTokens)}
+            {uiText(" tokens")}
           </p>
           {modelDisplayName ? (
             <p className="text-secondary-label text-2xs">{modelDisplayName}</p>

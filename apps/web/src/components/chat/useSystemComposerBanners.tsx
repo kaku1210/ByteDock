@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
@@ -56,6 +57,7 @@ interface SystemComposerBannersInput {
  * a server update, and auto-balanced machines that need one.
  */
 export function useSystemComposerBanners(input: SystemComposerBannersInput) {
+  const { text: uiText } = useUiLanguage();
   const {
     activeEnvironment,
     activeEnvironmentUnavailable,
@@ -163,14 +165,14 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
           size="xs"
           variant="ghost"
           disabled={disconnectingEnvironment}
-          title="Hide this server's threads. Switch it on again in Environments."
+          title={uiText("Hide this server's threads. Switch it on again in Environments.")}
           onClick={() =>
             void handleDisconnectActiveEnvironmentStable(
               activeEnvironmentUnavailableState.environmentId,
             )
           }
         >
-          Disconnect server
+          {uiText("Disconnect server")}
         </Button>
       ) : undefined;
     const environmentReconnecting =
@@ -251,7 +253,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
             installation={versionMismatchInstallation}
             desktopAppUpdate={versionMismatchDesktopAppUpdate}
             targetVersion={versionMismatch.clientVersion}
-            label="Retry"
+            label={uiText("Retry")}
             variant="ghost"
           />
         ),

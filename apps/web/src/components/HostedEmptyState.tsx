@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../i18n/useUiLanguage";
 import { useAuth } from "@clerk/react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
@@ -20,6 +21,7 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 
 /** Home screen for the hosted app before any computer is added. */
 export function HostedEmptyState() {
+  const { text: uiText } = useUiLanguage();
   const cloudEnabled = hasCloudPublicConfig();
   const localEnvironmentOff = isLocalEnvironmentDisabled();
 
@@ -50,7 +52,7 @@ export function HostedEmptyState() {
           <EmptyContent>
             {localEnvironmentOff ? (
               <Button render={<Link to="/settings/connections" />} size="sm">
-                Open Environments
+                {uiText("Open Environments")}
               </Button>
             ) : (
               <ol className="w-full space-y-4 text-left">
@@ -65,6 +67,7 @@ export function HostedEmptyState() {
 }
 
 function T3ConnectSteps() {
+  const { text: uiText } = useUiLanguage();
   const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
   const loadFailed = useClerkLoadFailed();
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
@@ -80,16 +83,16 @@ function T3ConnectSteps() {
       <SetupStep number={1}>
         {loadFailed ? (
           <Button size="sm" onClick={retryClerkLoad}>
-            Retry sign-in
+            {uiText("Retry sign-in")}
           </Button>
         ) : isSignedIn ? (
           <p className="flex items-center gap-1.5 text-muted-foreground">
             <CheckIcon className="size-4" />
-            Signed in
+            {uiText("Signed in")}
           </p>
         ) : (
           <Button size="sm" disabled={!isLoaded} onClick={openAuthPrompt}>
-            Sign in
+            {uiText("Sign in")}
           </Button>
         )}
       </SetupStep>
@@ -112,7 +115,11 @@ function T3ConnectSteps() {
                     return next;
                   }),
               }}
-              empty={<p className="text-xs text-muted-foreground">Waiting for your computer…</p>}
+              empty={
+                <p className="text-xs text-muted-foreground">
+                  {uiText("Waiting for your computer…")}
+                </p>
+              }
             />
           </div>
         ) : null}
@@ -122,6 +129,7 @@ function T3ConnectSteps() {
 }
 
 function PairingSteps() {
+  const { text: uiText } = useUiLanguage();
   return (
     <>
       <SetupStep number={1}>
@@ -129,7 +137,7 @@ function PairingSteps() {
       </SetupStep>
       <SetupStep number={2}>
         <Button render={<Link to="/settings/connections" />} size="sm">
-          Add pairing link
+          {uiText("Add pairing link")}
         </Button>
       </SetupStep>
     </>
@@ -152,9 +160,10 @@ function SetupStep({
 }
 
 function RunOnComputer({ command }: { readonly command: string }) {
+  const { text: uiText } = useUiLanguage();
   return (
     <>
-      <p>Run on your computer:</p>
+      <p>{uiText("Run on your computer:")}</p>
       <InstallT3Commands command={command} className="mt-2" />
       <a
         className="mt-2 inline-block text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
@@ -162,7 +171,7 @@ function RunOnComputer({ command }: { readonly command: string }) {
         target="_blank"
         rel="noreferrer noopener"
       >
-        Or download the desktop app
+        {uiText("Or download the desktop app")}
       </a>
     </>
   );

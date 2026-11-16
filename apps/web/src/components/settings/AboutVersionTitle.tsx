@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { APP_VERSION } from "../../branding";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { InlineButton } from "../ui/button";
@@ -5,6 +6,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export function AboutVersionTitle() {
+  const { text: uiText } = useUiLanguage();
   const { copyToClipboard } = useCopyToClipboard<void>({
     target: "version",
     onError: (error) => {
@@ -20,7 +22,7 @@ export function AboutVersionTitle() {
 
   return (
     <span className="inline-flex items-baseline gap-2">
-      <span>Version</span>
+      <span>{uiText("Version")}</span>
       <code className="text-2xs font-medium">
         <Tooltip>
           <TooltipTrigger
@@ -34,7 +36,7 @@ export function AboutVersionTitle() {
               </InlineButton>
             }
           />
-          <TooltipPopup>Copy version</TooltipPopup>
+          <TooltipPopup>{uiText("Copy version")}</TooltipPopup>
         </Tooltip>
       </code>
     </span>

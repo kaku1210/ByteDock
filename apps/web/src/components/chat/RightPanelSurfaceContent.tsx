@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type {
   EditorId,
   EnvironmentId,
@@ -80,6 +81,7 @@ export function RightPanelSurfaceContent(props: {
   readonly files: RightPanelFileProps;
   readonly sideChatParentPanel: SideChatParentPanel;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { surface, threadRef, visible, onCloseSurface } = props;
   if (surface === null) return null;
   switch (surface.kind) {
@@ -123,7 +125,7 @@ export function RightPanelSurfaceContent(props: {
       if (!pullRequest.supported) {
         return (
           <PullRequestsUnavailableState
-            title="Pull requests unavailable"
+            title={uiText("Pull requests unavailable")}
             error="Update this environment's T3 Code server to browse pull requests."
           />
         );

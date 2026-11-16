@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../i18n/useUiLanguage";
 import {
   type AddProjectRemoteSource,
   type NewProjectPublishTarget,
@@ -81,6 +82,7 @@ export function NewProjectPublishHostPicker(props: {
   readonly value: SourceControlProviderKind;
   readonly onValueChange: (kind: SourceControlProviderKind) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const [open, setOpen] = useState(false);
   return (
     <span
@@ -102,7 +104,7 @@ export function NewProjectPublishHostPicker(props: {
           if (kind !== null) props.onValueChange(kind);
         }}
       >
-        <SelectTrigger size="xs" variant="ghost" aria-label="Host for the new repository">
+        <SelectTrigger size="xs" variant="ghost" aria-label={uiText("Host for the new repository")}>
           <SelectValue>
             {(kind: SourceControlProviderKind) => sourceControlClients.get(kind).label}
           </SelectValue>
@@ -155,9 +157,12 @@ export function RemoteRepositorySummary(props: {
   readonly title: string;
   readonly description: string;
 }) {
+  const { text: uiText } = useUiLanguage();
   return (
     <div className="shrink-0 p-2 pb-0">
-      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Repository</div>
+      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+        {uiText("Repository")}
+      </div>
       <div className="flex min-h-8 items-center gap-2 rounded-sm px-2 py-1.5">
         <CommandPaletteTitleIcon>
           {remoteProjectSourceIcon(props.source, ITEM_ICON_CLASS)}

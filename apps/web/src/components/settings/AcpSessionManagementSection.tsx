@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import {
   AuthOrchestrationOperateScope,
   AuthProvidersManageScope,
@@ -106,6 +107,7 @@ function InstanceSessionManagement(
     readonly onProjectChange: (projectId: ProjectId) => void;
   },
 ) {
+  const { text: uiText } = useUiLanguage();
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const canRead = useEnvironmentScope(props.environmentId, AuthOrchestrationReadScope);
   const { projectId } = props;
@@ -390,11 +392,11 @@ function InstanceSessionManagement(
   return (
     <div className="grid gap-3">
       <SettingsRow
-        title="Native sessions"
-        description="Resume agent-owned conversations as T3 threads."
+        title={uiText("Native sessions")}
+        description={uiText("Resume agent-owned conversations as T3 threads.")}
         status={
           canList && props.projects.length === 0
-            ? "Add a project before importing sessions."
+            ? uiText("Add a project before importing sessions.")
             : undefined
         }
         control={
@@ -407,7 +409,7 @@ function InstanceSessionManagement(
                 disabled={props.readOnly || loggingOut}
                 onClick={() => void logoutProvider()}
               >
-                {loggingOut ? "Logging out" : "Log out"}
+                {loggingOut ? uiText("Logging out") : uiText("Log out")}
               </Button>
             ) : null}
             {canList && props.projects.length > 0 ? (
@@ -420,7 +422,11 @@ function InstanceSessionManagement(
                     props.onProjectChange(value as ProjectId);
                   }}
                 >
-                  <SelectTrigger aria-label="Project for ACP sessions" className="w-40" size="sm">
+                  <SelectTrigger
+                    aria-label={uiText("Project for ACP sessions")}
+                    className="w-40"
+                    size="sm"
+                  >
                     <SelectValue>
                       {props.projects.find((project) => project.id === projectId)?.title}
                     </SelectValue>
@@ -440,7 +446,11 @@ function InstanceSessionManagement(
                   disabled={!canRead || loading || projectId === null}
                   onClick={() => void loadSessions()}
                 >
-                  {loading ? "Loading" : sessions.length === 0 ? "List sessions" : "Refresh"}
+                  {loading
+                    ? uiText("Loading")
+                    : sessions.length === 0
+                      ? uiText("List sessions")
+                      : uiText("Refresh")}
                 </Button>
               </>
             ) : null}
@@ -478,10 +488,10 @@ function InstanceSessionManagement(
                         onClick={() => void importNativeSession(session)}
                       >
                         {!needsImport(session)
-                          ? "Imported"
+                          ? uiText("Imported")
                           : importingSessionId === session.sessionId
-                            ? "Importing"
-                            : "Import"}
+                            ? uiText("Importing")
+                            : uiText("Import")}
                       </Button>
                       {canDelete ? (
                         <Button
@@ -495,7 +505,9 @@ function InstanceSessionManagement(
                           }
                           onClick={() => void deleteNativeSession(session)}
                         >
-                          {deletingSessionId === session.sessionId ? "Deleting" : "Delete"}
+                          {deletingSessionId === session.sessionId
+                            ? uiText("Deleting")
+                            : uiText("Delete")}
                         </Button>
                       ) : null}
                     </div>
@@ -513,7 +525,7 @@ function InstanceSessionManagement(
                 disabled={!canRead || loading}
                 onClick={() => void loadSessions(nextCursor)}
               >
-                {loading ? "Loading" : "Load more"}
+                {loading ? uiText("Loading") : uiText("Load more")}
               </Button>
             ) : null}
           </>
@@ -524,9 +536,9 @@ function InstanceSessionManagement(
         <div className="grid gap-3 border-t border-border/60 px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <p className="text-xs font-medium text-foreground">Agent providers</p>
+              <p className="text-xs font-medium text-foreground">{uiText("Agent providers")}</p>
               <p className="text-xs text-muted-foreground">
-                Configure non-secret routing. Headers are write-only.
+                {uiText("Configure non-secret routing. Headers are write-only.")}
               </p>
             </div>
             <Button
@@ -538,7 +550,11 @@ function InstanceSessionManagement(
               }
               onClick={() => void loadProviders()}
             >
-              {loadingProviders ? "Loading" : providers.length === 0 ? "List providers" : "Refresh"}
+              {loadingProviders
+                ? uiText("Loading")
+                : providers.length === 0
+                  ? uiText("List providers")
+                  : uiText("Refresh")}
             </Button>
           </div>
 
@@ -551,7 +567,11 @@ function InstanceSessionManagement(
                 props.onProjectChange(value as ProjectId);
               }}
             >
-              <SelectTrigger aria-label="Project for ACP providers" className="min-w-48" size="xs">
+              <SelectTrigger
+                aria-label={uiText("Project for ACP providers")}
+                className="min-w-48"
+                size="xs"
+              >
                 <SelectValue>
                   {props.projects.find((project) => project.id === projectId)?.title}
                 </SelectValue>
@@ -587,8 +607,8 @@ function InstanceSessionManagement(
                           {provider.providerId}
                         </p>
                         <p className="text-3xs text-muted-foreground">
-                          {provider.current === null ? "Disabled" : "Configured"}
-                          {provider.required ? " · Required" : ""}
+                          {provider.current === null ? uiText("Disabled") : uiText("Configured")}
+                          {provider.required ? uiText(" · Required") : ""}
                         </p>
                       </div>
                       <div className="flex items-center gap-1">
@@ -605,7 +625,9 @@ function InstanceSessionManagement(
                           }
                           onClick={() => void saveProvider(provider)}
                         >
-                          {savingProviderId === provider.providerId ? "Saving" : "Save"}
+                          {savingProviderId === provider.providerId
+                            ? uiText("Saving")
+                            : uiText("Save")}
                         </Button>
                         {!provider.required && provider.current !== null ? (
                           <Button
@@ -617,7 +639,7 @@ function InstanceSessionManagement(
                             }
                             onClick={() => void disableConfiguredProvider(provider)}
                           >
-                            Disable
+                            {uiText("Disable")}
                           </Button>
                         ) : null}
                       </div>
@@ -630,7 +652,10 @@ function InstanceSessionManagement(
                           if (value !== null) updateDraft({ apiType: value });
                         }}
                       >
-                        <SelectTrigger aria-label={`${provider.providerId} protocol`} size="sm">
+                        <SelectTrigger
+                          aria-label={uiText("{value0} protocol", { value0: provider.providerId })}
+                          size="sm"
+                        >
                           <SelectValue>{draft.apiType}</SelectValue>
                         </SelectTrigger>
                         <SelectPopup>
@@ -644,7 +669,7 @@ function InstanceSessionManagement(
                       <Input
                         size="sm"
                         type="url"
-                        aria-label={`${provider.providerId} base URL`}
+                        aria-label={uiText("{value0} base URL", { value0: provider.providerId })}
                         placeholder="https://api.example.com"
                         value={draft.baseUrl}
                         disabled={props.readOnly || savingProviderId !== null}
@@ -654,8 +679,12 @@ function InstanceSessionManagement(
                     <Input
                       size="sm"
                       type="password"
-                      aria-label={`${provider.providerId} write-only headers JSON`}
-                      placeholder='Write-only headers JSON, e.g. {"Authorization":"Bearer …"}'
+                      aria-label={uiText("{value0} write-only headers JSON", {
+                        value0: provider.providerId,
+                      })}
+                      placeholder={uiText(
+                        'Write-only headers JSON, e.g. {"Authorization":"Bearer …"}',
+                      )}
                       value={draft.headers}
                       disabled={props.readOnly || savingProviderId !== null}
                       onValueChange={(value) => updateDraft({ headers: value })}

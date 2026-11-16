@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { pipe } from "effect/Function";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -85,6 +86,7 @@ function PendingLinkRequest(props: {
   readonly environmentId: EnvironmentId;
   readonly item: LinkRequestItem;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { item } = props;
   const [open, setOpen] = useState(false);
   const [declining, setDeclining] = useState(false);
@@ -139,7 +141,7 @@ function PendingLinkRequest(props: {
             disabled={declining}
             onClick={() => void decline()}
           >
-            Decline
+            {uiText("Decline")}
           </Button>
           <Button type="button" size="xs" disabled={declining} onClick={() => setOpen(true)}>
             {picksMachine(item) ? "Choose machine…" : "Review link…"}
@@ -147,7 +149,7 @@ function PendingLinkRequest(props: {
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Only a session that manages access here can answer this.
+          {uiText("Only a session that manages access here can answer this.")}
         </p>
       )}
       <LinkRequestDialog
@@ -169,6 +171,7 @@ function LinkRequestDialog(props: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { item } = props;
   const formId = useId();
   const pickMachine = picksMachine(item);
@@ -297,7 +300,9 @@ function LinkRequestDialog(props: {
       <WizardPopup>
         <WizardHeader
           title={pickMachine ? "Link a machine" : `Link ${targetName}`}
-          description="Agents here can then launch, message and wait on threads there. Revoke it in that machine's Sharing & access."
+          description={uiText(
+            "Agents here can then launch, message and wait on threads there. Revoke it in that machine's Sharing & access.",
+          )}
         >
           {steps.length > 1 && !useExisting ? (
             <WizardSteps
@@ -339,7 +344,9 @@ function LinkRequestDialog(props: {
                 ) : null}
                 {asksAddress ? (
                   <label className="block space-y-1.5">
-                    <span className="block text-xs font-medium text-foreground">Address</span>
+                    <span className="block text-xs font-medium text-foreground">
+                      {uiText("Address")}
+                    </span>
                     <Input
                       value={address}
                       onChange={(event) => setAddress(event.target.value)}
@@ -350,8 +357,11 @@ function LinkRequestDialog(props: {
                     />
                     {target.kind === "machine" ? (
                       <span className="block text-xs text-muted-foreground">
-                        This app has no address for {target.label} that another machine can reach.
-                        Enter its https or Tailscale address.
+                        {uiText("This app has no address for ")}
+                        {target.label}
+                        {uiText(
+                          " that another machine can reach. Enter its https or Tailscale address.",
+                        )}
                       </span>
                     ) : null}
                   </label>
@@ -368,20 +378,23 @@ function LinkRequestDialog(props: {
                     {canMint ? null : (
                       <label className="block space-y-1.5">
                         <span className="block text-xs font-medium text-foreground">
-                          Pairing code
+                          {uiText("Pairing code")}
                         </span>
                         <Input
                           value={pairingCode}
                           onChange={(event) => setPairingCode(event.target.value)}
-                          placeholder="Paste the code"
+                          placeholder={uiText("Paste the code")}
                           disabled={busy}
                           autoComplete="one-time-code"
                           nativeInput
                           spellCheck={false}
                         />
                         <span className="block text-xs text-muted-foreground">
-                          Create a link on {targetName}: Settings → Sharing & access → Authorized
-                          clients → Create link, then paste its code here.
+                          {uiText("Create a link on ")}
+                          {targetName}
+                          {uiText(
+                            ": Settings → Sharing & access → Authorized clients → Create link, then paste its code here.",
+                          )}
                         </span>
                       </label>
                     )}
@@ -392,8 +405,11 @@ function LinkRequestDialog(props: {
             )}
             {useExisting ? (
               <p className="text-xs text-muted-foreground">
-                This environment is already linked to {targetName}. The agent can use that link as
-                it is; change its access in Settings → Environments.
+                {uiText("This environment is already linked to ")}
+                {targetName}
+                {uiText(
+                  ". The agent can use that link as it is; change its access in Settings → Environments.",
+                )}
               </p>
             ) : null}
             {error !== null ? (
@@ -414,11 +430,11 @@ function LinkRequestDialog(props: {
                 setError(null);
               }}
             >
-              Back
+              {uiText("Back")}
             </Button>
           ) : (
             <Button variant="outline" type="button" disabled={busy} onClick={close}>
-              Cancel
+              {uiText("Cancel")}
             </Button>
           )}
           <Button
@@ -441,11 +457,12 @@ function MachinePicker(props: {
   readonly disabled: boolean;
   readonly onChange: (value: string) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const labelId = useId();
   return (
     <div className="space-y-2">
       <span id={labelId} className="block text-xs font-medium">
-        Machine
+        {uiText("Machine")}
       </span>
       <RadioGroup
         aria-labelledby={labelId}
@@ -469,7 +486,7 @@ function MachinePicker(props: {
         ))}
         <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-sm">
           <Radio value={ANOTHER_ADDRESS} />
-          <span className="min-w-0 flex-1 font-medium">Another address…</span>
+          <span className="min-w-0 flex-1 font-medium">{uiText("Another address…")}</span>
         </label>
       </RadioGroup>
     </div>

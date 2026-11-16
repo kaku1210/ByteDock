@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { proposedPlanTitle, stripDisplayedPlanMarkdown } from "@t3tools/shared/proposedPlanText";
 import { memo, useState, useId } from "react";
 import { findRevealRef } from "./markdownFindContext";
@@ -272,19 +273,21 @@ function SavePlanToWorkspaceForm({
   onCancel: () => void;
   onSave: (path: string) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const [savePath, setSavePath] = useState(initialPath);
   const savePathInputId = useId();
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Save plan to workspace</DialogTitle>
+        <DialogTitle>{uiText("Save plan to workspace")}</DialogTitle>
         <DialogDescription>
-          Enter a path relative to <code>{workspaceRoot ?? "the workspace"}</code>.
+          {uiText("Enter a path relative to ")}
+          <code>{workspaceRoot ?? "the workspace"}</code>.
         </DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <label htmlFor={savePathInputId} className="grid gap-1.5">
-          <span className="text-xs font-medium text-foreground">Workspace path</span>
+          <span className="text-xs font-medium text-foreground">{uiText("Workspace path")}</span>
           <Input
             id={savePathInputId}
             value={savePath}
@@ -297,7 +300,7 @@ function SavePlanToWorkspaceForm({
       </DialogPanel>
       <DialogFooter>
         <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          Cancel
+          {uiText("Cancel")}
         </Button>
         <Button size="sm" onClick={() => onSave(savePath)} disabled={!canWriteFiles || saving}>
           {saving ? "Saving..." : "Save"}

@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
@@ -104,9 +105,10 @@ type TraitsPersistence =
     };
 
 function DefaultBadge() {
+  const { text: uiText } = useUiLanguage();
   return (
     <Badge variant="outline" size="sm" className="min-w-0">
-      Default
+      {uiText("Default")}
     </Badge>
   );
 }

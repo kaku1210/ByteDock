@@ -1,3 +1,4 @@
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import { useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties } from "react";
 import { useStore } from "zustand";
 import { ChatCanvasContext } from "./ChatCanvasContext";
@@ -139,12 +140,13 @@ export function ChatCanvas({
       ? false
       : selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );
+  const detailsPinned = useThreadDetailsPreferences((s) => s.pinned);
   const model = resolveChatCanvasModel({
     measurements,
     detailsCardMeasurement,
     threadRef,
     preview,
-    detailsCardInlineOpen,
+    detailsCardInlineOpen: detailsCardInlineOpen && !detailsPinned,
   });
   const context = {
     container: model.container,

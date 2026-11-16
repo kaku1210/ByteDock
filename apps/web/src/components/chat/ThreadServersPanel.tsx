@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -44,6 +45,7 @@ export function ThreadServersPanel(props: ThreadServersPanelProps) {
 }
 
 function ThreadServersList(props: ThreadServersPanelProps) {
+  const { text: uiText } = useUiLanguage();
   const servers = useThreadDiscoveredPorts(props);
   const canOpen = useEnvironmentScope(props.environmentId, AuthPreviewOperateScope);
   const canStop = useAtomValue(
@@ -105,7 +107,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
   };
 
   return (
-    <ThreadDetailsSection headingId="thread-details-servers-heading" title="Servers">
+    <ThreadDetailsSection headingId="thread-details-servers-heading" title={uiText("Servers")}>
       <ul className="m-0 list-none p-0">
         {servers.slice(0, visibleCount).map((server, index) => {
           const key = serverKey(server);
@@ -135,7 +137,8 @@ function ThreadServersList(props: ThreadServersPanelProps) {
                   {/* The end padding keeps text clear of the stop button. */}
                   <span className={cn("flex min-w-0 flex-1 flex-col gap-0.5", stoppable && "pe-6")}>
                     <span className="truncate text-sm font-medium leading-4 text-foreground/85">
-                      localhost:{server.port}
+                      {uiText("localhost:")}
+                      {server.port}
                     </span>
                     <span className="truncate text-2xs font-normal leading-4 text-muted-foreground">
                       {[server.terminal === null ? "Agent" : "Terminal", server.processName]
@@ -145,7 +148,9 @@ function ThreadServersList(props: ThreadServersPanelProps) {
                   </span>
                 </TooltipTrigger>
                 <TooltipPopup side="left">
-                  Open in the browser panel. {externalClickLabel} for your browser.
+                  {uiText("Open in the browser panel. ")}
+                  {externalClickLabel}
+                  {uiText(" for your browser.")}
                 </TooltipPopup>
               </Tooltip>
               {stoppable ? (
@@ -170,7 +175,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
                         <SquareIcon aria-hidden className="size-3 fill-current" />
                       )}
                     </TooltipTrigger>
-                    <TooltipPopup side="left">Stop server</TooltipPopup>
+                    <TooltipPopup side="left">{uiText("Stop server")}</TooltipPopup>
                   </Tooltip>
                 </div>
               ) : null}

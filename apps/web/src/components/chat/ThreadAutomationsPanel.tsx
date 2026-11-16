@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
@@ -62,6 +63,7 @@ export function ThreadAutomationsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const { text: uiText } = useUiLanguage();
   const canOperate = useAtomValue(
     serverEnvironment.runScheduledTaskNow.permissionAtom(props.environmentId),
   );
@@ -130,7 +132,7 @@ export function ThreadAutomationsPanel(props: {
   return (
     <ThreadDetailsSection
       headingId="thread-details-automations-heading"
-      title="Automations"
+      title={uiText("Automations")}
       data-thread-automations-panel
       actions={
         <Tooltip>
@@ -140,7 +142,7 @@ export function ThreadAutomationsPanel(props: {
                 size="icon-xs"
                 variant="ghost"
                 part="icon"
-                aria-label="Manage scheduled tasks"
+                aria-label={uiText("Manage scheduled tasks")}
                 onClick={() =>
                   void navigate({
                     to: "/settings/scheduled-tasks",
@@ -152,7 +154,7 @@ export function ThreadAutomationsPanel(props: {
               </ThreadDetailsControl>
             }
           />
-          <TooltipPopup>Manage scheduled tasks</TooltipPopup>
+          <TooltipPopup>{uiText("Manage scheduled tasks")}</TooltipPopup>
         </Tooltip>
       }
     >
@@ -210,7 +212,7 @@ export function ThreadAutomationsPanel(props: {
                   </ThreadDetailsControl>
                 }
               />
-              <TooltipPopup>Edit automation</TooltipPopup>
+              <TooltipPopup>{uiText("Edit automation")}</TooltipPopup>
             </Tooltip>
             {/* Webhook tasks need a request from their URL. */}
             {task.schedule.type === "webhook" ? null : (
@@ -231,7 +233,7 @@ export function ThreadAutomationsPanel(props: {
                     </ThreadDetailsControl>
                   }
                 />
-                <TooltipPopup>Run now</TooltipPopup>
+                <TooltipPopup>{uiText("Run now")}</TooltipPopup>
               </Tooltip>
             )}
             <Switch
@@ -246,7 +248,8 @@ export function ThreadAutomationsPanel(props: {
       {/* Kept last: the details card treats a section whose last child is empty as empty. */}
       {tasksQuery.error !== null ? (
         <p className="px-2.5 py-1.5 text-2xs text-destructive">
-          Could not load automations: {tasksQuery.error}
+          {uiText("Could not load automations: ")}
+          {tasksQuery.error}
         </p>
       ) : null}
     </ThreadDetailsSection>

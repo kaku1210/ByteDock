@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { VoiceInputState } from "@t3tools/client-runtime/voice-input";
 import { CheckIcon, MicIcon, XIcon } from "lucide-react";
 import { useEffect, useState, type PointerEvent, type ReactElement } from "react";
@@ -134,6 +135,7 @@ export function ComposerSpeechRecordingPill(props: {
   onCancel(): void;
   onSkipPostProcessing(): void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { phase } = props.state;
   const compact = props.size === "compact";
   if (phase === "error") {
@@ -156,12 +158,12 @@ export function ComposerSpeechRecordingPill(props: {
 
   return (
     <VoiceInputPill size={props.size}>
-      <ShortcutTooltip label="Cancel voice input" shortcut={props.cancelShortcutLabel}>
+      <ShortcutTooltip label={uiText("Cancel voice input")} shortcut={props.cancelShortcutLabel}>
         <Button
           type="button"
           size={compact ? "icon-xs" : "icon-sm-pill"}
           variant="ghost"
-          aria-label="Cancel voice input"
+          aria-label={uiText("Cancel voice input")}
           onPointerDown={keepFocus}
           onClick={props.onCancel}
           className="shrink-0"
@@ -201,14 +203,14 @@ export function ComposerSpeechRecordingPill(props: {
           onClick={props.onSkipPostProcessing}
           className="shrink-0"
         >
-          Skip
+          {uiText("Skip")}
         </Button>
       ) : recording ? (
-        <ShortcutTooltip label="Finish voice input" shortcut={props.finishShortcutLabel}>
+        <ShortcutTooltip label={uiText("Finish voice input")} shortcut={props.finishShortcutLabel}>
           <Button
             type="button"
             size={compact ? "icon-xs" : "icon-sm-pill"}
-            aria-label="Finish voice input"
+            aria-label={uiText("Finish voice input")}
             onPointerDown={keepFocus}
             onClick={props.onStop}
             className="shrink-0"

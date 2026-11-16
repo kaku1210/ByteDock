@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import type { ServerProvider } from "@t3tools/contracts";
 import { useId } from "react";
@@ -9,6 +10,7 @@ const speedNotice =
   "Fast and Ultrafast are unavailable with this ChatGPT connection. Use an existing Codex CLI login for speed options your account supports.";
 
 export function ChatGptSharingControl({ provider }: { provider: ServerProvider | null }) {
+  const { text: uiText } = useUiLanguage();
   const speedNoticeId = useId();
   if (!usesChatGptSharing(provider)) return null;
   return (
@@ -24,7 +26,7 @@ export function ChatGptSharingControl({ provider }: { provider: ServerProvider |
           }
         >
           <OpenAI className="size-3.5" aria-hidden="true" />
-          Using ChatGPT plan
+          {uiText("Using ChatGPT plan")}
         </TooltipTrigger>
         <span id={speedNoticeId} className="sr-only">
           {speedNotice}

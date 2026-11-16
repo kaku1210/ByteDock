@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
@@ -39,6 +40,7 @@ export default function SideChatPane(props: {
   readonly parentPanel: SideChatParentPanel;
   readonly onClose: () => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { parentRef, threadId } = props;
   const threadRef = scopeThreadRef(parentRef.environmentId, threadId);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the parent panel as host in the panel store
@@ -141,7 +143,7 @@ export default function SideChatPane(props: {
                 aria-disabled={bringBackBlockedReason !== null || bringingBack || undefined}
                 onClick={() => void bringBack()}
               >
-                Bring back
+                {uiText("Bring back")}
               </Button>
             }
           />
@@ -152,19 +154,26 @@ export default function SideChatPane(props: {
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label="Delete side chat"
+          aria-label={uiText("Delete side chat")}
           disabled={!canOperate || shell === null || deleting}
           onClick={() => void deleteSideChat()}
         >
           <Trash2Icon />
         </Button>
-        <Button variant="ghost" size="icon-xs" aria-label="Close side chat" onClick={props.onClose}>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          aria-label={uiText("Close side chat")}
+          onClick={props.onClose}
+        >
           <XIcon />
         </Button>
       </div>
       {shell === null ? (
         snapshotLoaded ? (
-          <p className="p-3 text-xs text-muted-foreground">This side chat was deleted.</p>
+          <p className="p-3 text-xs text-muted-foreground">
+            {uiText("This side chat was deleted.")}
+          </p>
         ) : null
       ) : (
         <BackgroundThreadContext value>

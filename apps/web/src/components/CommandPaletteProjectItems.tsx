@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../i18n/useUiLanguage";
 import type { EnvironmentId, EnvironmentMachineKind } from "@t3tools/contracts";
 
 import type { SidebarProjectSnapshot } from "../sidebarProjectGrouping";
@@ -105,12 +106,13 @@ function ProjectLocationDescription(props: {
   readonly workspaceRoot: string;
   readonly current?: boolean;
 }) {
+  const { text: uiText } = useUiLanguage();
   const location = props.location ?? UNKNOWN_PROJECT_LOCATION;
   return (
     <span className="flex min-w-0 items-center gap-1">
       {props.current ? (
         <>
-          <span className="shrink-0">Current</span>
+          <span className="shrink-0">{uiText("Current")}</span>
           <CommandPaletteMetaDot />
         </>
       ) : null}

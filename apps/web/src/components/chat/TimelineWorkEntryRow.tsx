@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -208,6 +209,7 @@ export function ViewedImagesTimelineRow({
 }
 
 function WorkEntryLogRow(props: WorkEntryRowProps) {
+  const { text: uiText } = useUiLanguage();
   const { workEntry, workspaceRoot, displayLabel } = props;
   const ctx = use(TimelineRowCtx);
   const { threadRef, onImageExpand, timestampFormat } = ctx;
@@ -303,7 +305,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               onClick={() => onRetryWorkspacePreparation(retryRunId)}
             >
               <RotateCcwIcon aria-hidden />
-              Retry
+              {uiText("Retry")}
             </Button>
           </div>
         ) : null}
@@ -524,19 +526,19 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               }}
               onKeyDown={stopRowToggle}
             >
-              Open chat
+              {uiText("Open chat")}
             </button>
           ) : null}
           {notifiedSubagentThreadId ? (
             <InlineButton
-              aria-label="Open subagent thread"
+              aria-label={uiText("Open subagent thread")}
               onClick={(event) => {
                 event.stopPropagation();
                 ctx.onOpenThread(notifiedSubagentThreadId);
               }}
               onKeyDown={stopRowToggle}
             >
-              Open subagent
+              {uiText("Open subagent")}
             </InlineButton>
           ) : null}
           {showFailedIndicator &&

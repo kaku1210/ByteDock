@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import {
@@ -156,14 +157,18 @@ function ToolOutputImages(props: ToolOutputState) {
 }
 
 function ToolOutput(props: ToolOutputState) {
+  const { text: uiText } = useUiLanguage();
   return props.output ? (
     <StructuredValue value={props.output} highlightJson />
   ) : props.pending ? (
-    <div className="text-muted-foreground italic">Loading output…</div>
+    <div className="text-muted-foreground italic">{uiText("Loading output…")}</div>
   ) : props.error ? (
-    <div className="text-destructive">Couldn&apos;t load output: {props.error}</div>
+    <div className="text-destructive">
+      {uiText("Couldn't load output: ")}
+      {props.error}
+    </div>
   ) : props.empty && props.images.length === 0 ? (
-    <div className="text-muted-foreground italic">No output.</div>
+    <div className="text-muted-foreground italic">{uiText("No output.")}</div>
   ) : null;
 }
 
@@ -194,6 +199,7 @@ function ToolCallBody(
     readonly outputSlot?: ReactNode;
   },
 ) {
+  const { text: uiText } = useUiLanguage();
   const call = toolCallLines({ command: props.command, args: props.args });
   return (
     <div className={cn("space-y-1.5", monoClassName)}>
@@ -220,7 +226,10 @@ function ToolCallBody(
       {call.argsText ? <StructuredValue value={call.argsText} highlightJson /> : null}
       {props.outputSlot ?? <ToolOutput {...props} />}
       {props.exitCode !== undefined && props.exitCode !== 0 ? (
-        <div className="text-destructive">exit {props.exitCode}</div>
+        <div className="text-destructive">
+          {uiText("exit ")}
+          {props.exitCode}
+        </div>
       ) : null}
     </div>
   );

@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import {
   HTML_RENDER_COLUMN_WIDTH,
@@ -26,6 +27,7 @@ export function HtmlRenderFrame(props: {
   readonly threadRef: ScopedThreadRef | undefined;
   readonly onFullscreenChange?: (fullscreen: boolean) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const { attachmentId, title } = props.htmlRender;
   const [width, setWidth] = useState(HTML_RENDER_COLUMN_WIDTH);
   const observeBox = (box: HTMLDivElement) => {
@@ -83,7 +85,7 @@ export function HtmlRenderFrame(props: {
               <TooltipTrigger
                 render={
                   <Button
-                    aria-label="Open full screen"
+                    aria-label={uiText("Open full screen")}
                     size="icon-xs"
                     variant="glass"
                     onClick={async () => {
@@ -104,7 +106,7 @@ export function HtmlRenderFrame(props: {
               >
                 <Maximize2Icon className="size-3.5" />
               </TooltipTrigger>
-              <TooltipPopup side="left">Open full screen</TooltipPopup>
+              <TooltipPopup side="left">{uiText("Open full screen")}</TooltipPopup>
             </Tooltip>
           </div>
           {expandedSrc !== null ? (
@@ -118,7 +120,8 @@ export function HtmlRenderFrame(props: {
         </>
       ) : failed ? (
         <p className="flex size-full items-center justify-center text-muted-foreground text-xs">
-          Unable to load {title}
+          {uiText("Unable to load ")}
+          {title}
         </p>
       ) : null}
     </div>

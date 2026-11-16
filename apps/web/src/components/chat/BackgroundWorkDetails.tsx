@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type {
   EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
@@ -25,14 +26,15 @@ export function BackgroundWorkDetails(props: {
   readonly turnItems: ThreadStructure["turnItems"];
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const [open, setOpen] = useState(false);
   const streamsOutput = useCommandOutputStreaming(props.environmentId);
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<InlineButton />}>Details</DialogTrigger>
+      <DialogTrigger render={<InlineButton />}>{uiText("Details")}</DialogTrigger>
       <DialogPopup>
         <DialogHeader>
-          <DialogTitle>Background work</DialogTitle>
+          <DialogTitle>{uiText("Background work")}</DialogTitle>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-5">
@@ -83,7 +85,7 @@ export function BackgroundWorkDetails(props: {
                         props.onOpenThread(childThreadId);
                       }}
                     >
-                      Open thread
+                      {uiText("Open thread")}
                     </InlineButton>
                   ) : null}
                 </section>

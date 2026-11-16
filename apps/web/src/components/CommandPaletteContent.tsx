@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../i18n/useUiLanguage";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type ComponentProps, type ReactNode, type RefObject } from "react";
 
@@ -64,6 +65,7 @@ export function CommandPaletteContent({
   testId,
   ...commandProps
 }: CommandPaletteContentProps) {
+  const { text: uiText } = useUiLanguage();
   return (
     <div className="contents" data-testid={testId}>
       <Command {...commandProps}>
@@ -99,7 +101,7 @@ export function CommandPaletteContent({
               <Kbd>
                 <ArrowDownIcon />
               </Kbd>
-              <span>Navigate</span>
+              <span>{uiText("Navigate")}</span>
             </KbdGroup>
             {footerActionLabel !== undefined ? (
               <KbdGroup>
@@ -110,11 +112,11 @@ export function CommandPaletteContent({
             {showBackHint ? (
               <KbdGroup>
                 <Kbd>Backspace</Kbd>
-                <span>Back</span>
+                <span>{uiText("Back")}</span>
               </KbdGroup>
             ) : null}
             <KbdGroup>
-              <Kbd>Esc</Kbd>
+              <Kbd>{uiText("Esc")}</Kbd>
               <span>{escapeLabel}</span>
             </KbdGroup>
           </div>

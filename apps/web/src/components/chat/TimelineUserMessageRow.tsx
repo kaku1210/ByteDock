@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { InlineAudioPreview } from "../files/InlineAudioPreview";
 import { filePreviewKind } from "@t3tools/shared/filePreview";
 import {
@@ -111,6 +112,7 @@ function UserFileCard({
   readonly file: ChatFileAttachment;
   readonly copyMarkdown: string | undefined;
 }) {
+  const { text: uiText } = useUiLanguage();
   const ctx = use(TimelineRowCtx);
   const pastedText = file.source?._tag === "pasted-text";
   const label = userMessageFileLabel(file);
@@ -145,7 +147,12 @@ function UserFileCard({
       {file.downloadable === false ? (
         <>
           <div className="flex min-w-0 flex-1 items-center gap-3">{identity}</div>
-          <Button size="icon-xs" variant="ghost-muted" disabled aria-label="Sending attachment">
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            disabled
+            aria-label={uiText("Sending attachment")}
+          >
             <DownloadIcon />
           </Button>
         </>
@@ -172,7 +179,10 @@ function UserFileCard({
             >
               <DownloadIcon />
             </TooltipTrigger>
-            <TooltipPopup side="top">Download {label}</TooltipPopup>
+            <TooltipPopup side="top">
+              {uiText("Download ")}
+              {label}
+            </TooltipPopup>
           </Tooltip>
         </>
       )}
@@ -284,6 +294,7 @@ function UserMessageContent({ row }: { row: Extract<TimelineRow, { kind: "messag
 
 /** Automation prompts are long, repeated runbooks; a folded bubble keeps them out of the way. */
 function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const { text: uiText } = useUiLanguage();
   const ctx = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
   const revealRef = findRevealRef(() => setExpanded(true));
@@ -315,10 +326,10 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         )}
         data-user-message-bubble=""
       >
-        <MessageAuthorHeading>Automation</MessageAuthorHeading>
+        <MessageAuthorHeading>{uiText("Automation")}</MessageAuthorHeading>
         <FoldedMessageHeader
           icon={CalendarClockIcon}
-          label="Automation"
+          label={uiText("Automation")}
           summary={summary}
           expanded={expanded}
           onToggle={() => setExpanded((value) => !value)}
@@ -345,7 +356,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
                 search={{ environmentId: ctx.activeThreadEnvironmentId, taskId: scheduledTaskId }}
                 className="rounded-sm text-xs text-muted-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               >
-                Open automation
+                {uiText("Open automation")}
               </Link>
             ) : null}
             <TimelineRowTimestamp
@@ -361,7 +372,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               {promptLink !== null && (
                 <MessageCopyButton
                   text={promptLink}
-                  label="Copy prompt link"
+                  label={uiText("Copy prompt link")}
                   icon={LinkIcon}
                   variant="ghost"
                 />
@@ -432,6 +443,7 @@ function UserMessageProjectedStatus({ row }: { row: Extract<TimelineRow, { kind:
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
+  const { text: uiText } = useUiLanguage();
   const ctx = use(TimelineRowCtx);
   const { onImageExpand, onFileOpen } = ctx;
   const coarsePointer = useMediaQuery({ pointer: "coarse" });
@@ -804,7 +816,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           onClick={() => ctx.onOpenThread(senderRef.threadId, senderRef.environmentId)}
           tone="muted"
         >
-          Open thread
+          {uiText("Open thread")}
         </InlineButton>
       ) : null}
       <Tooltip>
@@ -835,7 +847,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         {promptLink !== null && (
           <MessageCopyButton
             text={promptLink}
-            label="Copy prompt link"
+            label={uiText("Copy prompt link")}
             icon={LinkIcon}
             variant="ghost"
           />
@@ -853,7 +865,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           className="me-1 text-2xs text-muted-foreground/70"
           data-user-message-attribution="t3code"
         >
-          Sent by T3 Code
+          {uiText("Sent by T3 Code")}
         </p>
       ) : null}
       {/* The row's heading already names the guest for screen readers. */}
@@ -873,7 +885,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {mediaAboveText ? (
         <div className="flex max-w-[80%] justify-end">
           {/* The heading leads the media so screen readers reach it before the images. */}
-          <MessageAuthorHeading>You</MessageAuthorHeading>
+          <MessageAuthorHeading>{uiText("You")}</MessageAuthorHeading>
           {mediaBlock}
         </div>
       ) : null}
@@ -1003,7 +1015,10 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                           >
                             <DownloadIcon />
                           </TooltipTrigger>
-                          <TooltipPopup side="top">Download {label}</TooltipPopup>
+                          <TooltipPopup side="top">
+                            {uiText("Download ")}
+                            {label}
+                          </TooltipPopup>
                         </Tooltip>
                       </div>
                     );
@@ -1108,6 +1123,7 @@ function RevertUserMessageButton({
   turnCount: number;
   messageId: MessageId;
 }) {
+  const { text: uiText } = useUiLanguage();
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
 
@@ -1121,13 +1137,13 @@ function RevertUserMessageButton({
             variant="ghost"
             disabled={activity.isRevertingCheckpoint || activity.isWorking}
             onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
-            aria-label="Edit from here"
+            aria-label={uiText("Edit from here")}
           />
         }
       >
         <PencilIcon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Edit from here</TooltipPopup>
+      <TooltipPopup side="top">{uiText("Edit from here")}</TooltipPopup>
     </Tooltip>
   );
 }

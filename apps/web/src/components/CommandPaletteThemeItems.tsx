@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../i18n/useUiLanguage";
 import { BUILT_IN_THEMES } from "@t3tools/shared/themePalettes";
 import { MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "lucide-react";
 
@@ -54,6 +55,7 @@ function useThemeCards() {
 }
 
 export function useCommandPaletteThemeItems() {
+  const { text: uiText } = useUiLanguage();
   const {
     theme,
     themeHalves,
@@ -87,7 +89,7 @@ export function useCommandPaletteThemeItems() {
           titleTrailingContent: (
             <span className="flex shrink-0 items-center gap-2">
               {(themeHalves?.[resolvedTheme] ?? getThemeDefinition(theme)?.id ?? null) === id ? (
-                <span className="text-xs text-muted-foreground/70">Current</span>
+                <span className="text-xs text-muted-foreground/70">{uiText("Current")}</span>
               ) : null}
               <span className="flex items-center gap-1" aria-hidden>
                 {previews.map((preview) => (
@@ -133,7 +135,7 @@ export function useCommandPaletteThemeItems() {
           icon: <Icon className={ITEM_ICON_CLASS} />,
           titleTrailingContent:
             appearanceMode === mode ? (
-              <span className="text-xs text-muted-foreground/70">Current</span>
+              <span className="text-xs text-muted-foreground/70">{uiText("Current")}</span>
             ) : undefined,
           run: async () => {
             if (!setAppearanceMode(mode)) notifyThemeSaveFailure();

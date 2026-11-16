@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { MICROPHONE_PERMISSION_ERROR } from "@t3tools/client-runtime/voice-input";
 import { useNavigate } from "@tanstack/react-router";
 import { CircleAlertIcon, XIcon } from "lucide-react";
@@ -40,6 +41,7 @@ export function VoiceInputErrorPill(props: {
   onRetry(): void;
   onDismiss(): void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const navigate = useNavigate();
   const message = props.error ?? "Voice input failed";
   const openSettings = props.errorAction === "settings";
@@ -58,7 +60,7 @@ export function VoiceInputErrorPill(props: {
               type="button"
               size={compact ? "icon-xs" : "icon-sm-pill"}
               variant="ghost"
-              aria-label="Dismiss voice input error"
+              aria-label={uiText("Dismiss voice input error")}
               onPointerDown={(event) => event.preventDefault()}
               onClick={props.onDismiss}
               className="shrink-0"
@@ -68,7 +70,7 @@ export function VoiceInputErrorPill(props: {
           }
         />
         <TooltipPopup side="top">
-          Dismiss
+          {uiText("Dismiss")}
           {props.cancelShortcutLabel ? ` (${props.cancelShortcutLabel})` : ""}
         </TooltipPopup>
       </Tooltip>

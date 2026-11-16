@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { pipe } from "effect/Function";
 import {
   ACP_REGISTRY_MAX_AGENTS,
@@ -145,6 +146,7 @@ export function AcpRegistrySearchStep({
   onManualConfiguration,
   onLocalConfiguration,
 }: AcpRegistrySearchStepProps) {
+  const { text: uiText } = useUiLanguage();
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
   const { query, search, preparingId, prepareError } = registry;
 
@@ -166,7 +168,7 @@ export function AcpRegistrySearchStep({
   return (
     <section className="grid gap-3" aria-labelledby="acp-registry-search-heading">
       <h3 className="sr-only" id="acp-registry-search-heading">
-        Choose an agent
+        {uiText("Choose an agent")}
       </h3>
 
       <form className="flex flex-wrap items-center gap-2" onSubmit={handleSearch}>
@@ -175,11 +177,11 @@ export function AcpRegistrySearchStep({
             <SearchIcon />
           </InputGroupAddon>
           <InputGroupInput
-            aria-label="Search ACP Registry"
+            aria-label={uiText("Search ACP Registry")}
             maxLength={ACP_REGISTRY_SEARCH_QUERY_MAX_LENGTH}
             disabled={preparingId !== null}
             onChange={(event) => registry.type(event.currentTarget.value)}
-            placeholder="Search agents…"
+            placeholder={uiText("Search agents…")}
             size="sm"
             type="search"
             value={query}
@@ -192,7 +194,7 @@ export function AcpRegistrySearchStep({
           type="button"
           variant="ghost-muted"
         >
-          Enter manually
+          {uiText("Enter manually")}
         </Button>
         {onLocalConfiguration ? (
           <Button
@@ -202,18 +204,21 @@ export function AcpRegistrySearchStep({
             type="button"
             variant="outline"
           >
-            Local ACP command
+            {uiText("Local ACP command")}
           </Button>
         ) : null}
       </form>
 
       <div className="sr-only" role="status">
         {isInitialSearch
-          ? "Searching the ACP Registry."
+          ? uiText("Searching the ACP Registry.")
           : isRefreshing
-            ? "Refreshing ACP Registry results."
+            ? uiText("Refreshing ACP Registry results.")
             : results
-              ? `${resultCount} compatible ${resultCount === 1 ? "agent" : "agents"} found.`
+              ? uiText("{value0} compatible {value1} found.", {
+                  value0: resultCount,
+                  value1: resultCount === 1 ? "agent" : "agents",
+                })
               : ""}
       </div>
 
@@ -225,15 +230,15 @@ export function AcpRegistrySearchStep({
 
       {isInitialSearch ? (
         <div className="flex min-h-20 items-center justify-center text-sm text-muted-foreground">
-          Searching the registry...
+          {uiText("Searching the registry...")}
         </div>
       ) : null}
 
       {results ? (
         results.length === 0 ? (
           <div className="flex min-h-28 flex-col items-center justify-center rounded-2xl border border-dashed px-4 text-center">
-            <p className="text-sm font-medium">No compatible agents found</p>
-            <p className="mt-1 text-xs text-muted-foreground">Try a broader search.</p>
+            <p className="text-sm font-medium">{uiText("No compatible agents found")}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{uiText("Try a broader search.")}</p>
           </div>
         ) : (
           <ScrollArea scrollFade className="max-h-64">
@@ -269,6 +274,7 @@ function AcpRegistryAgentRow({
   readonly isPreparing: boolean;
   readonly onAdd: (agent: AcpRegistrySearchAgent) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const progressLabel = agent.distribution === "binary" ? "Downloading" : "Preparing";
   const aboutUrl = agent.website || agent.repository;
   return (
@@ -299,24 +305,30 @@ function AcpRegistryAgentRow({
                   <Button
                     size="icon-xs"
                     variant="ghost-muted"
-                    aria-label={`About ${agent.name}`}
+                    aria-label={uiText("About {value0}", { value0: agent.name })}
                     render={<a href={aboutUrl} target="_blank" rel="noreferrer" />}
                   >
                     <ExternalLinkIcon />
                   </Button>
                 }
               />
-              <TooltipPopup>About {agent.name}</TooltipPopup>
+              <TooltipPopup>
+                {uiText("About ")}
+                {agent.name}
+              </TooltipPopup>
             </Tooltip>
           ) : null}
           <Button
-            aria-label={`${alreadyAdded ? "Already added" : isPreparing ? progressLabel : "Add"} ${agent.name}`}
+            aria-label={uiText("{value0} {value1}", {
+              value0: alreadyAdded ? "Already added" : isPreparing ? progressLabel : "Add",
+              value1: agent.name,
+            })}
             disabled={!canAdd || alreadyAdded}
             onClick={() => onAdd(agent)}
             size="xs"
             variant={isPreparing ? "secondary" : "outline"}
           >
-            {alreadyAdded ? "Added" : isPreparing ? progressLabel : "Add"}
+            {alreadyAdded ? uiText("Added") : isPreparing ? progressLabel : uiText("Add")}
           </Button>
         </div>
       </div>

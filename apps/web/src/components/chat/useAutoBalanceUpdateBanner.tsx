@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { useState } from "react";
@@ -28,6 +29,7 @@ import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
 export function useAutoBalanceUpdateBanner(
   environments: readonly EnvironmentPresentation[],
 ): ComposerBannerStackItem | null {
+  const { text: uiText } = useUiLanguage();
   const updateStates = useAtomValue(
     environmentUpdateStatesAtom(
       environmentIdsKey(environments.map(({ environmentId }) => environmentId)),
@@ -105,7 +107,7 @@ export function useAutoBalanceUpdateBanner(
                   <ServerUpdateProgress state={machine.state} />
                 ) : !machine.remoteUpdate ? (
                   <>
-                    <div className="text-muted-foreground">Manual update required</div>
+                    <div className="text-muted-foreground">{uiText("Manual update required")}</div>
                     <ServerUpdateAction {...machine} />
                   </>
                 ) : (

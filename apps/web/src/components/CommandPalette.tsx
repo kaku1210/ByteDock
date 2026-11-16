@@ -416,8 +416,9 @@ function OpenCommandPaletteDialog(props: {
   ) => void;
   readonly initialContext: CommandPaletteReturnContext | undefined;
 }) {
+  const { text: uiText, t } = useUiLanguage();
   const navigate = useNavigate();
-  const { t } = useUiLanguage();
+
   const pathname = useLocation({ select: (location) => location.pathname });
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
@@ -1319,7 +1320,8 @@ function OpenCommandPaletteDialog(props: {
         searchTerms: ["new thread", "chat", "create", "draft"],
         title: (
           <>
-            New thread in <span className="font-semibold">{activeProjectTitle}</span>
+            {uiText("New thread in ")}
+            <span className="font-semibold">{activeProjectTitle}</span>
           </>
         ),
         searchTitle: `New thread in ${activeProjectTitle}`,
@@ -2965,7 +2967,7 @@ function OpenCommandPaletteDialog(props: {
   ) : isThreadSearchPending && !isLinkedThreadSearch && !isBrowsing ? (
     // In the footer, so the list keeps its height while message results may
     // still arrive below it.
-    <span className="text-muted-foreground text-xs">Searching messages…</span>
+    <span className="text-muted-foreground text-xs">{uiText("Searching messages…")}</span>
   ) : null;
 
   return (

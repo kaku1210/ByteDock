@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { ASSISTANT_CITATION_MAX_COMMENT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
 import { use, useEffect, useRef, useState, type RefObject } from "react";
 
@@ -24,6 +25,7 @@ export function AssistantCitationCommentEditor({
   onDraftChange?: (comment: string) => void;
   onVoiceSetupOpenChange?: (open: boolean) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const [comment, setComment] = useState(citation.comment ?? "");
   const localInputRef = useRef<HTMLTextAreaElement | null>(null);
   const textareaRef = inputRef ?? localInputRef;
@@ -81,10 +83,10 @@ export function AssistantCitationCommentEditor({
       <textarea
         ref={textareaRef}
         readOnly={speech.freezesEditor}
-        aria-label="Comment on selected text"
+        aria-label={uiText("Comment on selected text")}
         aria-description="Enter to save the citation comment; Command/Ctrl+Enter to save and send; Shift+Enter for a new line."
         aria-invalid={commentTooLong || undefined}
-        placeholder="Add an optional comment..."
+        placeholder={uiText("Add an optional comment...")}
         rows={2}
         dir={textDirection(comment)}
         className="field-sizing-content block max-h-40 min-h-16 w-full resize-none bg-transparent px-1 py-1.5 text-base outline-none placeholder:text-muted-foreground sm:text-sm"
@@ -108,8 +110,8 @@ export function AssistantCitationCommentEditor({
       />
       {commentTooLong ? (
         <p role="status" className="pt-1 text-xs text-destructive">
-          Comments can contain up to {ASSISTANT_CITATION_MAX_COMMENT_LENGTH.toLocaleString()}{" "}
-          characters.
+          {uiText("Comments can contain up to ")}
+          {ASSISTANT_CITATION_MAX_COMMENT_LENGTH.toLocaleString()} {uiText("characters.")}
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
@@ -120,7 +122,7 @@ export function AssistantCitationCommentEditor({
           onPointerDown={(event) => event.preventDefault()}
           onClick={onCancel}
         >
-          Cancel
+          {uiText("Cancel")}
         </Button>
         <Button
           size="xs"

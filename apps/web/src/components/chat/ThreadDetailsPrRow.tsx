@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { resolvePullRequestDetailChecks } from "@t3tools/client-runtime/pull-request-checks";
 import {
   capitalizeTerm,
@@ -114,6 +115,7 @@ export function ThreadDetailsPrRow({
   /** Fix and Resolve write here instead of checking the pull request out in a new thread. */
   composerTarget?: ComposerThreadTarget | undefined;
 }) {
+  const { text: uiText } = useUiLanguage();
   const serverConfigs = useServerConfigs();
   const supportsPullRequests = serverConfigs.get(environmentId) !== undefined;
   const repository = sourceControlClients.repositorySelector(project?.repositoryIdentity);
@@ -317,7 +319,8 @@ export function ThreadDetailsPrRow({
               <div className="flex min-w-0 items-start gap-2 text-destructive">
                 <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 stroke-current" />
                 <div className="min-w-0 flex-1 wrap-break-word">
-                  Merge conflicts with {detail.baseBranch}
+                  {uiText("Merge conflicts with ")}
+                  {detail.baseBranch}
                 </div>
               </div>
             ) : null}
@@ -377,7 +380,7 @@ export function ThreadDetailsPrRow({
               destructive: true,
               suffix:
                 handoff === "findings" ? (
-                  <Spinner size="xs" aria-label="Preparing fix" />
+                  <Spinner size="xs" aria-label={uiText("Preparing fix")} />
                 ) : (
                   newThreadSuffix
                 ),
@@ -430,8 +433,9 @@ export function ThreadDetailsPrRow({
           />
         </TooltipTrigger>
         <TooltipPopup side="top">
-          Watching: the agent wakes when checks finish, someone comments, or the branch conflicts.
-          Click to stop.
+          {uiText(
+            "Watching: the agent wakes when checks finish, someone comments, or the branch conflicts. Click to stop.",
+          )}
         </TooltipPopup>
       </Tooltip>
     ) : null;
@@ -523,14 +527,20 @@ export function ThreadDetailsPrRow({
         <AlertDialog open={confirmingMerge} onOpenChange={(open) => setConfirmingMerge(open)}>
           <AlertDialogPopup>
             <AlertDialogHeader>
-              <AlertDialogTitle>Merge {terminology.singular}?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {uiText("Merge ")}
+                {terminology.singular}?
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                This merges #{number} using {selectedMergeMethod}.
+                {uiText("This merges #")}
+                {number}
+                {uiText(" using ")}
+                {selectedMergeMethod}.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogClose render={<Button variant="outline" size="sm" />}>
-                Cancel
+                {uiText("Cancel")}
               </AlertDialogClose>
               <Button
                 size="sm"
@@ -540,7 +550,7 @@ export function ThreadDetailsPrRow({
                   void perform("merge", selectedMergeMethod);
                 }}
               >
-                Merge
+                {uiText("Merge")}
               </Button>
             </AlertDialogFooter>
           </AlertDialogPopup>
