@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { EnvironmentId, SourceControlSignInPrompt } from "@t3tools/contracts";
 import {
   readHostCredentialSettings,
@@ -94,6 +95,7 @@ export function SourceControlAppSignInSettings({
   readonly account: string | null;
   readonly onChanged: () => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const host = appSignIn.hosts[0] ?? "";
   const { signIns, tokens } = useEnvironmentSettings(environmentId, (settings) =>
     readHostCredentialSettings(settings, definition.kind),
@@ -160,7 +162,7 @@ export function SourceControlAppSignInSettings({
     subtitle =
       account !== null && !tokenOverrides ? (
         <span className="flex min-w-0 items-center gap-1">
-          Signed in as
+          {uiText("Signed in as")}
           <RedactedSensitiveText
             value={account}
             ariaLabel="Signed-in GitHub account"
@@ -175,7 +177,7 @@ export function SourceControlAppSignInSettings({
       );
     action = (
       <Button size="xs" variant="outline" disabled={!canSignIn} onClick={() => void signOut()}>
-        Sign out
+        {uiText("Sign out")}
       </Button>
     );
   } else if (waiting !== null) {
@@ -189,7 +191,7 @@ export function SourceControlAppSignInSettings({
           void cancel({ environmentId, input: { provider: definition.kind, host } });
         }}
       >
-        Cancel
+        {uiText("Cancel")}
       </Button>
     );
   } else {
@@ -201,7 +203,7 @@ export function SourceControlAppSignInSettings({
         onClick={() => void signIn()}
       >
         {state.status === "starting" ? <Spinner /> : null}
-        {state.status === "failed" ? "Try again" : "Sign in with GitHub"}
+        {state.status === "failed" ? uiText("Try again") : uiText("Sign in with GitHub")}
       </Button>
     );
   }
@@ -229,7 +231,7 @@ export function SourceControlAppSignInSettings({
             <Button
               size="icon-xs"
               variant="ghost"
-              aria-label="Copy code"
+              aria-label={uiText("Copy code")}
               onClick={() => copyToClipboard(waiting.userCode, undefined)}
             >
               {isCopied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
@@ -243,12 +245,13 @@ export function SourceControlAppSignInSettings({
               }
               onClick={() => copyToClipboard(waiting.userCode, undefined)}
             >
-              Copy code & open GitHub
+              {uiText("Copy code & open GitHub")}
               <ExternalLinkIcon aria-hidden className="size-3.5" />
             </Button>
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span aria-hidden className="size-1.5 rounded-full bg-warning" />
-              Waiting for approval · code expires at {expiryTime(waiting.expiresAt)}
+              {uiText("Waiting for approval · code expires at ")}
+              {expiryTime(waiting.expiresAt)}
             </p>
           </div>
         </div>
@@ -257,10 +260,12 @@ export function SourceControlAppSignInSettings({
       {signedIn ? (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           <span className="min-w-0 flex-1">
-            Reaches repositories in accounts and organizations that installed the app.
+            {uiText("Reaches repositories in accounts and organizations that installed the app.")}
           </span>
-          <ExternalLink href={appSignIn.installUrl}>Install on an organization</ExternalLink>
-          <ExternalLink href={appSignIn.revokeUrl}>Manage on GitHub</ExternalLink>
+          <ExternalLink href={appSignIn.installUrl}>
+            {uiText("Install on an organization")}
+          </ExternalLink>
+          <ExternalLink href={appSignIn.revokeUrl}>{uiText("Manage on GitHub")}</ExternalLink>
         </div>
       ) : null}
 

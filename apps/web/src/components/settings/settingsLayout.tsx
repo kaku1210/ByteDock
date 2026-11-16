@@ -191,12 +191,17 @@ export const SETTINGS_PICKER_TRIGGER_CLASSNAME =
   "min-w-0 max-w-none shrink-0 border-input bg-background font-normal text-foreground shadow-xs/5 hover:bg-accent/50 dark:bg-input/32 [&_svg[data-composer-control-chevron]]:stroke-[1.75] [&_svg[data-composer-control-chevron]]:opacity-70";
 
 export function PolicyTooltip({ children }: { readonly children: string }) {
+  const { text: uiText } = useUiLanguage();
   return (
     <Tooltip>
       <TooltipTrigger
         delay={200}
         render={
-          <Button size="icon-micro" variant="ghost-muted" aria-label="Background policy details">
+          <Button
+            size="icon-micro"
+            variant="ghost-muted"
+            aria-label={uiText("Background policy details")}
+          >
             <InfoIcon className="size-3.5" />
           </Button>
         }
@@ -226,8 +231,11 @@ export function SettingsSection({
   children: ReactNode;
 }) {
   const targetRef = useSettingsSearchTarget<HTMLElement>(sectionProps.id);
-  const { language } = useUiLanguage();
-  const title = settingsSectionTitle(language, sectionProps.id, sourceTitle);
+  const { language, text } = useUiLanguage();
+  const title =
+    text(sourceTitle) !== sourceTitle
+      ? text(sourceTitle)
+      : settingsSectionTitle(language, sectionProps.id, sourceTitle);
 
   return (
     <section
@@ -340,15 +348,20 @@ export function SettingsRow({
   managed?: string | undefined;
   children?: ReactNode;
 }) {
+  const { text: uiText, language, text } = useUiLanguage();
   const targetRef = useSettingsSearchTarget<HTMLDivElement>(rowProps.id);
-  const { language } = useUiLanguage();
+
   const title =
     typeof sourceTitle === "string"
-      ? settingsRowText(language, rowProps.id, "title", sourceTitle)
+      ? text(sourceTitle) !== sourceTitle
+        ? text(sourceTitle)
+        : settingsRowText(language, rowProps.id, "title", sourceTitle)
       : sourceTitle;
   const description =
     typeof sourceDescription === "string"
-      ? settingsRowText(language, rowProps.id, "description", sourceDescription)
+      ? text(sourceDescription) !== sourceDescription
+        ? text(sourceDescription)
+        : settingsRowText(language, rowProps.id, "description", sourceDescription)
       : sourceDescription;
   const primarySettingsAvailable = usePrimarySettingsAvailable();
   const context = useOptionalSettingsScope();
@@ -415,8 +428,8 @@ export function SettingsRow({
     managed !== undefined ? null : isProjectScope && scopedKeys.length > 0 ? (
       source === "project" || source === "mixed" ? (
         <SettingResetButton
-          label={typeof title === "string" ? title : "override"}
-          tooltip="Reset to inherited value"
+          label={typeof title === "string" ? title : uiText("override")}
+          tooltip={uiText("Reset to inherited value")}
           onClick={() => (onResetOverride ? onResetOverride() : clearOverrides(scopedKeys))}
         />
       ) : null
@@ -579,6 +592,7 @@ export function SettingResetButton({
   disabled?: boolean;
   onClick: () => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   return (
     <Tooltip>
       <TooltipTrigger
@@ -586,7 +600,7 @@ export function SettingResetButton({
           <Button
             size="icon-micro"
             variant="ghost-muted"
-            aria-label={`Reset ${label} to default`}
+            aria-label={uiText("Reset {value0} to default", { value0: label })}
             disabled={disabled}
             onClick={(event) => {
               event.stopPropagation();
@@ -597,7 +611,7 @@ export function SettingResetButton({
           </Button>
         }
       />
-      <TooltipPopup side="top">{tooltip}</TooltipPopup>
+      <TooltipPopup side="top">{uiText(tooltip)}</TooltipPopup>
     </Tooltip>
   );
 }

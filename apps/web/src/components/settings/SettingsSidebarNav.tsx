@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import {
   lazy,
   Suspense,
@@ -131,7 +132,9 @@ function SettingsSectionIcon({ to }: { to: SettingsPath }) {
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const gt = useGT();
-  const m = useMessages();
+  const upstreamMessage = useMessages();
+  const { text } = useUiLanguage();
+  const m = (source: string) => text(upstreamMessage(source));
   const navArea = workspaceAreaProps("settings-nav", 0, gt("Settings sections"));
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });

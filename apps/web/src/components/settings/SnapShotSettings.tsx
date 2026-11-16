@@ -80,7 +80,8 @@ type ShortcutCheck =
     };
 
 export function SnapShotSettings() {
-  const { language, t } = useUiLanguage();
+  const { text: uiText, language, t } = useUiLanguage();
+
   const settings = useClientSettings((current) => ({
     snapShotAnimations: current.snapShotAnimations,
     snapShotEnabled: current.snapShotEnabled,
@@ -366,7 +367,10 @@ export function SnapShotSettings() {
                 ? setupBusy && !wizard
                   ? t("settings.snapshots.updating")
                   : refreshError
-                    ? `${refreshError.title}. ${refreshError.message}`
+                    ? uiText("{value0}. {value1}", {
+                        value0: refreshError.title,
+                        value1: refreshError.message,
+                      })
                     : snapShotStatus(state, settings.snapShotEnabled, language)
                 : undefined
             }
