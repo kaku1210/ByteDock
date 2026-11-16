@@ -57,6 +57,22 @@ saved totals first, then updates them when Cursor's API responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+## Usage for one thread
+
+On web and desktop, open the thread details panel and find **Thread usage**. Switch between
+**Entire thread** and **This turn** to see recorded tokens, active running time, estimated thinking
+time, and API-equivalent cost by model. Running time excludes gaps between turns and waits for
+input or approval. Thinking time is available only when the provider records reasoning intervals.
+
+Recorded turn tokens and transcript tokens have different coverage: native logs may include
+provider-managed subagents. Cost uses attributable native records and preserves the first available
+price for each record. Missing history or prices are not treated as free usage. Account-wide usage
+that cannot be attributed to a native session, including Cursor account totals, is excluded.
+
+Pin the details panel to keep it open while chatting and switching threads. It overlays the chat;
+drag its left edge to change its width. Pinning, width, and whether it is open are remembered on
+this client. Close it with its close action and reopen it with the thread-details toggle.
+
 ## Estimate a subscription's API equivalent
 
 In **Usage → Limits**, each supported quota card shows **Estimated cycle total** when a

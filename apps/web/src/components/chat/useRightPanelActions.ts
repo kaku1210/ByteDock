@@ -1,3 +1,4 @@
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { ThreadPreviewState } from "../../previewStateStore";
@@ -226,6 +227,11 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
   };
   const toggleRightPanelStable = useStableCallback(toggleRightPanel);
   const toggleThreadPanel = () => {
+    const preferences = useThreadDetailsPreferences.getState();
+    if (preferences.pinned) {
+      preferences.setOpen(!preferences.open);
+      return;
+    }
     if (!activeThreadRef) return;
     const store = useRightPanelStore.getState();
     if (threadPanelPresentation === "inline") {

@@ -1,3 +1,4 @@
+import { ThreadId, RunId } from "./baseSchemas.ts";
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -150,7 +151,19 @@ export const UsageModelFilter = Schema.Struct({
 });
 export type UsageModelFilter = typeof UsageModelFilter.Type;
 
+export const UsageSessionScope = Schema.Struct({
+  provider: TrimmedNonEmptyString,
+  sessionId: TrimmedNonEmptyString,
+  since: Schema.Number,
+  until: Schema.Number,
+});
+export type UsageSessionScope = typeof UsageSessionScope.Type;
+
 export const UsageSummaryInput = Schema.Struct({
+  threadId: Schema.optional(ThreadId),
+  runId: Schema.optional(RunId),
+  sessionScopes: Schema.optional(Schema.Array(UsageSessionScope)),
+  apiEquivalent: Schema.optional(Schema.Boolean),
   sinceDay: UsageDay,
   untilDay: UsageDay,
   /** IANA bucketing zone; offsets fail across DST boundaries. */
@@ -166,6 +179,21 @@ export const UsageSummaryInput = Schema.Struct({
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
 export const UsageSummary = Schema.Struct({
+  threadUsage: Schema.optional(
+    Schema.Struct({
+      threadId: ThreadId,
+      runId: Schema.NullOr(RunId),
+      asOf: Schema.Number,
+      tokens: NonNegativeInt,
+      hasUsage: Schema.Boolean,
+      incomplete: Schema.Boolean,
+      runtimeMs: NonNegativeInt,
+      waitingMs: NonNegativeInt,
+      reasoningMs: Schema.NullOr(NonNegativeInt),
+    }),
+  ),
+  sessionScopes: Schema.optional(Schema.Array(UsageSessionScope)),
+  apiEquivalent: Schema.optional(Schema.Boolean),
   contractVersion: Schema.Number,
   readAt: Schema.String,
   timeZone: TrimmedNonEmptyString,

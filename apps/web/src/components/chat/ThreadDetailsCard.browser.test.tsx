@@ -1,7 +1,9 @@
+import "~/index.css";
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import { StrictMode } from "react";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore";
 import { PopoverCreateHandle } from "../ui/popover";
@@ -21,6 +23,7 @@ const container = { width: 1200, height: 800 };
 const placement = { x: 908, y: 0, right: 12, width: 280, height: 400 } as const;
 
 function setup() {
+  useThreadDetailsPreferences.setState({ pinned: false, open: true, width: 360 });
   useRightPanelStore.setState({ threadPanelVisibilityByThreadKey: {} });
   const anchor = document.createElement("div");
   document.body.append(anchor);
@@ -195,4 +198,29 @@ it("stays full while expanded server rows overflow", async () => {
   await expect
     .element(page.getByRole("region", { name: "Thread details" }))
     .toHaveAttribute("data-density", "full");
+});
+
+it("keeps a pinned overlay open across thread switches and closes only explicitly", async () => {
+  using fixture = setup();
+  await using screen = await render(<Card threadRef={threadA} inline fixture={fixture} />);
+  await page.getByRole("button", { name: "Pin details panel", exact: true }).click();
+  await expect
+    .element(page.getByRole("region", { name: "Thread details" }))
+    .toHaveAttribute("data-thread-details-panel", "pinned");
+  await screen.rerender(<Card threadRef={threadB} inline={false} fixture={fixture} />);
+  await expect.element(page.getByText("Details for thread-b")).toBeVisible();
+  await page.getByRole("separator", { name: "Resize details panel" }).click();
+  await userEvent.keyboard("{ArrowLeft}");
+  await expect
+    .element(page.getByRole("region", { name: "Thread details" }))
+    .toHaveStyle({ width: "380px" });
+  await userEvent.click(document.body);
+  await expect.element(page.getByText("Details for thread-b")).toBeVisible();
+  await act(() => useThreadDetailsPreferences.persist.rehydrate());
+  expect(useThreadDetailsPreferences.getState().width).toBe(380);
+  await page.getByRole("button", { name: "Close details panel", exact: true }).click();
+  await screen.rerender(<Card threadRef={threadA} inline fixture={fixture} />);
+  await expect.element(page.getByText("Details for thread-a")).not.toBeInTheDocument();
+  expect(useThreadDetailsPreferences.getState().pinned).toBe(true);
+  expect(useThreadDetailsPreferences.getState().open).toBe(false);
 });

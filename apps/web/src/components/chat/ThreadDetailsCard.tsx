@@ -1,3 +1,7 @@
+import { PinIcon, PinOffIcon, XIcon } from "lucide-react";
+import { Button } from "../ui/button";
+import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
 import {
   useLayoutEffect,
@@ -35,10 +39,19 @@ export function ThreadDetailsCard({
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
+  const { text } = useUiLanguage();
+  const preferences = useThreadDetailsPreferences();
   const detailsArea = workspaceAreaProps("details", 3, "Thread details");
   const canvas = useChatCanvas();
   const preferredPlacement = canvas?.preferredDetailsCard ?? null;
-  const placement = canvas?.detailsCardPlacement ?? null;
+  const placement = preferences.pinned
+    ? {
+        right: 12,
+        y: 12,
+        width: Math.min(preferences.width, Math.max(240, (canvas?.container.width ?? 400) - 24)),
+        height: Math.max(160, (canvas?.container.height ?? 600) - 24),
+      }
+    : (canvas?.detailsCardPlacement ?? null);
   const mode = placement ? "inline" : "popover";
   const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
@@ -55,7 +68,9 @@ export function ThreadDetailsCard({
   const contentHeights =
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
   const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
-  const density = resolveThreadDetailsCardDensity(height, contentHeights);
+  const density = preferences.pinned
+    ? "full"
+    : resolveThreadDetailsCardDensity(height, contentHeights);
   const measureDetailsCard = canvas?.measureDetailsCard;
   const cardWidth = preferredPlacement?.width;
   // The mode derives from canvas measurements, the preview frame and the
@@ -93,7 +108,7 @@ export function ThreadDetailsCard({
       });
       // Only the laid-out DOM knows the full card height, and the canvas keeps preview
       // frames clear of it, so it is reported from this measure effect.
-      if (density === "full" && cardWidth !== undefined) {
+      if (!preferences.pinned && density === "full" && cardWidth !== undefined) {
         measureDetailsCard?.({
           threadRef: { environmentId, threadId },
           width: cardWidth,
@@ -111,11 +126,12 @@ export function ThreadDetailsCard({
     measureDetailsCard,
     environmentId,
     threadId,
+    preferences.pinned,
   ]);
   const card = (
     <div
       className={cn(
-        "dropdown-glass isolate contain-paint grid max-h-full grid-rows-[minmax(0,1fr)] overflow-hidden rounded-2xl",
+        "dropdown-glass isolate contain-paint grid max-h-full grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl",
         mode === "popover" &&
           "max-h-[min(calc(100dvh-6.5rem),calc(var(--available-height,100dvh)-1rem))]",
       )}
@@ -123,6 +139,32 @@ export function ThreadDetailsCard({
       onContextMenu={onContextMenu}
       data-thread-details-card
     >
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
+        <span className="text-xs font-medium">{text("Thread details")}</span>
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={text(preferences.pinned ? "Unpin details panel" : "Pin details panel")}
+            aria-pressed={preferences.pinned}
+            onClick={() => preferences.setPinned(!preferences.pinned)}
+          >
+            {preferences.pinned ? <PinOffIcon /> : <PinIcon />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={text("Close details panel")}
+            onClick={() => {
+              preferences.setOpen(false);
+              useRightPanelStore.getState().setThreadPanelOpen(threadRef, "inline", false);
+              useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", false);
+            }}
+          >
+            <XIcon />
+          </Button>
+        </div>
+      </div>
       <ScrollArea scrollFade className="min-h-0">
         <div ref={setContentElement}>{children(density)}</div>
       </ScrollArea>
@@ -146,7 +188,7 @@ export function ThreadDetailsCard({
         useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", open);
       }}
     >
-      {placement && inlineOpen ? (
+      {placement && (preferences.pinned ? preferences.open : inlineOpen) ? (
         <aside
           {...detailsArea}
           data-workspace-focus-key={`details:${threadRef.environmentId}:${threadRef.threadId}`}
@@ -162,8 +204,47 @@ export function ThreadDetailsCard({
             maxHeight: height,
           }}
           data-density={density}
-          data-thread-details-panel="inline"
+          data-thread-details-panel={preferences.pinned ? "pinned" : "inline"}
         >
+          {preferences.pinned ? (
+            <div
+              role="separator"
+              aria-label={text("Resize details panel")}
+              aria-orientation="vertical"
+              aria-valuenow={preferences.width}
+              aria-valuemin={280}
+              aria-valuemax={640}
+              tabIndex={0}
+              className="absolute -left-1 bottom-0 top-0 z-10 w-2 cursor-ew-resize touch-none"
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                  event.preventDefault();
+                  preferences.setWidth(preferences.width + (event.key === "ArrowLeft" ? 20 : -20));
+                }
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.currentTarget.focus();
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                const panel = event.currentTarget.parentElement!;
+                const width = Math.max(
+                  280,
+                  Math.min(640, panel.getBoundingClientRect().right - event.clientX),
+                );
+                panel.style.width = `${width}px`;
+              }}
+              onPointerUp={(event) => {
+                if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                preferences.setWidth(
+                  event.currentTarget.parentElement!.getBoundingClientRect().width,
+                );
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }}
+            />
+          ) : null}
           {card}
         </aside>
       ) : null}

@@ -1,3 +1,6 @@
+import { threadUsageScope } from "@t3tools/shared/threadUsage";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import type { PricedUsage } from "./usagePricing.ts";
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
@@ -186,6 +189,30 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   }),
 );
 
+const PriceSnapshot = Schema.Struct({
+  price: Schema.Struct({
+    costUsd: Schema.Number,
+    costSource: Schema.Literals(["providerReported", "modelPriced", "unpriced"]),
+    categoryCostUsd: Schema.NullOr(
+      Schema.Struct({
+        input: Schema.Number,
+        cacheRead: Schema.Number,
+        cacheWrite: Schema.Number,
+        output: Schema.Number,
+      }),
+    ),
+    speedPremiumUsd: Schema.Number,
+  }),
+  capturedAt: Schema.String,
+  source: Schema.String,
+});
+const encodePriceSnapshots = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, PriceSnapshot)),
+);
+const decodePriceSnapshots = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, PriceSnapshot)),
+);
+
 export class UsageService extends Context.Service<
   UsageService,
   {
@@ -195,6 +222,7 @@ export class UsageService extends Context.Service<
 >()("t3/usage/UsageService") {}
 
 export const make = Effect.gen(function* () {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const crypto = yield* Digest.Digest;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -220,6 +248,13 @@ export const make = Effect.gen(function* () {
       });
       return id;
     });
+  const priceSnapshotsPath = path.join(config.stateDir, "thread-usage-prices.json");
+  const savedPrices = yield* fileSystem.readFileString(priceSnapshotsPath).pipe(
+    Effect.flatMap(decodePriceSnapshots),
+    Effect.orElseSucceed(() => ({})),
+  );
+  const priceSnapshots = new Map<string, typeof PriceSnapshot.Type>(Object.entries(savedPrices));
+  let pricesDirty = false;
   const hostname = yield* HostProcess.Hostname;
   const estimateStore = yield* UsageEstimateStore.UsageEstimateStore;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -586,6 +621,17 @@ export const make = Effect.gen(function* () {
 
   // Clear dirty before encoding to retain concurrent changes; restore it on failure for retry.
   const persistCaches = Effect.gen(function* () {
+    if (pricesDirty) {
+      pricesDirty = false;
+      yield* encodePriceSnapshots(Object.fromEntries(priceSnapshots)).pipe(
+        Effect.flatMap((contents) => writeCacheFile(priceSnapshotsPath, contents)),
+        Effect.catchCause(() =>
+          Effect.sync(() => {
+            pricesDirty = true;
+          }),
+        ),
+      );
+    }
     if (cacheDirty) {
       cacheDirty = false;
       yield* Effect.sync(() =>
@@ -1199,8 +1245,35 @@ export const make = Effect.gen(function* () {
       ...hourlyWindow,
       rates: summaryRates,
       priceOverrides,
-      modelAliases,
+      modelAliases: input.sessionScopes === undefined ? modelAliases : new Map(),
+      ...(input.apiEquivalent && input.sessionScopes !== undefined
+        ? {
+            priceSnapshot: (record: UsageRecord, price: PricedUsage) => {
+              const key = encodeUsageRecordKey([
+                record.provider,
+                record.sessionId,
+                record.timestampMs,
+                record.model,
+                record.speed,
+                record.totals,
+              ]);
+              const saved = priceSnapshots.get(key);
+              if (saved) return saved.price;
+              if (price.costSource !== "unpriced") {
+                priceSnapshots.set(key, {
+                  price,
+                  capturedAt: summaryPricing.fetchedAt ?? "unknown",
+                  source: summaryPricing.source,
+                });
+                pricesDirty = true;
+              }
+              return price;
+            },
+          }
+        : {}),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
+      ...(input.sessionScopes === undefined ? {} : { sessionScopes: input.sessionScopes }),
+      ...(input.apiEquivalent === undefined ? {} : { apiEquivalent: input.apiEquivalent }),
     });
 
     const windowEndMs =
@@ -1427,6 +1500,8 @@ export const make = Effect.gen(function* () {
       subscriptionEstimates,
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
+      ...(input.sessionScopes === undefined ? {} : { sessionScopes: input.sessionScopes }),
+      ...(input.apiEquivalent === undefined ? {} : { apiEquivalent: input.apiEquivalent }),
     } satisfies UsageSummary;
     return { summary, fromMemory };
   });
@@ -1461,11 +1536,62 @@ export const make = Effect.gen(function* () {
       input.awaitRefresh === true,
       provisional,
       input.modelFilter ?? null,
+      input.sessionScopes ?? null,
+      input.apiEquivalent ?? false,
     ]);
 
-  const readSummary = Effect.fn("UsageService.readSummary")(function* (
-    requested: UsageSummaryInput,
-  ) {
+  const readSummary = Effect.fn("UsageService.readSummary")(function* (request: UsageSummaryInput) {
+    let requested = request;
+    let threadUsage: UsageSummary["threadUsage"];
+    if (request.threadId !== undefined) {
+      const threadId = request.threadId;
+      const records = yield* projections
+        .getThreadRecords(threadId, [
+          "runs",
+          "attempts",
+          "providerThreads",
+          "providerTurns",
+          "nodes",
+          "runtimeRequests",
+        ])
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: "Could not read thread usage records.",
+                cause,
+              }),
+          ),
+        );
+      const { thread } = records;
+      const now = yield* Clock.currentTimeMillis;
+      const stats = threadUsageScope(records, request.runId ?? null, now);
+      threadUsage = {
+        threadId,
+        runId: request.runId ?? null,
+        asOf: now,
+        tokens: stats.tokens,
+        hasUsage: stats.hasUsage,
+        incomplete: stats.incomplete,
+        runtimeMs: stats.runtimeMs,
+        waitingMs: stats.waitingMs,
+        reasoningMs: stats.reasoningMs,
+      };
+      requested = {
+        ...request,
+        sinceDay: DateTime.formatIso(thread.createdAt).slice(
+          0,
+          10,
+        ) as UsageSummaryInput["sinceDay"],
+        untilDay: DateTime.formatIso(yield* DateTime.now).slice(
+          0,
+          10,
+        ) as UsageSummaryInput["untilDay"],
+        sessionScopes: stats.scopes,
+        apiEquivalent: true,
+      };
+    }
     const { modelFilter: requestedFilter, ...unfiltered } = requested;
     const modelFilter = canonicalModelFilter(requestedFilter);
     const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
@@ -1503,7 +1629,8 @@ export const make = Effect.gen(function* () {
         return created;
       }),
     );
-    return yield* Deferred.await(deferred);
+    const summary = yield* Deferred.await(deferred);
+    return threadUsage === undefined ? summary : { ...summary, threadUsage };
   });
 
   return { readSummary, refreshRates, awaitPersisted } as const;

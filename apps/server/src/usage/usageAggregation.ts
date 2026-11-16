@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off
 import type {
   UsageBucket,
+  UsageSessionScope,
   UsageCategoryCost,
   UsageDay,
   UsageModelFilter,
@@ -10,7 +11,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/usage";
-import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
+import { cacheSavingsUsd, priceUsage, type RateTable, type PricedUsage } from "./usagePricing.ts";
 
 // en-CA gives ISO-ordered parts in the requested zone; Date getters are host-local.
 function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
@@ -64,6 +65,9 @@ interface MutableBucket {
 }
 
 export interface AggregateOptions {
+  readonly sessionScopes?: readonly UsageSessionScope[];
+  readonly apiEquivalent?: boolean;
+  readonly priceSnapshot?: (record: UsageRecord, price: PricedUsage) => PricedUsage;
   readonly timeZone: string;
   readonly sinceDay: string;
   readonly untilDay: string;
@@ -246,6 +250,19 @@ export class UsageAggregator {
   }
 
   add(input: UsageRecord, sourcePath?: string): boolean {
+    if (
+      this.#options.sessionScopes !== undefined &&
+      !this.#options.sessionScopes.some(
+        (scope) =>
+          scope.provider === input.provider &&
+          scope.sessionId === input.sessionId &&
+          input.timestampMs >= scope.since &&
+          input.timestampMs <= scope.until,
+      )
+    )
+      return false;
+    if (this.#options.apiEquivalent) input = { ...input, reportedCostUsd: null };
+
     if (!keepsUsageRecord(this.#options.modelFilter, input)) return false;
     const record = this.#mapModel(input);
     if (record.dedupeKey !== null) {
@@ -299,7 +316,8 @@ export class UsageAggregator {
   }
 
   #accumulate(bucket: MutableBucket, record: UsageRecord): void {
-    const priced = priceUsage(this.#options.rates, record, this.#options.priceOverrides);
+    const current = priceUsage(this.#options.rates, record, this.#options.priceOverrides);
+    const priced = this.#options.priceSnapshot?.(record, current) ?? current;
 
     const totals = bucket.totals;
     totals.uncachedInputTokens += record.totals.uncachedInputTokens;

@@ -1,3 +1,4 @@
+import { useThreadDetailsPreferences } from "./chat/threadDetailsPreferences";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -1978,24 +1979,26 @@ export default function ChatView(props: ChatViewProps) {
   );
   // Selects only the mode, so canvas resizes rerender the chat view only when the
   // card switches presentation.
-  const threadPanelPresentation = useStore(
-    chatCanvasStore,
-    (state) =>
-      resolveChatCanvasModel({
-        measurements: state.measurements,
-        detailsCardMeasurement: state.detailsCardMeasurement,
-        threadRef: activeThreadRef,
-        preview: canvasPreview,
-        detailsCardInlineOpen: threadPanelInlineOpen,
-      }).detailsCardMode,
+  const pinnedDetailsOpen = useThreadDetailsPreferences((s) => (s.pinned ? s.open : null));
+  const threadPanelPresentation = useStore(chatCanvasStore, (state) =>
+    pinnedDetailsOpen !== null
+      ? "inline"
+      : resolveChatCanvasModel({
+          measurements: state.measurements,
+          detailsCardMeasurement: state.detailsCardMeasurement,
+          threadRef: activeThreadRef,
+          preview: canvasPreview,
+          detailsCardInlineOpen: threadPanelInlineOpen && pinnedDetailsOpen === null,
+        }).detailsCardMode,
   );
-  const threadPanelOpen = useRightPanelStore((state) =>
+  const unpinnedThreadPanelOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(
       state.threadPanelVisibilityByThreadKey,
       activeThreadRef,
       threadPanelPresentation,
     ),
   );
+  const threadPanelOpen = pinnedDetailsOpen ?? unpinnedThreadPanelOpen;
   const supportsThreadPullRequests = serverConfig !== null;
   const visiblePullRequests = visibleThreadPullRequests(
     (activeThreadShell ?? activeThread)?.pullRequests ?? [],

@@ -1,3 +1,4 @@
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 // @effect-diagnostics nodeBuiltinImport:off - the suite seeds and grows real
 // transcript trees on disk, outside the service's Effect FileSystem.
 import * as NodeChildProcess from "node:child_process";
@@ -202,6 +203,7 @@ const layerService = (input: {
   readonly secretStore?: Partial<ServerSecretStore.ServerSecretStore["Service"]>;
 }) =>
   layerCursorUsageAccounts(CursorAccountReader.layer).pipe(
+    Layer.provideMerge(Layer.mock(ProjectionStore.ProjectionStoreV2)({})),
     Layer.provideMerge(AntigravityUsage.layer),
     Layer.provideMerge(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -1676,6 +1678,65 @@ describe("UsageService", () => {
         [NodePath.join(museHome, "sessions"), "ok", undefined],
       ]);
     }),
+  );
+
+  it.effect("keeps thread equivalent prices across rate changes and service restarts", () =>
+    Effect.gen(function* () {
+      const { home, settings, transcript } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 20)));
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        yield* service.refreshRates;
+        const input = {
+          ...WINDOW,
+          apiEquivalent: true,
+          sessionScopes: [
+            {
+              provider: "claude",
+              sessionId: "session-1",
+              since: Date.parse("2026-08-01T09:00:00Z"),
+              until: Date.parse("2026-08-01T11:00:00Z"),
+            },
+          ],
+        };
+        const initial = yield* service.readSummary(input);
+        assert.strictEqual(initial.buckets.length, 1);
+        const cost = initial.buckets[0]!.costUsd;
+        assert.isAbove(cost, 0);
+        yield* service.awaitPersisted;
+        yield* TestClock.adjust(61_000);
+        yield* service.refreshRates;
+        assert.strictEqual((yield* service.readSummary(input)).buckets[0]!.costUsd, cost);
+        yield* service.awaitPersisted;
+        const restarted = yield* UsageService.make;
+        yield* TestClock.adjust(61_000);
+        yield* restarted.refreshRates;
+        assert.strictEqual((yield* restarted.readSummary(input)).buckets[0]!.costUsd, cost);
+        assert.notStrictEqual((yield* restarted.readSummary(WINDOW)).buckets[0]!.costUsd, cost);
+        assert.deepEqual(
+          (yield* restarted.readSummary({ ...input, sessionScopes: [] })).buckets,
+          [],
+        );
+        yield* restarted.awaitPersisted;
+      }).pipe(
+        Effect.provide(
+          layerService({
+            prefix: "thread-prices",
+            home,
+            settings,
+            ratesResponse: (() => {
+              let rate = 0;
+              return () =>
+                Effect.succeed(
+                  Response.json({
+                    "claude-fable-5": { input_cost_per_token: 0, output_cost_per_token: ++rate },
+                  }),
+                );
+            })(),
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect("identifies a transcript directory created after the server first read usage", () =>

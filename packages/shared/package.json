@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./threadUsage": "./src/threadUsage.ts",
     "./desktopShutdown": {
       "types": "./src/desktopShutdown.ts",
       "import": "./src/desktopShutdown.ts"

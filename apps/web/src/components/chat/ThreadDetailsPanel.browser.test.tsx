@@ -87,6 +87,7 @@ import { PopoverCreateHandle } from "../ui/popover";
 import { ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout } from "./chatCanvasLayout";
 import { ThreadDetailsPanel } from "./ThreadDetailsPanel";
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 
 const threadRef: ScopedThreadRef = {
   environmentId: EnvironmentId.make("environment"),
@@ -111,6 +112,7 @@ function setup(input: {
   pullRequests?: ThreadPullRequestLink[];
   configLoaded?: boolean;
 }) {
+  useThreadDetailsPreferences.setState({ pinned: false, open: true, width: 360 });
   state.configLoaded = input.configLoaded ?? true;
   state.workspaceRoot = input.workspaceRoot;
   state.folder = input.folder;

@@ -61,6 +61,21 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// These fixtures set preferences before mounting; the app's locale bootstrap runs outside AppRoot.
+vi.mock(import("~/i18n/runtime"), async () => {
+  const { getClientSettings, subscribeClientSettings } = await import("~/hooks/useSettings");
+  const { resolveLanguagePreference } = await import("@t3tools/shared/uiLanguage");
+  const zh = (await import("~/i18n/translations/zh.json")).default;
+  const english = { locale: "en", translations: { en: {} } };
+  const chinese = { locale: "zh", translations: { zh } };
+  return {
+    getI18nSnapshot: () =>
+      resolveLanguagePreference(getClientSettings()).startsWith("zh") ? chinese : english,
+    subscribeI18n: subscribeClientSettings,
+    persistGTLocale: () => {},
+  };
+});
+
 it("a machine chip stashed in one thread restores with its machine in another", async () => {
   const other = threadWithHistory("thread-stash-restore", 1);
   const asking = threadWithQuestion("thread-stash-question", "Which file should change?");

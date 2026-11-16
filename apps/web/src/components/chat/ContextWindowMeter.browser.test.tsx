@@ -32,7 +32,7 @@ it("distinguishes missing context data and limits from a measured percentage", a
   const measured = screen.getByRole("button", { name: "上下文已用 37%", exact: true });
   await expect.element(measured).toBeVisible();
   await measured.hover();
-  await expect.element(screen.getByText("74,240 / 200,000 tokens", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("74,240 / 200,000 词元", { exact: true })).toBeVisible();
   await screen.rerender(
     <UiLanguageContext value="zh-CN">
       <ContextWindowMeter
@@ -42,7 +42,7 @@ it("distinguishes missing context data and limits from a measured percentage", a
   );
   await expect.element(control).toBeVisible();
   await control.hover();
-  await expect.element(screen.getByText("74,240 / — tokens", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("74,240 / — 词元", { exact: true })).toBeVisible();
   await expect
     .element(screen.getByText("服务商未上报上下文上限，暂时无法计算百分比。", { exact: true }))
     .toBeVisible();

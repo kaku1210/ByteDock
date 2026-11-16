@@ -71,6 +71,41 @@ function aggregate(
 }
 
 describe("UsageAggregator", () => {
+  it("isolates a native session and turn window before deduplication and API pricing", () => {
+    const input = record({ reportedCostUsd: 99, dedupeKey: "same" });
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      sessionScopes: [
+        {
+          provider: "claude",
+          sessionId: "session-a",
+          since: input.timestampMs,
+          until: input.timestampMs,
+        },
+      ],
+      apiEquivalent: true,
+    });
+    expect(aggregator.add({ ...input, sessionId: "other" })).toBe(false);
+    expect(aggregator.add({ ...input, timestampMs: input.timestampMs - 1 })).toBe(false);
+    aggregator.add(input);
+    aggregator.add(input);
+    const [bucket] = aggregator.finish().buckets;
+    expect(bucket?.totals.outputTokens).toBe(50);
+    expect(bucket?.costUsd).toBeCloseTo(0.004625);
+    expect(bucket?.costSource).toBe("modelPriced");
+    const empty = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      sessionScopes: [],
+    });
+    expect(empty.add(input)).toBe(false);
+  });
+
   it("splits a bucket's cost by category and speed", () => {
     const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
 
