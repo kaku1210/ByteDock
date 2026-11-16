@@ -40,6 +40,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import { checkInputCandidates } from "./check-changed-inputs.ts";
 
 const GiB = 1024 ** 3;
 
@@ -274,18 +275,21 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
         "--",
       ]),
     );
-    const ignored = yield* lines(
-      "ls-files",
-      "--others",
-      "--ignored",
-      "--exclude-standard",
-      "--",
-      ":(glob)**/.generated/**",
-      ":(glob)**/.astro/**",
-      ":(glob)**/*.d.ts",
-      ":(glob)**/.env*",
-      ":(exclude,glob)**/node_modules/**",
-    );
+    // Git follows Windows junctions even when their descendants are excluded by a pathspec.
+    const candidates = yield* Effect.promise(() => checkInputCandidates(root));
+    const ignored: string[] = [];
+    for (let start = 0; start < candidates.length; start += 100) {
+      ignored.push(
+        ...(yield* lines(
+          "ls-files",
+          "--others",
+          "--ignored",
+          "--exclude-standard",
+          "--",
+          ...candidates.slice(start, start + 100).map((file) => `:(literal)${file}`),
+        )),
+      );
+    }
     for (const file of [
       // Raw bytes of changed files too: .gitattributes normalizes line endings in
       // the diff, but the formatter reads the file as it is on disk.
