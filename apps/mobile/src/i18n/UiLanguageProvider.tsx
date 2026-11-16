@@ -1,36 +1,11 @@
-import { useAtomValue } from "@effect/atom-react";
-import { DEFAULT_UI_LANGUAGE_PREFERENCE } from "@t3tools/contracts/settings";
-import {
-  plusLanguagePreference,
-  resolveLanguagePreference,
-  resolveUiLanguage,
-} from "@t3tools/shared/uiLanguage";
-import { AsyncResult } from "effect/reactivity";
-import { type ReactNode, useSyncExternalStore } from "react";
-import { AppState } from "react-native";
-
-import { mobilePreferencesAtom } from "../state/preferences";
+import { resolveUiLanguage } from "@t3tools/shared/uiLanguage";
+import type { ReactNode } from "react";
+import { useResolvedLocale } from "./useResolvedLocale";
 import { UiLanguageContext } from "./useUiLanguage";
 
-function systemLocale() {
-  return Intl.DateTimeFormat().resolvedOptions().locale;
-}
-
-function subscribeSystemLocale(refresh: () => void) {
-  const subscription = AppState.addEventListener("change", (state) => {
-    if (state === "active") refresh();
-  });
-  return () => subscription.remove();
-}
-
-/** Resolves this device's persisted language; foregrounding re-reads a changed system locale. */
 export function UiLanguageProvider({ children }: { readonly children: ReactNode }) {
-  const stored = useAtomValue(mobilePreferencesAtom);
-  const preference = AsyncResult.isSuccess(stored)
-    ? plusLanguagePreference(resolveLanguagePreference(stored.value))
-    : DEFAULT_UI_LANGUAGE_PREFERENCE;
-  const locale = useSyncExternalStore(subscribeSystemLocale, systemLocale);
+  const locale = useResolvedLocale();
   return (
-    <UiLanguageContext value={resolveUiLanguage(preference, locale)}>{children}</UiLanguageContext>
+    <UiLanguageContext value={resolveUiLanguage("system", locale)}>{children}</UiLanguageContext>
   );
 }

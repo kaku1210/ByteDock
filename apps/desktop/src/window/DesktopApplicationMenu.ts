@@ -217,7 +217,7 @@ export const make = Effect.gen(function* () {
   ) {
     const language = resolveUiLanguage(
       preference,
-      preference === "system" ? yield* electronApp.systemLocale : null,
+      preference === "system" ? (yield* electronApp.preferredSystemLanguages)[0] : null,
     );
     if (appliedLanguage === language) return;
     const t = (key: keyof typeof menuCopy) => menuCopy[key][language === "zh-CN" ? 1 : 0];

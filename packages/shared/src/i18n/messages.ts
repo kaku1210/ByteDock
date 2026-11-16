@@ -2,6 +2,8 @@ import type { UiLanguage } from "../uiLanguage.ts";
 import { COMPOSER_SHORTCUT_HINTS, DEFAULT_COMPOSER_PLACEHOLDER } from "../composerPlaceholder.ts";
 import { threadMessages } from "./threadMessages.ts";
 import { settingsDetailMessages } from "./settingsDetailMessages.ts";
+import { settingsText } from "./settingsCopy.ts";
+import { interfaceCopy } from "./interfaceCopy.ts";
 import { updateCenterMessages } from "./updateCenterMessages.ts";
 
 const chineseComposerShortcutHints = "@ 引用文件，$ 选择技能，/ 打开命令，↑ 上一句";
@@ -437,16 +439,44 @@ const chineseUiText = new Map<string, string>(Object.values(messages).map(([en, 
  * @param source Original interface copy, retained when no Chinese entry exists.
  * @returns Translated copy or the unchanged source; never modifies identifiers or message data.
  */
-export function translateUiText(language: UiLanguage, source: string): string {
-  return language === "zh-CN" ? (chineseUiText.get(source) ?? source) : source;
+export function translateUiText(
+  language: UiLanguage,
+  source: string,
+  values?: MessageValues,
+  preferredTranslation?: (source: string) => string,
+): string {
+  const trimmed = source.trim();
+  const preferred = preferredTranslation?.(trimmed);
+  const translated =
+    preferred && preferred !== trimmed
+      ? preferred
+      : language === "zh-CN"
+        ? (chineseUiText.get(trimmed) ?? settingsText(trimmed) ?? interfaceCopy[trimmed])
+        : undefined;
+  return formatMessage(
+    translated === undefined ? source : source.replace(trimmed, () => translated),
+    values,
+  );
 }
 
-export function translate(language: UiLanguage, key: MessageKey, values?: MessageValues): string {
-  const message = messages[key][language === "zh-CN" ? 1 : 0];
+function formatMessage(message: string, values?: MessageValues): string {
   return values
     ? message.replace(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g, (placeholder, name: string) => {
         const value = values[name];
         return value === undefined ? placeholder : String(value);
       })
     : message;
+}
+
+export function translate(
+  language: UiLanguage,
+  key: MessageKey,
+  values?: MessageValues,
+  preferredTranslation?: (source: string) => string,
+): string {
+  const source = messages[key][0];
+  const preferred = preferredTranslation?.(source);
+  const message =
+    preferred && preferred !== source ? preferred : messages[key][language === "zh-CN" ? 1 : 0];
+  return formatMessage(message, values);
 }

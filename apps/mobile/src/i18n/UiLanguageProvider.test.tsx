@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios" },
+  TurboModuleRegistry: {
+    get: () => ({ getNativeLocales: () => ["en-US", mocks.locale] }),
+  },
   AppState: {
     addEventListener: (_event: string, listener: (state: string) => void) => {
       mocks.onAppStateChange = listener;
@@ -73,10 +77,6 @@ it("switches interface copy through saved choices and follows system changes onl
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   mocks.locale = "en-US";
   mocks.saved = [];
-  const originalOptions = Intl.DateTimeFormat().resolvedOptions();
-  using _locale = vi
-    .spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions")
-    .mockImplementation(() => ({ ...originalOptions, locale: mocks.locale }));
   const registry = AtomRegistry.make();
   const container = document.createElement("div");
   const root = createRoot(container);

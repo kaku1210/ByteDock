@@ -478,3 +478,14 @@ export function settingsRowText(
 ): string {
   return translated(language, id === undefined ? undefined : settingCopy[id]?.[field], source);
 }
+
+const sourceCopy = new Map<string, string>([
+  ...Object.values(sectionCopy).filter((copy) => copy !== undefined),
+  ...Object.values(settingCopy).flatMap((copy) =>
+    Object.values(copy ?? {}).filter((pair) => pair !== undefined),
+  ),
+]);
+
+export function settingsText(source: string): string | undefined {
+  return sourceCopy.get(source);
+}

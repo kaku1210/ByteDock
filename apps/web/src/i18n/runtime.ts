@@ -8,7 +8,7 @@ import {
   updateClientSettings,
 } from "../hooks/useSettings";
 import { initializeI18n } from "./initializeI18n";
-import { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "./locales";
+import { DEFAULT_LOCALE, SUPPORTED_LOCALES, systemUiLocales } from "./locales";
 
 type LocaleTranslations = Awaited<ReturnType<typeof getTranslationsSnapshot>>;
 
@@ -52,10 +52,9 @@ function activateLocale(locale: string): void {
 }
 
 function applyLanguageSetting(): void {
-  // Not desktopBridge.getSystemLocale(): that is the regional/time locale, not the UI language.
   requestedLocale = resolveLocale(
     resolveLanguagePreference(getClientSettings()),
-    navigator.languages,
+    systemUiLocales(navigator.languages, window.desktopBridge?.getPreferredSystemLanguages?.()),
     SUPPORTED_LOCALES,
     DEFAULT_LOCALE,
   );
@@ -70,6 +69,8 @@ export function persistGTLocale(locale: string): void {
 export function startI18n(): void {
   initializeI18n(persistGTLocale);
   subscribeClientSettings(applyLanguageSetting);
+  window.addEventListener("languagechange", applyLanguageSetting);
+  window.addEventListener("focus", applyLanguageSetting);
   applyLanguageSetting();
 }
 

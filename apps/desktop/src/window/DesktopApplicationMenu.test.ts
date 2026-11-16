@@ -37,31 +37,33 @@ const environmentInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-const layerElectronApp = Layer.succeed(ElectronApp.ElectronApp, {
-  metadata: Effect.die("unexpected metadata read"),
-  name: Effect.succeed("T3 Code"),
-  systemLocale: Effect.succeed("en-US"),
-  preferredSystemLanguages: Effect.succeed(["en-US"]),
-  whenReady: Effect.void,
-  requestSingleInstanceLock: Effect.succeed(true),
-  quit: Effect.void,
-  exit: () => Effect.void,
-  relaunch: () => Effect.void,
-  setPath: () => Effect.void,
-  setName: () => Effect.void,
-  setAboutPanelOptions: () => Effect.void,
-  setAppUserModelId: () => Effect.void,
-  getAppMetrics: Effect.succeed([]),
-  setAsDefaultProtocolClient: () => Effect.succeed(true),
-  setDesktopName: () => Effect.void,
-  setDockIcon: () => Effect.void,
-  appendCommandLineSwitch: () => Effect.void,
-  onBeforeQuitForUpdate: () => Effect.void,
-  removeCommandLineSwitch: () => Effect.void,
-  on: () => Effect.void,
-} satisfies ElectronApp.ElectronApp["Service"]);
+const layerElectronApp = (languages: readonly string[] = ["en-US"]) =>
+  Layer.succeed(ElectronApp.ElectronApp, {
+    metadata: Effect.die("unexpected metadata read"),
+    name: Effect.succeed("T3 Code"),
+    systemLocale: Effect.succeed("en-US"),
+    preferredSystemLanguages: Effect.succeed(languages),
+    whenReady: Effect.void,
+    requestSingleInstanceLock: Effect.succeed(true),
+    quit: Effect.void,
+    exit: () => Effect.void,
+    relaunch: () => Effect.void,
+    setPath: () => Effect.void,
+    setName: () => Effect.void,
+    setAboutPanelOptions: () => Effect.void,
+    setAppUserModelId: () => Effect.void,
+    getAppMetrics: Effect.succeed([]),
+    setAsDefaultProtocolClient: () => Effect.succeed(true),
+    setDesktopName: () => Effect.void,
+    setDockIcon: () => Effect.void,
+    appendCommandLineSwitch: () => Effect.void,
+    onBeforeQuitForUpdate: () => Effect.void,
+    removeCommandLineSwitch: () => Effect.void,
+    on: () => Effect.void,
+  } satisfies ElectronApp.ElectronApp["Service"]);
 
 interface MenuServices {
+  readonly systemLanguages?: readonly string[];
   readonly checkResult?: DesktopUpdateCheckResult;
   readonly shownMessageBox?: Deferred.Deferred<Electron.MessageBoxOptions>;
 }
@@ -142,7 +144,7 @@ const configureMenu = (
         Layer.provideMerge(layerDesktopWindow(selectedAction)),
         Layer.provideMerge(layerDesktopUpdates(services)),
         Layer.provideMerge(layerElectronDialog(services)),
-        Layer.provideMerge(layerElectronApp),
+        Layer.provideMerge(layerElectronApp(services.systemLanguages)),
         Layer.provideMerge(
           DesktopEnvironment.layer({ ...environmentInput, ...environment }).pipe(
             Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({}))),
@@ -203,30 +205,32 @@ const checkForUpdatesFromMacMenu = (state: Partial<DesktopUpdateState>) =>
 describe("DesktopApplicationMenu", () => {
   it.effect("uses the saved language for the Windows settings shortcut on startup", () =>
     Effect.gen(function* () {
-      const selectedAction = yield* Deferred.make<string>();
-      const applicationMenuTemplate =
-        yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
-      yield* configureMenu(
-        selectedAction,
-        applicationMenuTemplate,
-        { platform: "win32" },
-        {},
-        Option.some({ ...DEFAULT_CLIENT_SETTINGS, uiLanguage: "zh-CN" }),
-      );
+      for (const preference of ["zh-CN", "system"] as const) {
+        const selectedAction = yield* Deferred.make<string>();
+        const applicationMenuTemplate =
+          yield* Deferred.make<readonly Electron.MenuItemConstructorOptions[]>();
+        yield* configureMenu(
+          selectedAction,
+          applicationMenuTemplate,
+          { platform: "win32" },
+          { systemLanguages: ["zh-CN", "en-US"] },
+          Option.some({ ...DEFAULT_CLIENT_SETTINGS, uiLanguage: preference }),
+        );
 
-      const template = yield* Deferred.await(applicationMenuTemplate);
-      const fileMenu = template.find((item) => item.label === "文件");
-      if (!Array.isArray(fileMenu?.submenu)) {
-        throw new Error("Expected a localized File menu on Windows.");
-      }
-      const settings = fileMenu.submenu.find((item) => item.accelerator === "CmdOrCtrl+,");
-      assert.equal(settings?.label, "设置…");
-      if (typeof settings?.click !== "function") {
-        throw new Error("Expected the settings shortcut to have a click handler.");
-      }
+        const template = yield* Deferred.await(applicationMenuTemplate);
+        const fileMenu = template.find((item) => item.label === "文件");
+        if (!Array.isArray(fileMenu?.submenu)) {
+          throw new Error("Expected a localized File menu on Windows.");
+        }
+        const settings = fileMenu.submenu.find((item) => item.accelerator === "CmdOrCtrl+,");
+        assert.equal(settings?.label, "设置…");
+        if (typeof settings?.click !== "function") {
+          throw new Error("Expected the settings shortcut to have a click handler.");
+        }
 
-      settings.click({} as Electron.MenuItem, {} as Electron.BrowserWindow, {} as KeyboardEvent);
-      assert.equal(yield* Deferred.await(selectedAction), "open-settings");
+        settings.click({} as Electron.MenuItem, {} as Electron.BrowserWindow, {} as KeyboardEvent);
+        assert.equal(yield* Deferred.await(selectedAction), "open-settings");
+      }
     }),
   );
 

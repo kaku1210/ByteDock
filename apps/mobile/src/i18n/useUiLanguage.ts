@@ -12,7 +12,8 @@ export function useUiLanguage() {
   return useMemo(
     () => ({
       language,
-      t: (key: MessageKey, values?: MessageValues) => translate(language, key, values),
+      t: (key: MessageKey, values?: MessageValues) =>
+        translate(language, key, values, (source) => translateMobileText(language, source)),
       text: (source: string) => translateMobileText(language, source),
     }),
     [language],

@@ -1,13 +1,10 @@
 import "./intl-polyfills";
-import { resolveLocale } from "@t3tools/client-runtime/locales";
-import { resolveLanguagePreference } from "@t3tools/shared/uiLanguage";
-import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/reactivity";
 import { GTProvider, initializeGT } from "gt-react-native";
 import { useDeferredValue, type ReactNode } from "react";
-import { Platform, TurboModuleRegistry, View, type TurboModule } from "react-native";
+import { View } from "react-native";
+import { useResolvedLocale } from "./useResolvedLocale";
+export { useLanguagePreference } from "./useResolvedLocale";
 
-import { mobilePreferencesAtom } from "../state/preferences";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES } from "./locales";
 import de from "./translations/de.json";
 import es from "./translations/es.json";
@@ -39,36 +36,11 @@ initializeGT({
   loadTranslations: async (locale: string) => TRANSLATIONS[locale] ?? {},
 });
 
-// Read the device languages from gt-react-native's own native module: GT's getLocale() prefers
-// the last locale passed to GTProvider, which it persists, so it can't express "system".
-function readSystemLocales(): ReadonlyArray<string> {
-  try {
-    const locales =
-      TurboModuleRegistry.get<{ getNativeLocales(): string[] } & TurboModule>(
-        "GtReactNative",
-      )?.getNativeLocales() ?? [];
-    // On iOS the first entry is NSLocale.currentLocale, whose language is the app's bundle
-    // localization (English only), not the user's; preferredLanguages follow it.
-    return Platform.OS === "ios" ? locales.slice(1) : locales;
-  } catch {
-    return [];
-  }
-}
-
-export function useLanguagePreference(): string {
-  const preferences = useAtomValue(mobilePreferencesAtom);
-  return AsyncResult.isSuccess(preferences)
-    ? resolveLanguagePreference(preferences.value)
-    : "system";
-}
-
 /** Translates the screens inside it into the saved language; "system" follows the device. */
 export function I18nProvider(props: { readonly children: ReactNode }) {
   // GT suspends while a locale's catalog loads. Deferring the switch keeps the current language
   // on screen until then, instead of GT's full-screen spinner.
-  const locale = useDeferredValue(
-    resolveLocale(useLanguagePreference(), readSystemLocales(), SUPPORTED_LOCALES, DEFAULT_LOCALE),
-  );
+  const locale = useDeferredValue(useResolvedLocale());
   return (
     <GTProvider locale={locale} fallback={<View className="flex-1 bg-screen" />}>
       {props.children}
