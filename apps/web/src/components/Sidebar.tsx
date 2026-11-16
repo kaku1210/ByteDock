@@ -1,3 +1,5 @@
+import { sidebarDeviceProjectScope } from "./sidebar/sidebarDeviceScope";
+import { SidebarDeviceFilter } from "./sidebar/SidebarDeviceFilter";
 import { attachSidebarTree } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
@@ -906,7 +908,8 @@ function readRouteThreadKey(router: AnyRouter): string | null {
 }
 
 export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReveal }) {
-  const { language, t } = useUiLanguage();
+  const { text: uiText, language, t } = useUiLanguage();
+
   const {
     projects,
     serverConfigs,
@@ -1020,7 +1023,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [searchHighlightKey, setSearchHighlightKey] = useState<string | null>(null);
-  const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const allConnectedEnvironmentIds = useConnectedEnvironmentIds();
+  const hiddenEnvironmentIds = useUiStateStore((s) => s.sidebarHiddenEnvironmentIds);
+  const setHiddenEnvironmentIds = useUiStateStore((s) => s.setSidebarHiddenEnvironmentIds);
+  const connectedEnvironmentIds = allConnectedEnvironmentIds.filter(
+    (id) => !hiddenEnvironmentIds.includes(id),
+  );
   const queuePendingFileDrop = useSidebarPendingFileDropStore((s) => s.queuePendingFileDrop);
   const clearPendingFileDrop = useSidebarPendingFileDropStore((s) => s.clearPendingFileDrop);
   const [renamingThreadRef, setRenamingThreadRef] = useState<ScopedThreadRef | null>(null);
@@ -1140,7 +1148,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
-  const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
+  const projectScopeKey = JSON.stringify([projectScopeKeys, hiddenEnvironmentIds]);
   const toggleProjectScopeKey = (key: string) =>
     setProjectScopeKeys(
       projectScopeKeys.includes(key)
@@ -1191,7 +1199,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const scopedProjectGroups = revealWidensScope ? [] : chosenProjectGroups;
   const scopedProjectRefs = scopedProjectGroups.flatMap((project) => project.memberProjectRefs);
-  const scopedProjectKeys = revealWidensScope ? null : chosenScopeProjectKeys;
+  const scopedProjectKeys = sidebarDeviceProjectScope(
+    projects,
+    revealWidensScope ? null : chosenScopeProjectKeys,
+    hiddenEnvironmentIds,
+  );
   const threadSearch = useThreadSearch(
     connectedEnvironmentIds,
     threadSearchQuery,
@@ -1349,8 +1361,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
-          [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
-        : scopedProjectGroups
+          [...scopeGroups, ...projectGroups.filter((project) => project.archived)].filter((group) =>
+            group.memberProjectRefs.some(
+              (ref) => !hiddenEnvironmentIds.includes(ref.environmentId),
+            ),
+          )
+        : scopedProjectGroups.filter((group) =>
+            group.memberProjectRefs.some(
+              (ref) => !hiddenEnvironmentIds.includes(ref.environmentId),
+            ),
+          )
       : null,
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
@@ -2978,6 +2998,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           <SidebarGroup className="z-[1]">
             <SidebarThreadHeader
               hasProjects={projectGroups.length > 0}
+              deviceScope={
+                <SidebarDeviceFilter
+                  environments={environmentLabelById}
+                  hiddenIds={hiddenEnvironmentIds}
+                  onChange={(ids) => {
+                    clearSelection();
+                    setHiddenEnvironmentIds(ids);
+                    scrollSidebarToTop(sidebarContentRef.current);
+                  }}
+                />
+              }
               projectScope={
                 <Combobox
                   items={projectScopeItems}
@@ -3302,14 +3333,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
               {projects.length === 0 ? (
                 <>
-                  <span>No projects yet</span>
+                  <span>{uiText("No projects yet")}</span>
                   <button
                     type="button"
                     onClick={openAddProjectCommandPalette}
                     className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-sidebar-border px-2.5 py-1 text-2xs font-medium text-sidebar-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
                   >
                     <PlusIcon className="-mx-0.5 size-3" />
-                    Add project
+                    {uiText("Add project")}
                   </button>
                 </>
               ) : scopedProjectGroups.length > 0 ? (
@@ -3326,7 +3357,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     onClick={() => setProjectScopeKeys([])}
                     className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-sidebar-border px-2.5 py-1 text-2xs font-medium text-sidebar-muted-foreground transition-colors hover:bg-sidebar-row-hover hover:text-sidebar-foreground"
                   >
-                    Show all projects
+                    {uiText("Show all projects")}
                   </button>
                 </>
               ) : (
@@ -3547,7 +3578,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarDragBoundary
                                 key="pinned-divider"
                                 marker="pinned-divider"
-                                label="Active"
+                                label={uiText("Active")}
                                 visible={from !== null}
                                 isDropTarget={dragTargetSection === "active"}
                               />,
@@ -3558,7 +3589,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionPlaceholder
                                 key="active-placeholder"
                                 marker="active-placeholder"
-                                label="Active"
+                                label={uiText("Active")}
                                 showHint={
                                   from !== null &&
                                   (activeThreads.length === 0 ||
