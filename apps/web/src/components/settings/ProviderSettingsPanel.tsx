@@ -549,7 +549,8 @@ export function EnvironmentProviderSettings({
   readonly projectIds?: readonly ProjectId[];
   readonly readOnly?: boolean;
 }) {
-  const { t } = useUiLanguage();
+  const { text: uiText, t } = useUiLanguage();
+
   const settings = useEnvironmentSettings(environmentId);
   const managedPolicy = useManagedPolicy(environmentId);
   // A policy that allows no provider leaves nothing to add.
@@ -1039,7 +1040,10 @@ export function EnvironmentProviderSettings({
           <SettingsGroup divided={false} className="overflow-hidden">
             <SettingsRow
               title={t("settings.providers.limitedPermissions")}
-              description={`This session can view ${environmentLabel}'s providers but can't change their settings.`}
+              description={uiText(
+                "This session can view {value0}'s providers but can't change their settings.",
+                { value0: environmentLabel },
+              )}
             />
           </SettingsGroup>
         ) : null}
@@ -1266,7 +1270,8 @@ function ProviderInstanceRow({
   readonly favorites: UnifiedSettings["favorites"];
   readonly actions: ProviderInstanceRowActions;
 }) {
-  const { t } = useUiLanguage();
+  const { text: uiText, t } = useUiLanguage();
+
   const allProjects = useProjects();
   const secretSources = useSecretSources(environmentId);
   const acpProjects =
@@ -1398,7 +1403,7 @@ function ProviderInstanceRow({
       headerAction={
         mode === "editor" && isDefault && isDirty ? (
           <SettingResetButton
-            label={`${resetLabel} provider settings`}
+            label={uiText("{value0} provider settings", { value0: resetLabel })}
             onClick={() => actions.resetDefaultInstance(driver)}
           />
         ) : null

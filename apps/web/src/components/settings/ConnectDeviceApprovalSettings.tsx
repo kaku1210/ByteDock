@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { AuthConnectDevice, EnvironmentId } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -45,6 +46,7 @@ export function ConnectDeviceApprovalSettings({
   /** Revokes now, or first asks to turn approval on when it is off. */
   readonly requestRevoke: (title: string, revoke: () => Promise<void>) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const approve = useAtomCommand(authEnvironment.approveConnectDevice, { reportFailure: false });
   const deny = useAtomCommand(authEnvironment.revokePairingLink, { reportFailure: false });
   const revoke = useAtomCommand(authEnvironment.revokeConnectDevice, { reportFailure: false });
@@ -57,7 +59,7 @@ export function ConnectDeviceApprovalSettings({
   };
 
   return (
-    <SettingsSection id="connect-devices" title="T3 Connect devices">
+    <SettingsSection id="connect-devices" title={uiText("T3 Connect devices")}>
       {requests.map((request) => {
         const connectRequest = request.connectDeviceRequest;
         if (!connectRequest) return null;
@@ -67,12 +69,12 @@ export function ConnectDeviceApprovalSettings({
             <div className={ITEM_ROW_INNER_CLASSNAME}>
               <div className="min-w-0 flex-1 space-y-1">
                 <p className="text-sm font-medium text-foreground">
-                  Waiting for approval ·{" "}
+                  {uiText("Waiting for approval ·")}{" "}
                   <span className="font-mono tabular-nums">{connectRequest.verificationCode}</span>
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {describeConnectDeviceClient(connectRequest)}. Approve only if the device in front
-                  of you shows this code.
+                  {describeConnectDeviceClient(connectRequest)}
+                  {uiText(". Approve only if the device in front of you shows this code.")}
                 </p>
               </div>
               <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
@@ -89,7 +91,7 @@ export function ConnectDeviceApprovalSettings({
                     )
                   }
                 >
-                  Deny
+                  {uiText("Deny")}
                 </Button>
                 <Button
                   size="xs"
@@ -103,7 +105,7 @@ export function ConnectDeviceApprovalSettings({
                     )
                   }
                 >
-                  {busy ? "Saving…" : "Approve"}
+                  {busy ? uiText("Saving…") : uiText("Approve")}
                 </Button>
               </div>
             </div>
@@ -122,7 +124,8 @@ export function ConnectDeviceApprovalSettings({
                 <p className="text-xs text-muted-foreground">
                   <span className="font-mono tabular-nums">{device.verificationCode}</span>
                   <span aria-hidden> · </span>
-                  Trusted since {formatAccessTimestamp(DateTime.formatIso(device.approvedAt))}
+                  {uiText("Trusted since ")}
+                  {formatAccessTimestamp(DateTime.formatIso(device.approvedAt))}
                 </p>
               </div>
               <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
@@ -144,7 +147,7 @@ export function ConnectDeviceApprovalSettings({
                     )
                   }
                 >
-                  {busy ? "Revoking…" : "Revoke"}
+                  {busy ? uiText("Revoking…") : uiText("Revoke")}
                 </Button>
               </div>
             </div>
@@ -154,7 +157,7 @@ export function ConnectDeviceApprovalSettings({
       {devices.length === 0 && requests.length === 0 ? (
         <div className={ITEM_ROW_CLASSNAME}>
           <p className="text-xs text-muted-foreground/60">
-            No device has connected through T3 Connect yet.
+            {uiText("No device has connected through T3 Connect yet.")}
           </p>
         </div>
       ) : null}

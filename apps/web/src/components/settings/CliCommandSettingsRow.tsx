@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useState } from "react";
 
 import {
@@ -48,6 +49,7 @@ export function useDesktopCliCommand() {
 }
 
 export function CliCommandSettingsRow() {
+  const { text: uiText } = useUiLanguage();
   const { state, busy, run } = useDesktopCliCommand();
 
   if (!state?.supported) return null;
@@ -70,7 +72,7 @@ export function CliCommandSettingsRow() {
         <div className="flex gap-2">
           {state.pathSetup && !state.pathSetup.added ? (
             <Button size="sm" variant="outline" disabled={busy} onClick={() => run("addToPath")}>
-              Add to PATH
+              {uiText("Add to PATH")}
             </Button>
           ) : null}
           <Button
@@ -79,7 +81,7 @@ export function CliCommandSettingsRow() {
             disabled={busy || (!installed && Boolean(state.shadowedBy))}
             onClick={() => run(installed ? "uninstall" : "install")}
           >
-            {installed ? "Remove" : "Install"}
+            {installed ? uiText("Remove") : uiText("Install")}
           </Button>
         </div>
       }

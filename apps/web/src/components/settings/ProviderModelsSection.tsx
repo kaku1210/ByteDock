@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { ArrowDownIcon, ArrowUpIcon, PencilIcon, PlusIcon, StarIcon, XIcon } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import {
@@ -136,6 +137,7 @@ export function ProviderModelsSection({
   onToggleFavorite,
   onModelOrderChange,
 }: ProviderModelsSectionProps) {
+  const { text: uiText } = useUiLanguage();
   const [input, setInput] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -336,11 +338,11 @@ export function ProviderModelsSection({
           <Input
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
-            placeholder="Filter models"
+            placeholder={uiText("Filter models")}
             size="sm"
             className="w-56 max-w-full"
             spellCheck={false}
-            aria-label="Filter models"
+            aria-label={uiText("Filter models")}
           />
         ) : null}
         <div className="flex items-center gap-2">
@@ -356,15 +358,20 @@ export function ProviderModelsSection({
                 )
               }
             >
-              {allBuiltInModelsHidden ? "Enable all" : "Disable all"}
+              {allBuiltInModelsHidden ? uiText("Enable all") : uiText("Disable all")}
             </Button>
           ) : null}
           <span className="text-xs text-muted-foreground">
-            {models.length} model{models.length === 1 ? "" : "s"}
+            {models.length}
+            {uiText(" model")}
+            {models.length === 1 ? "" : "s"}
             {favoriteCount > 0
-              ? ` · ${favoriteCount} favorite${favoriteCount === 1 ? "" : "s"}`
+              ? uiText(" · {value0} favorite{value1}", {
+                  value0: favoriteCount,
+                  value1: favoriteCount === 1 ? "" : "s",
+                })
               : ""}
-            {hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ""}
+            {hiddenCount > 0 ? uiText(" · {value0} hidden", { value0: hiddenCount }) : ""}
           </span>
         </div>
         {driverKind !== "antigravity" && !isAdding ? (
@@ -377,7 +384,7 @@ export function ProviderModelsSection({
             onClick={() => setIsAdding(true)}
           >
             <PlusIcon className="size-3" />
-            Add custom model
+            {uiText("Add custom model")}
           </Button>
         ) : null}
       </div>
@@ -387,7 +394,9 @@ export function ProviderModelsSection({
       >
         {visibleModels.length === 0 ? (
           <p className="px-2 py-2 text-xs text-muted-foreground">
-            {isFiltering ? "No models match." : "No models reported for this provider yet."}
+            {isFiltering
+              ? uiText("No models match.")
+              : uiText("No models reported for this provider yet.")}
           </p>
         ) : null}
         {visibleModels.map((model, index) => {
@@ -454,15 +463,17 @@ export function ProviderModelsSection({
               event.preventDefault();
               void handleAdd();
             }}
-            placeholder={driverKind ? CUSTOM_MODEL_PLACEHOLDER_BY_KIND[driverKind] : "model-slug"}
+            placeholder={
+              driverKind ? CUSTOM_MODEL_PLACEHOLDER_BY_KIND[driverKind] : uiText("model-slug")
+            }
             spellCheck={false}
           />
           <div className="flex shrink-0 gap-2">
             <Button size="sm" variant="outline" disabled={isSaving} onClick={handleAdd}>
-              Add
+              {uiText("Add")}
             </Button>
             <Button size="sm" variant="ghost" onClick={cancelAdd}>
-              Cancel
+              {uiText("Cancel")}
             </Button>
           </div>
         </div>
@@ -506,6 +517,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
   readonly onToggleEdit: (slug: string) => void;
   readonly onRemove: (slug: string) => void;
 }) {
+  const { text: uiText } = useUiLanguage();
   const capLabels = describeModelCapabilities(model, flagMissingReasoning);
   const nameClassName = cn("text-xs", isHidden ? "text-muted-foreground" : "text-foreground/90");
   const pickerTooltip = model.isCustom
@@ -564,7 +576,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
           </TooltipPopup>
         </Tooltip>
         {model.isCustom ? (
-          <span className="shrink-0 text-2xs text-muted-foreground/70">custom</span>
+          <span className="shrink-0 text-2xs text-muted-foreground/70">{uiText("custom")}</span>
         ) : null}
       </span>
       <span className="text-2xs text-muted-foreground/70">
@@ -589,7 +601,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
               >
                 <ArrowUpIcon className="size-3" />
               </TooltipTrigger>
-              <TooltipPopup side="top">Move up</TooltipPopup>
+              <TooltipPopup side="top">{uiText("Move up")}</TooltipPopup>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger
@@ -605,7 +617,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
               >
                 <ArrowDownIcon className="size-3" />
               </TooltipTrigger>
-              <TooltipPopup side="top">Move down</TooltipPopup>
+              <TooltipPopup side="top">{uiText("Move down")}</TooltipPopup>
             </Tooltip>
           </>
         ) : null}
@@ -625,7 +637,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
               >
                 <PencilIcon className="size-3" />
               </TooltipTrigger>
-              <TooltipPopup side="top">Edit name and options</TooltipPopup>
+              <TooltipPopup side="top">{uiText("Edit name and options")}</TooltipPopup>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger
@@ -641,7 +653,7 @@ const ProviderModelRow = memo(function ProviderModelRow({
               >
                 <XIcon className="size-3" />
               </TooltipTrigger>
-              <TooltipPopup side="top">Remove custom model</TooltipPopup>
+              <TooltipPopup side="top">{uiText("Remove custom model")}</TooltipPopup>
             </Tooltip>
           </>
         ) : null}

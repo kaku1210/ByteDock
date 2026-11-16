@@ -294,6 +294,7 @@ function ProviderEnvironmentFieldRow(props: {
   readonly secretSources: ReadonlyArray<SecretSource>;
   readonly environmentId?: EnvironmentId | undefined;
 }) {
+  const { text: uiText } = useUiLanguage();
   const inputId = `${props.idPrefix}-environment-${props.field.name}`;
   const value = props.variable?.valueRedacted ? "" : (props.variable?.value ?? "");
 
@@ -337,7 +338,7 @@ function ProviderEnvironmentFieldRow(props: {
               size="icon-sm"
               variant="ghost-destructive"
               onClick={() => props.onRemove(props.field)}
-              aria-label={`Clear ${props.field.label}`}
+              aria-label={uiText("Clear {value0}", { value0: props.field.label })}
             >
               <XIcon className="size-3.5" />
             </Button>
@@ -356,7 +357,8 @@ export function ProviderEnvironmentSection(props: {
   readonly secretSources?: ReadonlyArray<SecretSource>;
   readonly environmentId?: EnvironmentId | undefined;
 }) {
-  const { t } = useUiLanguage();
+  const { text: uiText, t } = useUiLanguage();
+
   const [storedDraft, setDraft] = useState(() =>
     seedRowsDraft(props.environment, toEnvironmentDraftRows),
   );
@@ -481,7 +483,7 @@ export function ProviderEnvironmentSection(props: {
                 disabled={variable.valueRedacted === true}
                 placeholder="VARIABLE_NAME"
                 spellCheck={false}
-                aria-label={`Environment variable name ${index + 1}`}
+                aria-label={uiText("Environment variable name {value0}", { value0: index + 1 })}
               />
             );
             const removeButton = (
@@ -490,7 +492,9 @@ export function ProviderEnvironmentSection(props: {
                 size="icon-micro"
                 variant="ghost-destructive"
                 onClick={() => removeVariable(variable.id)}
-                aria-label={`Remove environment variable ${variable.name || index + 1}`}
+                aria-label={uiText("Remove environment variable {value0}", {
+                  value0: variable.name || index + 1,
+                })}
               >
                 <XIcon className="size-3" />
               </Button>
@@ -515,7 +519,9 @@ export function ProviderEnvironmentSection(props: {
                           });
                         }}
                         aria-pressed={variable.sensitive}
-                        aria-label={`Mark environment variable ${variable.name || index + 1} as sensitive`}
+                        aria-label={uiText("Mark environment variable {value0} as sensitive", {
+                          value0: variable.name || index + 1,
+                        })}
                       >
                         {variable.sensitive ? (
                           <LockIcon className="size-3" />
@@ -557,7 +563,9 @@ export function ProviderEnvironmentSection(props: {
                     placeholder="value"
                     configured={variable.valueRedacted === true}
                     spellCheck={false}
-                    aria-label={`Environment variable value ${index + 1}`}
+                    aria-label={uiText("Environment variable value {value0}", {
+                      value0: index + 1,
+                    })}
                     sources={props.secretSources ?? []}
                     environmentId={props.environmentId}
                     onSecretChange={(secret) => setVariableSecret(variable.id, secret)}
@@ -580,7 +588,9 @@ export function ProviderEnvironmentSection(props: {
                       autoComplete="off"
                       placeholder="value"
                       spellCheck={false}
-                      aria-label={`Environment variable value ${index + 1}`}
+                      aria-label={uiText("Environment variable value {value0}", {
+                        value0: index + 1,
+                      })}
                     />,
                   )
                 )}
@@ -590,7 +600,7 @@ export function ProviderEnvironmentSection(props: {
           <p className="text-xs text-muted-foreground">
             {t("settings.providerCard.sensitiveHelp")}
             {rows.some((row) => row.valueRedacted === true)
-              ? " Enter a new value to rename a saved one or make it plain text."
+              ? uiText(" Enter a new value to rename a saved one or make it plain text.")
               : null}
           </p>
         </div>
@@ -792,7 +802,8 @@ export function ProviderInstanceCard({
   secretSources = NO_SECRET_SOURCES,
   projectOverride,
 }: ProviderInstanceCardProps) {
-  const { language, t } = useUiLanguage();
+  const { text: uiText, language, t } = useUiLanguage();
+
   const enabled = projectOverride?.effectiveEnabled ?? resolveProviderInstanceEnabled(instance);
   const effectiveProvider = liveProvider && { ...liveProvider, enabled };
   const compatibility = enabled ? liveProvider?.compatibilityAdvisory : undefined;
@@ -1041,7 +1052,11 @@ export function ProviderInstanceCard({
                   size={mode === "list" ? "icon-micro" : "icon-xs"}
                   variant="ghost-muted"
                   className={mode === "list" ? "pointer-events-auto relative shrink-0" : undefined}
-                  aria-label={`${updateProgress ? t("settings.providerCard.updating") : versionAdvisory.title}, view details`}
+                  aria-label={uiText("{value0}, view details", {
+                    value0: updateProgress
+                      ? t("settings.providerCard.updating")
+                      : versionAdvisory.title,
+                  })}
                 >
                   {updateProgress ? (
                     <Spinner tone="muted" {...(mode === "list" ? { size: "sm" as const } : {})} />
@@ -1090,7 +1105,9 @@ export function ProviderInstanceCard({
               {isUpdating
                 ? t("settings.providerCard.updating")
                 : versionAdvisory.targetVersion
-                  ? `Install ${getProviderVersionLabel(versionAdvisory.targetVersion)}`
+                  ? uiText("Install {value0}", {
+                      value0: getProviderVersionLabel(versionAdvisory.targetVersion) ?? "",
+                    })
                   : t("settings.providerCard.update")}
             </Button>
           ) : null}
@@ -1160,7 +1177,7 @@ export function ProviderInstanceCard({
             type="button"
             className="pointer-events-auto absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             onClick={onSelect}
-            aria-label={`Select ${displayName}`}
+            aria-label={uiText("Select {value0}", { value0: displayName })}
             aria-pressed={selected}
           />
           {titleIconNode}
@@ -1185,11 +1202,13 @@ export function ProviderInstanceCard({
                   className="pointer-events-auto line-clamp-2 [overflow-wrap:anywhere]"
                 >
                   {updateProgress ? (
-                    `Updating · ${updateProgress}`
+                    uiText("Updating · {value0}", { value0: updateProgress })
                   ) : (
                     <>
                       {summary.headline}
-                      {needsAttention && inlineStatusDetail ? ` · ${inlineStatusDetail}` : null}
+                      {needsAttention && inlineStatusDetail
+                        ? uiText(" · {value0}", { value0: inlineStatusDetail })
+                        : null}
                     </>
                   )}
                 </span>
@@ -1205,7 +1224,7 @@ export function ProviderInstanceCard({
                 deviceEnabled={resolveProviderInstanceEnabled(instance)}
               />
               <SettingResetButton
-                label={`${displayName} enablement`}
+                label={uiText("{value0} enablement", { value0: displayName })}
                 tooltip={t("settings.providerCard.reset")}
                 disabled={readOnly || !canWriteSettings}
                 onClick={projectOverride.onReset}
@@ -1218,7 +1237,7 @@ export function ProviderInstanceCard({
               checked={enabled}
               disabled={readOnly || (projectOverride !== undefined && !canWriteSettings)}
               onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-              aria-label={`Enable ${displayName}`}
+              aria-label={uiText("Enable {value0}", { value0: displayName })}
             />
           </ManagedControl>
         </span>
@@ -1249,7 +1268,7 @@ export function ProviderInstanceCard({
             variant="ghost-destructive"
             disabled={readOnly}
             onClick={onDelete}
-            aria-label={`Delete instance ${instanceId}`}
+            aria-label={uiText("Delete instance {value0}", { value0: instanceId })}
           >
             <Trash2Icon />
           </Button>
@@ -1315,8 +1334,9 @@ export function ProviderInstanceCard({
       title={t("settings.providerCard.driver")}
       description={
         <span>
-          This instance uses <code className="text-foreground">{String(instance.driver)}</code>,
-          which is not available in this build. Its configuration is preserved.
+          {uiText("This instance uses ")}
+          <code className="text-foreground">{String(instance.driver)}</code>
+          {uiText(", which is not available in this build. Its configuration is preserved.")}
         </span>
       }
     />

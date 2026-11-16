@@ -1,3 +1,4 @@
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import {
   ANOTHER_ADDRESS,
   type LinkableMachine,
@@ -15,12 +16,14 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
  * machine, with where that address leads.
  */
 export function LinkAddressWarning({ address }: { readonly address: string }) {
+  const { text: uiText } = useUiLanguage();
   return (
     <Alert variant="warning">
-      <AlertTitle>Check this address</AlertTitle>
+      <AlertTitle>{uiText("Check this address")}</AlertTitle>
       <AlertDescription>
-        This app cannot confirm it is one of your machines. The pairing code you paste is sent
-        there.
+        {uiText(
+          "This app cannot confirm it is one of your machines. The pairing code you paste is sent there.",
+        )}
         <span className="block break-all">{linkDestination(address)}</span>
       </AlertDescription>
     </Alert>
@@ -29,17 +32,18 @@ export function LinkAddressWarning({ address }: { readonly address: string }) {
 
 /** Whether a machine is linked already, or how this app knows it when not connected to it. */
 export function LinkMachineBadge({ machine }: { readonly machine: LinkableMachine }) {
+  const { text: uiText } = useUiLanguage();
   if (machine.linked) {
     return (
       <Badge variant="success" size="sm">
-        Linked
+        {uiText("Linked")}
       </Badge>
     );
   }
   if (machine.connected) return null;
   return (
     <Badge variant="outline" size="sm">
-      {machine.connectOnly ? "T3 Connect" : "Not connected"}
+      {machine.connectOnly ? uiText("T3 Connect") : uiText("Not connected")}
     </Badge>
   );
 }
@@ -65,11 +69,12 @@ export function LinkMachineSelect({
   readonly onChange: (value: string) => void;
   readonly disabled: boolean;
 }) {
+  const { text: uiText } = useUiLanguage();
   const labelId = useId();
   return (
     <div className="space-y-1.5">
       <span id={labelId} className="block text-xs font-medium text-foreground">
-        Machine
+        {uiText("Machine")}
       </span>
       <Select
         value={value}
@@ -97,7 +102,7 @@ export function LinkMachineSelect({
             </SelectItem>
           ))}
           <SelectItem value={ANOTHER_ADDRESS} hideIndicator>
-            Another address…
+            {uiText("Another address…")}
           </SelectItem>
         </SelectPopup>
       </Select>

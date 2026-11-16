@@ -39,7 +39,8 @@ export function MicrophoneTest({
   /** Labels and device ids become readable once the browser grants access. */
   onMicrophoneAccess: () => void;
 }) {
-  const { t } = useUiLanguage();
+  const { text: uiText, t } = useUiLanguage();
+
   const [phase, setPhase] = useState<"idle" | "starting" | "recording" | "ready">("idle");
   const [recording, setRecording] = useState<{ url: string; duration: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -205,12 +206,12 @@ export function MicrophoneTest({
         }}
       >
         <SquareIcon />
-        Stop
+        {uiText("Stop")}
       </Button>
     ) : (
       <Button size="sm" variant="outline" onClick={() => void start()}>
         {phase === "ready" ? <RotateCcwIcon /> : <MicIcon />}
-        {phase === "ready" ? "Record again" : "Record"}
+        {phase === "ready" ? uiText("Record again") : uiText("Record")}
       </Button>
     );
   const panel = error ? (
@@ -249,7 +250,7 @@ export function MicrophoneTest({
     <SettingsRow
       {...searchableSetting("microphone-test")}
       title={t("settings.microphoneTest.test")}
-      description="Record ten seconds and play it back. The audio stays on this device."
+      description={uiText("Record ten seconds and play it back. The audio stays on this device.")}
       control={control}
     >
       {panel ? (
@@ -264,7 +265,7 @@ export function MicrophoneTest({
             size="icon-sm"
             variant="ghost-muted"
             aria-label={
-              phase === "ready" ? "Discard recording" : t("settings.microphoneTest.cancel")
+              phase === "ready" ? uiText("Discard recording") : t("settings.microphoneTest.cancel")
             }
             onClick={cancel}
           >
