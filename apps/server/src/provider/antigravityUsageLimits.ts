@@ -38,6 +38,15 @@ const TokenFile = Schema.Struct({
   refresh_token: Schema.NonEmptyString,
   project_id: Schema.optional(Schema.String),
 });
+const AccessTokenFile = Schema.Struct({
+  access_token: Schema.NonEmptyString,
+  expiry: Schema.optional(Schema.String),
+  expires_at: Schema.optional(Schema.String),
+  project_id: Schema.optional(Schema.String),
+});
+const LoadCodeAssistResponse = Schema.Struct({
+  cloudaicompanionProject: Schema.optional(Schema.String),
+});
 const TokenResponse = Schema.Struct({
   access_token: Schema.NonEmptyString,
   expires_in: Schema.Number.check(Schema.isGreaterThan(0)),
@@ -78,10 +87,18 @@ const Models = Schema.Struct({
 });
 
 const decodeTokenFile = Schema.decodeEffect(Schema.fromJsonString(TokenFile));
+const decodeAccessTokenFile = Schema.decodeEffect(Schema.fromJsonString(AccessTokenFile));
+const decodeLoadCodeAssist = Schema.decodeUnknownEffect(LoadCodeAssistResponse);
 const decodeTokenResponse = Schema.decodeUnknownEffect(TokenResponse);
 const decodeUserInfo = Schema.decodeUnknownEffect(UserInfo);
 const decodeSummary = Schema.decodeUnknownEffect(Summary);
 const decodeModels = Schema.decodeUnknownEffect(Models);
+
+function normalizeKeyringPayload(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("go-keyring-base64:")) return trimmed;
+  return Buffer.from(trimmed.slice("go-keyring-base64:".length), "base64").toString("utf8");
+}
 
 function iso(value: string | undefined): string | undefined {
   const parsed = value ? DateTime.make(value) : Option.none();
@@ -210,6 +227,7 @@ function modelWindows(models: typeof Models.Type) {
 export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(function* (input: {
   readonly profileDirectory: string;
   readonly authMethod: AntigravitySettings["authMethod"];
+  readonly readKeyringToken?: Effect.Effect<string | undefined>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -219,7 +237,13 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   const architecture = yield* HostProcess.Architecture;
   const tokenPath = path.join(input.profileDirectory, "antigravity-acp", "acp_token.json");
   let cached:
-    | { fingerprint: string; account: string; accessToken: string; expiresAt: number }
+    | {
+        fingerprint: string;
+        account: string;
+        accessToken: string;
+        expiresAt: number;
+        projectId?: string | undefined;
+      }
     | undefined;
   let generation = 0;
 
@@ -230,13 +254,56 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       Effect.flatMap((response) => response.json),
       Effect.timeout("10 seconds"),
     );
+  const endpoints =
+    input.authMethod === "oauth-personal" || input.authMethod === "oauth-business"
+      ? ENDPOINTS[input.authMethod]
+      : [];
+  const fetchAccount = (accessToken: string, fallback: string) =>
+    request(
+      HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
+        HttpClientRequest.setHeaders({ Authorization: `Bearer ${accessToken}` }),
+      ),
+    ).pipe(
+      Effect.flatMap(antigravityAccountFingerprint),
+      Effect.orElseSucceed(() => fallback),
+    );
+  const resolveProjectId = (accessToken: string, explicitProjectId: string | undefined) => {
+    const trimmed = explicitProjectId?.trim();
+    if (trimmed) return Effect.succeed(trimmed);
+    const primaryEndpoint = endpoints[0];
+    if (!primaryEndpoint) return Effect.undefined;
+    return request(
+      HttpClientRequest.post(`${primaryEndpoint}/v1internal:loadCodeAssist`).pipe(
+        HttpClientRequest.setHeaders({
+          Authorization: `Bearer ${accessToken}`,
+          "User-Agent": antigravityUserAgent(platform, architecture),
+        }),
+        HttpClientRequest.bodyJsonUnsafe({
+          metadata: {
+            ideType: "ANTIGRAVITY",
+            platform: "PLATFORM_UNSPECIFIED",
+            pluginType: "GEMINI",
+          },
+        }),
+      ),
+    ).pipe(
+      Effect.flatMap(decodeLoadCodeAssist),
+      Effect.map((response) => response.cloudaicompanionProject?.trim() || undefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+  };
   const read = Effect.gen(function* () {
     const startedGeneration = generation;
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     if (input.authMethod !== "oauth-personal" && input.authMethod !== "oauth-business") {
       return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
     }
-    if (!(yield* fs.exists(tokenPath))) {
+    const rawToken = (yield* fs.exists(tokenPath))
+      ? yield* fs.readFileString(tokenPath)
+      : input.readKeyringToken
+        ? yield* input.readKeyringToken.pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
+    if (!rawToken) {
       cached = undefined;
       return makeUnavailableUsageLimits({
         checkedAt,
@@ -244,48 +311,81 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         message: "Sign in with Google to see Antigravity limits.",
       });
     }
-    const token = yield* fs.readFileString(tokenPath).pipe(Effect.flatMap(decodeTokenFile));
-    const fingerprint = yield* sha256(
-      `${token.client_id}\0${token.refresh_token}\0${token.project_id ?? ""}`,
-    );
+    const normalizedToken = normalizeKeyringPayload(rawToken);
+    const refreshToken = yield* decodeTokenFile(normalizedToken).pipe(Effect.option);
     const now = yield* Clock.currentTimeMillis;
     let accessToken: string;
     let account: string;
-    if (cached?.fingerprint !== fingerprint || cached.expiresAt <= now + 60_000) {
-      cached = undefined;
-      const refreshed = yield* request(
-        HttpClientRequest.post("https://oauth2.googleapis.com/token").pipe(
-          HttpClientRequest.bodyUrlParams({
-            client_id: token.client_id,
-            client_secret: token.client_secret,
-            refresh_token: token.refresh_token,
-            grant_type: "refresh_token",
-          }),
-        ),
-      ).pipe(Effect.flatMap(decodeTokenResponse));
-      accessToken = refreshed.access_token;
-      // Use Google account IDs to merge accounts across environments; refresh tokens differ per machine.
-      account = yield* request(
-        HttpClientRequest.get("https://www.googleapis.com/oauth2/v2/userinfo").pipe(
-          HttpClientRequest.setHeaders({ Authorization: `Bearer ${accessToken}` }),
-        ),
-      ).pipe(
-        Effect.flatMap(antigravityAccountFingerprint),
-        Effect.orElseSucceed(() => fingerprint),
+    let projectId: string | undefined;
+    if (Option.isSome(refreshToken)) {
+      const token = refreshToken.value;
+      const fingerprint = yield* sha256(
+        `${token.client_id}\0${token.refresh_token}\0${token.project_id ?? ""}`,
       );
-      if (generation === startedGeneration) {
-        cached = {
-          fingerprint,
-          account,
-          accessToken,
-          expiresAt: now + refreshed.expires_in * 1000,
-        };
+      if (cached?.fingerprint !== fingerprint || cached.expiresAt <= now + 60_000) {
+        cached = undefined;
+        const refreshed = yield* request(
+          HttpClientRequest.post("https://oauth2.googleapis.com/token").pipe(
+            HttpClientRequest.bodyUrlParams({
+              client_id: token.client_id,
+              client_secret: token.client_secret,
+              refresh_token: token.refresh_token,
+              grant_type: "refresh_token",
+            }),
+          ),
+        ).pipe(Effect.flatMap(decodeTokenResponse));
+        accessToken = refreshed.access_token;
+        account = yield* fetchAccount(accessToken, fingerprint);
+        projectId = yield* resolveProjectId(accessToken, token.project_id);
+        if (generation === startedGeneration) {
+          cached = {
+            fingerprint,
+            account,
+            accessToken,
+            expiresAt: now + refreshed.expires_in * 1000,
+            projectId,
+          };
+        }
+      } else {
+        accessToken = cached.accessToken;
+        account = cached.account;
+        projectId = cached.projectId;
       }
     } else {
-      accessToken = cached.accessToken;
-      account = cached.account;
+      const directToken = yield* decodeAccessTokenFile(normalizedToken);
+      const expiryRaw = directToken.expiry ?? directToken.expires_at;
+      const expiryMs = expiryRaw ? Date.parse(expiryRaw) : Number.NaN;
+      if (Number.isFinite(expiryMs) && expiryMs <= now + 10_000) {
+        cached = undefined;
+        return makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "probeFailed",
+          message:
+            "Antigravity token expired. Start an Antigravity session or sign in again to refresh.",
+        });
+      }
+      const fingerprint = yield* sha256(
+        `access-token\0${directToken.access_token}\0${directToken.project_id ?? ""}`,
+      );
+      if (cached?.fingerprint !== fingerprint || cached.expiresAt <= now + 60_000) {
+        accessToken = directToken.access_token;
+        account = yield* fetchAccount(accessToken, fingerprint);
+        projectId = yield* resolveProjectId(accessToken, directToken.project_id);
+        if (generation === startedGeneration) {
+          cached = {
+            fingerprint,
+            account,
+            accessToken,
+            expiresAt: Number.isFinite(expiryMs) ? expiryMs : now + 5 * 60_000,
+            projectId,
+          };
+        }
+      } else {
+        accessToken = cached.accessToken;
+        account = cached.account;
+        projectId = cached.projectId;
+      }
     }
-    const endpoints = ENDPOINTS[input.authMethod];
     // Merge endpoints because quota groups differ; the metered host's reading of a bucket wins.
     const fetchWindows = Effect.fn("AntigravityUsageProbe.fetchWindows")(function* <E>(
       operation: string,
@@ -306,12 +406,17 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
                   Authorization: `Bearer ${accessToken}`,
                   "User-Agent": antigravityUserAgent(platform, architecture),
                 }),
-                HttpClientRequest.bodyJsonUnsafe(
-                  token.project_id ? { project: token.project_id } : {},
-                ),
+                HttpClientRequest.bodyJsonUnsafe(projectId ? { project: projectId } : {}),
               ),
             ).pipe(
               Effect.flatMap((response) => parse(response, requestedAt)),
+              Effect.tapError((error) =>
+                Effect.logWarning("Antigravity quota endpoint request failed", {
+                  endpoint,
+                  operation,
+                  error: String(error),
+                }),
+              ),
               Effect.orElseSucceed(() => []),
             );
           }),
@@ -341,6 +446,11 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   const probe = read.pipe(
     Effect.provideService(Digest.Digest, crypto),
     Effect.timeout("30 seconds"),
+    Effect.tapError((error) =>
+      Effect.logWarning("Antigravity quota probe failed", {
+        error: String(error),
+      }),
+    ),
     Effect.catch(() =>
       Effect.gen(function* () {
         return makeUnavailableUsageLimits({

@@ -998,6 +998,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Antigravity inst
       }),
   );
 
+  it.effect("discovers the native agy CLI on PATH without a custom binary path", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-discovery-" });
+      const executablePath = path.join(directory, hostPlatform === "win32" ? "agy.exe" : "agy");
+      yield* fs.writeFileString(executablePath, "cli", { mode: 0o755 });
+      const { installation } = yield* makeHarness({ path: directory });
+      const selected = yield* installation.resolve();
+      expect(selected).toMatchObject({
+        harnessPath: null,
+        source: "path",
+      });
+      expect(yield* fs.realPath(selected.executablePath)).toBe(yield* fs.realPath(executablePath));
+    }),
+  );
+
   // The mocked Linux PATH walk needs POSIX paths; Windows temp paths contain colons.
   it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "accepts the agy CLI without a harness sibling but still requires one for other binaries",

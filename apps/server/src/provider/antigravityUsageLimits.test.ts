@@ -66,6 +66,8 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
     userInfoAt?: number;
     missingToken?: boolean;
     authMethod?: "oauth-personal" | "oauth-business" | "gemini-api-key";
+    readKeyringToken?: Effect.Effect<string | undefined>;
+    loadCodeAssistProject?: string;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -111,7 +113,17 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
             : Response.json({}, { status: 403 }),
         );
       }
-      expect(JSON.parse(body)).toEqual({ project: "project-id" });
+      if (request.url.endsWith(":loadCodeAssist")) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json(
+            options.loadCodeAssistProject
+              ? { cloudaicompanionProject: options.loadCodeAssistProject }
+              : {},
+          ),
+        );
+      }
+      expect(JSON.parse(body)).toEqual({ project: options.loadCodeAssistProject ?? "project-id" });
       expect(request.headers["user-agent"]).toMatch(/^antigravity\/hub\/2\.24\.0 /);
       return HttpClientResponse.fromWeb(
         request,
@@ -132,6 +144,7 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
   const usage = yield* makeAntigravityUsageProbe({
     profileDirectory,
     authMethod: options.authMethod ?? "oauth-personal",
+    ...(options.readKeyringToken ? { readKeyringToken: options.readKeyringToken } : {}),
   }).pipe(Effect.provideService(HttpClient.HttpClient, http));
   return { ...usage, requests, writeToken, tokenPath };
 });
@@ -661,6 +674,45 @@ describe("Antigravity subscription limits", () => {
         expect((yield* probe).unavailable?.reason).toBe("unsupported");
         expect(requests).toEqual([]);
       }
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("falls back to keyring access tokens with go-keyring-base64 and loadCodeAssist", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-21T10:16:04Z")));
+      const payload = JSON.stringify({
+        access_token: "access-token",
+        expiry: "2026-10-21T11:16:04Z",
+      });
+      const encoded = `go-keyring-base64:${Buffer.from(payload, "utf8").toString("base64")}`;
+      const { probe, requests } = yield* fixture({
+        missingToken: true,
+        loadCodeAssistProject: "resolved-project",
+        readKeyringToken: Effect.succeed(encoded),
+      });
+      const limits = yield* probe;
+      expect(limits.unavailable).toBeUndefined();
+      expect(limits.windows).toHaveLength(4);
+      expect(requests.some((req) => req.url.endsWith(":loadCodeAssist"))).toBe(true);
+      expect(requests.filter((req) => req.url.endsWith("/token"))).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("reports probeFailed when a keyring access token is already expired", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-21T12:00:00Z")));
+      const { probe, requests } = yield* fixture({
+        missingToken: true,
+        readKeyringToken: Effect.succeed(
+          JSON.stringify({
+            access_token: "access-token",
+            expiry: "2026-10-21T11:00:00Z",
+          }),
+        ),
+      });
+      const limits = yield* probe;
+      expect(limits.unavailable?.reason).toBe("probeFailed");
+      expect(requests).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });
