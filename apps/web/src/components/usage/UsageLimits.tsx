@@ -41,6 +41,7 @@ import {
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
+import { selectConnectedUsageLimitPresentations } from "./usageLimitsSelection";
 import type { EnvironmentUsageStatus } from "../../state/usage";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
@@ -364,35 +365,23 @@ export function UsageLimitsSection({
   readonly estimateEnvironments?: readonly EnvironmentUsageStatus[];
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
-  const hiddenDrivers = new Set<ServerProvider["driver"]>(
-    [...hiddenProviders].map((provider) => PROVIDER_PRESENTATION[provider].driverKind),
-  );
-  const isVisible = (driver: ServerProvider["driver"]) => !hiddenDrivers.has(driver);
-  const selected = new Map(
-    [...presentations].flatMap(([id, presentation]) => {
-      if (selectedEnvironmentIds !== null && !selectedEnvironmentIds.has(id)) return [];
-      const config = presentation.serverConfig;
-      if (hiddenDrivers.size === 0 || config === null) return [[id, presentation] as const];
-      return [
-        [
-          id,
-          {
-            ...presentation,
-            serverConfig: {
-              ...config,
-              providers: config.providers.filter((provider) => isVisible(provider.driver)),
-              usageLimitSources: config.usageLimitSources?.flatMap((source) => {
-                const accounts = source.accounts.filter((account) => isVisible(account.driver));
-                return accounts.length === 0 && source.accounts.length > 0
-                  ? []
-                  : [{ ...source, accounts }];
-              }),
-            },
-          },
-        ] as const,
-      ];
-    }),
-  );
+  const { selected, disconnectedEntries } = selectConnectedUsageLimitPresentations({
+    presentations,
+    selectedEnvironmentIds,
+    hiddenProviders,
+  });
+  if (selected.size === 0 && disconnectedEntries.length > 0) {
+    return (
+      <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
+        {disconnectedEntries.map(([id, presentation]) => (
+          <p key={id}>
+            {disconnectedEntries.length > 1 ? `${presentation.entry.target.label}: ` : null}
+            {presentation.connection.error ?? "Environment is disconnected."}
+          </p>
+        ))}
+      </div>
+    );
+  }
   return (
     <UsageLimitsPooled
       presentations={selected}

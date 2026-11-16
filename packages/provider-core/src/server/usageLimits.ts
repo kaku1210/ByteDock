@@ -118,6 +118,23 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
   );
 }
 
+const STALE_PUBLISHED_LIMITS_MS = 30 * 60_000;
+
+function isPublishedLimitsStale(
+  published: ServerProviderUsageLimits,
+  probedCheckedAt: string,
+): boolean {
+  const probedMs = Date.parse(probedCheckedAt);
+  const publishedMs = Date.parse(published.checkedAt);
+  if (!Number.isFinite(probedMs) || !Number.isFinite(publishedMs)) return false;
+  if (probedMs - publishedMs > STALE_PUBLISHED_LIMITS_MS) return true;
+  return published.windows.some((window) => {
+    if (!window.resetsAt) return false;
+    const resetMs = Date.parse(window.resetsAt);
+    return Number.isFinite(resetMs) && resetMs <= probedMs;
+  });
+}
+
 export function resolveUsageLimitsAfterProbe(input: {
   readonly published: ServerProviderUsageLimits | undefined;
   readonly probed: ServerProviderUsageLimits | undefined;
@@ -125,7 +142,12 @@ export function resolveUsageLimitsAfterProbe(input: {
   const { published, probed } = input;
   if (probed?.provider?.id === "devin" && probed.unavailable?.reason === "probeFailed")
     return probed;
-  if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
+  if (
+    probed?.unavailable?.reason === "probeFailed" &&
+    published &&
+    !published.unavailable &&
+    !isPublishedLimitsStale(published, probed.checkedAt)
+  ) {
     return published;
   }
   if (

@@ -161,5 +161,20 @@ describe("resolveUsageLimitsAfterProbe", () => {
     expect(resolveUsageLimitsAfterProbe({ published: undefined, probed: failed })).toBe(failed);
     const devinFailure = { ...failed, provider: { id: "devin", label: "Devin" } };
     expect(resolveUsageLimitsAfterProbe({ published, probed: devinFailure })).toBe(devinFailure);
+
+    const staleFailure = { ...failed, checkedAt: "2026-09-03T12:30:01.000Z" };
+    expect(resolveUsageLimitsAfterProbe({ published, probed: staleFailure })).toBe(staleFailure);
+
+    const resetElapsedFailure = {
+      ...failed,
+      checkedAt: "2026-09-03T12:00:00.000Z",
+    };
+    const expiredPublished = {
+      ...published,
+      windows: [{ ...session, resetsAt: "2026-09-03T12:00:00.000Z" }],
+    };
+    expect(
+      resolveUsageLimitsAfterProbe({ published: expiredPublished, probed: resetElapsedFailure }),
+    ).toBe(resetElapsedFailure);
   });
 });
