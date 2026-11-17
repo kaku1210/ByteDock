@@ -12,6 +12,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -482,27 +483,41 @@ export const make = Effect.gen(function* () {
     // The folder is gitignored; creating it lets a fresh clone's first build be noticed too.
     const releaseDirectory = path.join(source, "release");
     yield* fs.makeDirectory(releaseDirectory, { recursive: true }).pipe(Effect.ignore);
+    const releaseReady = yield* Deferred.make<void>();
+    const headReady = yield* Deferred.make<void>();
     // Git appends to logs/HEAD on every commit, checkout, merge and reset, but not on status.
     const gitDirectory = yield* git(source, ["rev-parse", "--absolute-git-dir"]);
-    const headLog = Option.isSome(gitDirectory)
-      ? fs.watch(path.join(gitDirectory.value, "logs")).pipe(
-          Stream.filter((event) => path.basename(event.path) === "HEAD"),
-          Stream.ignore,
-        )
-      : Stream.empty;
+    const headLog = (
+      Option.isSome(gitDirectory)
+        ? fs.watch(path.join(gitDirectory.value, "logs"), {
+            onReady: () => Deferred.doneUnsafe(headReady, Effect.void),
+          })
+        : Stream.empty
+    ).pipe(
+      Stream.filter((event) => path.basename(event.path) === "HEAD"),
+      Stream.ignore,
+      Stream.ensuring(Deferred.succeed(headReady, undefined)),
+    );
     const watcher = yield* Effect.forkIn(
-      fs.watch(releaseDirectory).pipe(
-        Stream.filter((event) => LOCAL_WATCH_FILES.has(path.basename(event.path))),
-        // Each watch ends on its own error, such as a missing folder, without stopping the other.
-        Stream.ignore,
-        Stream.merge(headLog),
-        Stream.debounce("2 seconds"),
-        Stream.runForEach(() => check(false)),
-        Effect.ignore,
-      ),
+      fs
+        .watch(releaseDirectory, {
+          onReady: () => Deferred.doneUnsafe(releaseReady, Effect.void),
+        })
+        .pipe(
+          Stream.filter((event) => LOCAL_WATCH_FILES.has(path.basename(event.path))),
+          // Each watch ends on its own error, such as a missing folder, without stopping the other.
+          Stream.ignore,
+          Stream.ensuring(Deferred.succeed(releaseReady, undefined)),
+          Stream.merge(headLog),
+          Stream.debounce("2 seconds"),
+          Stream.runForEach(() => check(false)),
+          Effect.ignore,
+        ),
       scope,
     );
     yield* Ref.set(watcherRef, watcher);
+    yield* Deferred.await(releaseReady);
+    yield* Deferred.await(headReady);
   });
 
   const chooseSource = Effect.gen(function* () {

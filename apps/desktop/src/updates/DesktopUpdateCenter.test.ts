@@ -399,14 +399,29 @@ it.live(
       yield* (yield* spawner.spawn(ChildProcess.make("git", ["init", "-q", directory]))).exitCode;
       using _fetch = githubPages({});
       const available = yield* Deferred.make<void>();
+      let watchingRelease = false;
       const events = {
         push: (state: DesktopUpdateCenterState) => {
           if (state.local.status === "available") Deferred.doneUnsafe(available, Effect.void);
           return 0;
         },
       } as unknown as DesktopUpdateCenterState[];
-      const center = yield* fixture("develop", events, directory);
+      const center = yield* fixture("develop", events, directory).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          watch: (filename, options) =>
+            fs.watch(filename, {
+              ...options,
+              onReady: () => {
+                if (filename.replaceAll("\\", "/") === `${directory}/release`.replaceAll("\\", "/"))
+                  watchingRelease = true;
+                options?.onReady?.();
+              },
+            }),
+        }),
+      );
       yield* center.configure({ quickUpdateEnabled: true });
+      assert.isTrue(watchingRelease);
       // Settle the first check, so only the watcher can see the package; the next poll is 10 minutes out.
       yield* center.check;
       assert.notEqual((yield* center.getState).local.status, "available");
@@ -459,6 +474,7 @@ it.live("compares the checkout again as soon as a commit lands", () =>
     yield* commit("initial");
     using _fetch = githubPages({});
     let committed = false;
+    let watchingHead = false;
     const rechecked = yield* Deferred.make<void>();
     const events = {
       push: (state: DesktopUpdateCenterState) => {
@@ -467,8 +483,22 @@ it.live("compares the checkout again as soon as a commit lands", () =>
         return 0;
       },
     } as unknown as DesktopUpdateCenterState[];
-    const center = yield* fixture("develop", events, directory);
+    const center = yield* fixture("develop", events, directory).pipe(
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        watch: (filename, options) =>
+          fs.watch(filename, {
+            ...options,
+            onReady: () => {
+              if (filename.replaceAll("\\", "/") === `${directory}/.git/logs`.replaceAll("\\", "/"))
+                watchingHead = true;
+              options?.onReady?.();
+            },
+          }),
+      }),
+    );
     yield* center.configure({ quickUpdateEnabled: true });
+    assert.isTrue(watchingHead);
     // Settle the first check; the next poll is 10 minutes out, so only the watcher can check again.
     yield* center.check;
     committed = true;
