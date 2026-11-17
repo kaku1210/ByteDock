@@ -25,6 +25,7 @@ export const updateCenterMessages = {
   "updates.latest": ["Detected", "检测到"],
   "updates.unknown": ["Unknown", "未知"],
   "updates.checked": ["Last checked", "检查时间"],
+  "updates.packageUpdated": ["Package updated", "包体更新时间"],
   "updates.major": ["Major version update", "主版本更新"],
   "updates.notes": ["Open in browser", "在浏览器中打开"],
   "updates.releaseNotes": ["Release notes", "发布说明"],

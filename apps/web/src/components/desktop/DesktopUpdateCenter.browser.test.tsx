@@ -73,6 +73,7 @@ it("shows detection separately from local installation and honors both switches 
       status: "available",
       current: "0.1.7-plus.20261109.3",
       latest: "0.1.7-plus.20261109.4",
+      packageUpdatedAt: "2026-11-09T11:30:00Z",
     },
   };
   const updateState: DesktopUpdateState = {
@@ -199,6 +200,13 @@ it("shows detection separately from local installation and honors both switches 
   );
   await expect
     .element(page.getByRole("heading", { name: "Local source", exact: true }))
+    .toBeVisible();
+  await expect
+    .element(
+      page.getByText(`Package updated · ${new Date("2026-11-09T11:30:00Z").toLocaleString()}`, {
+        exact: true,
+      }),
+    )
     .toBeVisible();
   await page.getByRole("button", { name: "Update and restart", exact: true }).click();
   expect(install).toHaveBeenCalledOnce();

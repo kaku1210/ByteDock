@@ -298,7 +298,14 @@ export const make = Effect.gen(function* () {
       commitsSinceInstalled,
       commitsSincePackage,
     });
-    return { update, local, installer };
+    const packageUpdatedAt = installer
+      ? Option.getOrUndefined((yield* fs.stat(installer)).mtime)?.toISOString()
+      : undefined;
+    return {
+      update: { ...update, ...(packageUpdatedAt ? { packageUpdatedAt } : {}) },
+      local,
+      installer,
+    };
   });
 
   const checkSources = Effect.fn("desktop.updateCenter.checkSources")(function* (

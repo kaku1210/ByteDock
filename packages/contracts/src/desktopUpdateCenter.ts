@@ -74,6 +74,7 @@ export const DesktopUpdateSource = Schema.Struct({
   message: Schema.NullOr(Schema.String),
   url: Schema.NullOr(Schema.String),
   checkedAt: Schema.NullOr(Schema.String),
+  packageUpdatedAt: Schema.optionalKey(Schema.String),
   majorUpdate: Schema.Boolean,
   releaseNotes: Schema.optionalKey(DesktopUpdateReleaseNoteSchema),
   commits: Schema.optionalKey(Schema.Array(DesktopUpdateCommit)),

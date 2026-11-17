@@ -90,6 +90,11 @@ function SourceRow({
           {t("updates.checked")} · {new Date(source.checkedAt).toLocaleString()}
         </p>
       ) : null}
+      {source.packageUpdatedAt ? (
+        <p className="text-2xs text-muted-foreground">
+          {t("updates.packageUpdated")} · {new Date(source.packageUpdatedAt).toLocaleString()}
+        </p>
+      ) : null}
       {releaseNotes ? (
         <details>
           <summary className="cursor-pointer text-xs font-medium">

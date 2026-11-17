@@ -381,6 +381,10 @@ it.effect("a manual refresh joining a local poll still checks the remote sources
       2,
     );
     assert.equal((yield* center.getState).local.status, "available");
+    assert.equal(
+      (yield* center.getState).local.packageUpdatedAt,
+      Option.getOrThrow((yield* fs.stat(`${directory}/release/${installer}`)).mtime).toISOString(),
+    );
     yield* center.configure({ checkingEnabled: false });
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)), Effect.scoped),
 );
