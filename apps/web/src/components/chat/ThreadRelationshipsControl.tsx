@@ -82,7 +82,11 @@ import { orchestrationEnvironment, threadTitlesRead } from "../../state/orchestr
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useEnvironmentQuery } from "../../state/query";
 import { AgentElapsed } from "./AgentElapsed";
-import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
+import {
+  SubagentStatusBadge,
+  ThreadRelationshipIcon,
+  threadRelationshipStatusLabel,
+} from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
 import { openSideChatTab } from "../../lib/sideChatPane";
 
@@ -281,7 +285,6 @@ function RemoteSubagentRow(props: {
   const environment = useEnvironment(props.agent.remoteChild.environmentId);
   const { remoteChild } = props.agent;
   const status = props.agent.status;
-  const failed = status === "failed";
   const title = relationshipThreadTitle({
     title: props.agent.title ?? "Subagent",
     isSubagent: true,
@@ -321,15 +324,11 @@ function RemoteSubagentRow(props: {
               {title}
             </span>
           </span>
-          <span
-            className={`flex max-w-1/2 shrink-0 gap-1 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
-          >
-            <span className="truncate">
-              {uiText("on ")}
-              {remoteChild.label}
-            </span>
-            <span className="shrink-0">· {threadRelationshipStatusLabel(status)}</span>
+          <span className="max-w-1/3 truncate text-2xs text-muted-foreground">
+            {uiText("on ")}
+            {remoteChild.label}
           </span>
+          <SubagentStatusBadge status={status} />
         </TooltipTrigger>
         <TooltipPopup side="left">
           <LineageTooltipContent
@@ -839,6 +838,7 @@ export function ThreadRelationshipsPanel(props: {
             {threadTitle}
           </span>
         </span>
+        {isSubagent && !isParent ? <SubagentStatusBadge status={rowStatus} /> : null}
         {agent ? null : (
           <ArrowRightIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
         )}
@@ -848,7 +848,7 @@ export function ThreadRelationshipsPanel(props: {
           >
             <AgentElapsed agent={agent} compact />
           </span>
-        ) : !isMergeTarget ? (
+        ) : !isMergeTarget && !(isSubagent && !isParent) ? (
           <span
             className={
               workflowGroup

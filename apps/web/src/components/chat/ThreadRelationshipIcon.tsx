@@ -1,5 +1,6 @@
 import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
-import { BotIcon, type LucideIcon } from "lucide-react";
+import { BotIcon, CheckIcon, type LucideIcon } from "lucide-react";
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { cn } from "../../lib/utils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
@@ -41,6 +42,32 @@ export function threadRelationshipStatusLabel(status: string | null): string {
     default:
       return "Unknown";
   }
+}
+
+export function SubagentStatusBadge({ status }: { status: string | null }) {
+  const { text, t } = useUiLanguage();
+  const label = threadRelationshipStatusLabel(status);
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium leading-none",
+        label === "Running" || label === "Starting" || label === "Queued"
+          ? "bg-info/10 text-info"
+          : label === "Waiting"
+            ? "bg-warning/10 text-warning"
+            : label === "Failed"
+              ? "bg-destructive/10 text-destructive"
+              : "bg-muted text-muted-foreground",
+      )}
+    >
+      {status === "completed" ? (
+        <CheckIcon aria-hidden className="size-3" />
+      ) : (
+        <span aria-hidden className="size-1.5 rounded-full bg-current" />
+      )}
+      {status === "completed" ? t("thread.status.done") : text(label)}
+    </span>
+  );
 }
 
 export function ThreadRelationshipIcon({
