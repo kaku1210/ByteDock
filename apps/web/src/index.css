@@ -2640,3 +2640,9 @@ code {
 .messages-timeline-scroll:focus-visible {
   outline: none;
 }
+
+[data-task-jump-highlight] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}

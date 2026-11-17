@@ -15,6 +15,7 @@ import { serverEnvironment } from "../../state/server";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { Button } from "../ui/button";
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 
 const duration = (ms: number) =>
   `${Math.floor(ms / 3600000)}:${String(Math.floor(ms / 60000) % 60).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
@@ -28,6 +29,7 @@ export function ThreadUsageSummary({ threadRef }: { threadRef: ScopedThreadRef }
   const { text } = useUiLanguage();
   const thread = useQuietThreadProjection(threadRef);
   const [currentOnly, setCurrentOnly] = useState(false);
+  const collapsed = useThreadDetailsPreferences((state) => state.usageCollapsed);
   const canRead = useEnvironmentScope(threadRef.environmentId, AuthDiagnosticsReadScope);
   if (!thread) return null;
   const projection = thread.projection;
@@ -50,6 +52,8 @@ export function ThreadUsageSummary({ threadRef }: { threadRef: ScopedThreadRef }
     <ThreadDetailsSection
       headingId="thread-session-usage"
       title={text("Thread usage")}
+      collapsed={collapsed}
+      onToggle={() => useThreadDetailsPreferences.getState().setUsageCollapsed(!collapsed)}
       actions={
         <Button size="xs" variant="ghost" onClick={() => setCurrentOnly(!currentOnly)}>
           {text(currentOnly ? "This turn" : "Entire thread")}

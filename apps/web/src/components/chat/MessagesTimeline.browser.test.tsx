@@ -59,6 +59,7 @@ import {
   decodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { useThreadTaskNavigation } from "./threadTaskNavigation";
 
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found" as string | null,
@@ -224,6 +225,138 @@ function setup({ scheduledTasks = [] as ReadonlyArray<{ id: string; title: strin
   environmentQuery.error = "Pull request not found";
   environmentQuery.data = { tasks: scheduledTasks };
 }
+
+it("loads and unfolds an old task source in a long conversation before completing the jump", async () => {
+  setup();
+  useThreadTaskNavigation.setState({ jump: null });
+  using _navigation = { [Symbol.dispose]: () => useThreadTaskNavigation.setState({ jump: null }) };
+  const props = baseProps();
+  const runId = RunId.make("run-1");
+  const task = work("old-task", {
+    runId,
+    itemType: "todo_list",
+    label: "Tasks 0/1",
+    tone: "tool",
+    projectedItem: v2Item("todo_list", {
+      id: "old-task",
+      planId: "plan",
+      steps: [{ id: "1", text: "Inspect the old task", status: "pending" }],
+    }),
+  });
+  const execution = work("task-execution", {
+    runId,
+    itemType: "file_search",
+    label: "Search old files",
+    tone: "tool",
+    toolLifecycleStatus: "inProgress",
+    projectedItem: v2Item("file_search", { id: "task-execution", pattern: "needle", results: [] }),
+  });
+  const recent = Array.from({ length: 80 }, (_, index) =>
+    message(
+      `Recent message ${index}\n\n${"More content.\n\n".repeat(5)}`,
+      { role: "assistant" },
+      `recent-${index}`,
+    ),
+  );
+  function Timeline() {
+    const [loaded, setLoaded] = useState(false);
+    return (
+      <MessagesTimeline
+        {...props}
+        timelineEntries={
+          loaded
+            ? [message("Original request", { runId }, "manual-message"), task, execution, ...recent]
+            : recent
+        }
+        historyControls={{
+          hasMoreHistory: !loaded,
+          loading: false,
+          error: null,
+          onLoadEarlier: () => setLoaded(true),
+        }}
+      />
+    );
+  }
+  await using screen = await renderElement(<Timeline />);
+  await act(() =>
+    useThreadTaskNavigation.setState({
+      jump: {
+        threadKey: props.routeThreadKey,
+        taskKey: "task",
+        stepId: "1",
+        destination: "source",
+        requestId: 1,
+        match: { entryId: "old-task", runId, occurrence: 0 },
+        status: "pending",
+      },
+    }),
+  );
+  await vi.waitFor(() => {
+    expect(useThreadTaskNavigation.getState().jump?.status).toBe("located");
+    const target = screen.container.querySelector('[data-work-entry-id="old-task"]')!;
+    expect(target.getAttribute("aria-expanded")).toBe("true");
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    expect(target.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      viewport.getBoundingClientRect().top,
+    );
+    expect(target.getBoundingClientRect().top).toBeLessThan(
+      viewport.getBoundingClientRect().bottom,
+    );
+  });
+  expect(screen.text()).toContain("Inspect the old task");
+  expect(screen.container.querySelector('[data-task-step-id="1"]')).not.toBeNull();
+  await act(() =>
+    useThreadTaskNavigation.setState({
+      jump: {
+        threadKey: props.routeThreadKey,
+        taskKey: "task",
+        destination: "execution",
+        requestId: 2,
+        match: { entryId: "task-execution", runId, occurrence: 0 },
+        status: "pending",
+      },
+    }),
+  );
+  await vi.waitFor(() => {
+    expect(useThreadTaskNavigation.getState().jump?.status).toBe("located");
+    const target = screen.container.querySelector('[data-work-entry-id="task-execution"]')!;
+    expect(target.getAttribute("aria-expanded")).toBe("true");
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    expect(target.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      viewport.getBoundingClientRect().top,
+    );
+    expect(target.getBoundingClientRect().top).toBeLessThan(
+      viewport.getBoundingClientRect().bottom,
+    );
+  });
+  await act(() => useThreadTaskNavigation.setState({ jump: null }));
+  expect(
+    screen.container
+      .querySelector('[data-work-entry-id="task-execution"]')
+      ?.getAttribute("aria-expanded"),
+  ).toBe("true");
+  await act(() =>
+    useThreadTaskNavigation.setState({
+      jump: {
+        threadKey: props.routeThreadKey,
+        taskKey: "manual",
+        destination: "source",
+        requestId: 3,
+        messageId: MessageId.make("manual-message"),
+        match: { entryId: "entry-manual-message", runId, occurrence: 0 },
+        status: "pending",
+      },
+    }),
+  );
+  await vi.waitFor(() => {
+    expect(useThreadTaskNavigation.getState().jump?.status).toBe("located");
+    const target = screen.container.querySelector('[data-timeline-row-id="entry-manual-message"]')!;
+    expect(target.hasAttribute("data-task-jump-highlight")).toBe(true);
+    const viewport = props.listRef.current!.getScrollableNode()!.getBoundingClientRect();
+    expect(target.getBoundingClientRect().top).toBeGreaterThanOrEqual(viewport.top);
+    expect(target.getBoundingClientRect().top).toBeLessThan(viewport.bottom);
+  });
+});
 
 const TASK_ID = ScheduledTaskId.make("task-1");
 const AUTOMATION_PROMPT = "Triage the inbox\n\nLabel every new issue and close duplicates.";

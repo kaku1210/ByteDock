@@ -1,6 +1,8 @@
 import type { ComponentProps, ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { ThreadDetailsControl } from "./ThreadDetailsControl";
 
 export function ThreadDetailsSection({
   headingId,
@@ -8,6 +10,8 @@ export function ThreadDetailsSection({
   actions,
   separated = true,
   showHeading = true,
+  collapsed,
+  onToggle,
   children,
   ...props
 }: Omit<ComponentProps<"section">, "className" | "style" | "title" | "aria-labelledby"> & {
@@ -16,6 +20,8 @@ export function ThreadDetailsSection({
   actions?: ReactNode;
   separated?: boolean;
   showHeading?: boolean;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }) {
   return (
     <section
@@ -39,11 +45,29 @@ export function ThreadDetailsSection({
           id={headingId}
           className="min-w-0 truncate text-2xs font-medium text-muted-foreground select-none"
         >
-          {title}
+          {onToggle ? (
+            <ThreadDetailsControl
+              part="row"
+              aria-expanded={!collapsed}
+              aria-controls={`${headingId}-content`}
+              onClick={onToggle}
+            >
+              {collapsed ? <ChevronRightIcon aria-hidden /> : <ChevronDownIcon aria-hidden />}
+              {title}
+            </ThreadDetailsControl>
+          ) : (
+            title
+          )}
         </h3>
         {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
       </div>
-      {children}
+      {onToggle ? (
+        <div id={`${headingId}-content`} hidden={collapsed}>
+          {children}
+        </div>
+      ) : (
+        children
+      )}
     </section>
   );
 }

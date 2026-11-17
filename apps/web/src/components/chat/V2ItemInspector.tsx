@@ -411,14 +411,18 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
       {item.type === "system_notice" ? <StructuredValue value={item.message} /> : null}
       {item.type === "error" ? <StructuredValue value={item.failure.message} /> : null}
       {item.type === "todo_list" ? (
-        <StructuredValue
-          value={item.steps
-            .map(
-              (step) =>
-                `${step.status === "completed" ? "✓" : step.status === "running" ? "◉" : "○"} ${step.text}`,
-            )
-            .join("\n")}
-        />
+        <ul className="space-y-1">
+          {item.steps.map((step) => (
+            <li
+              key={step.id}
+              data-task-step-id={step.id}
+              className="whitespace-pre-wrap break-words"
+            >
+              {step.status === "completed" ? "✓" : step.status === "running" ? "◉" : "○"}{" "}
+              {step.text}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );

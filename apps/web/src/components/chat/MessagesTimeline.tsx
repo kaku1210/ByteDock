@@ -93,6 +93,8 @@ import {
 } from "./MessagesTimeline.logic";
 import { type ThreadFindMatch } from "./threadFind";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
+import { useThreadTaskNavigation, type TaskJump } from "./threadTaskNavigation";
+import { useTaskJump } from "./useTaskJump";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
@@ -220,6 +222,7 @@ export interface MessagesTimelineHistoryControls {
 }
 
 interface MessagesTimelineProps {
+  taskJump?: TaskJump | null;
   pendingApprovals?: ReadonlyArray<PendingApproval>;
   heldApprovalRequestIds?: ReadonlySet<string> | undefined;
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
@@ -332,16 +335,33 @@ interface MessagesTimelineProps {
 export function MessagesTimeline(props: MessagesTimelineProps) {
   const find = useContext(ThreadFindTimelineContext);
   const findOpen = find?.findOpen ?? props.findOpen;
+  const taskJump = useThreadTaskNavigation((state) =>
+    state.jump?.threadKey === props.routeThreadKey ? state.jump : null,
+  );
+  const taskThreadKey = props.routeThreadKey;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels navigation owned by a timeline when it leaves the screen
+  useEffect(
+    () => () => {
+      useThreadTaskNavigation.setState((state) =>
+        state.jump?.threadKey === taskThreadKey ? { jump: null } : state,
+      );
+    },
+    [taskThreadKey],
+  );
   return (
     <ConversationTimeline
       {...props}
       {...find}
-      liveFollowEnabled={!findOpen && props.liveFollowEnabled}
+      {...(!findOpen && taskJump
+        ? { taskJump, activeFindMatch: taskJump.match, findExpanded: true }
+        : {})}
+      liveFollowEnabled={!findOpen && taskJump === null && props.liveFollowEnabled}
     />
   );
 }
 
 const ConversationTimeline = memo(function ConversationTimeline({
+  taskJump = null,
   pendingApprovals = EMPTY_PENDING_APPROVALS,
   heldApprovalRequestIds,
   respondingRequestIds = EMPTY_RESPONDING_REQUEST_IDS,
@@ -639,7 +659,21 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   const toolCallVisibility =
     findActive && preferredToolCallVisibility === "zen" ? "hideAll" : preferredToolCallVisibility;
-  const revealedMessageId = citationRequest?.citation.messageId ?? null;
+  const [taskMessageReveal, setTaskMessageReveal] = useState<{
+    threadKey: string;
+    messageId: MessageId;
+  } | null>(null);
+  if (
+    taskJump?.messageId &&
+    (taskMessageReveal?.threadKey !== listIdentityKey ||
+      taskMessageReveal.messageId !== taskJump.messageId)
+  ) {
+    setTaskMessageReveal({ threadKey: listIdentityKey, messageId: taskJump.messageId });
+  }
+  const revealedMessageId =
+    citationRequest?.citation.messageId ??
+    taskJump?.messageId ??
+    (taskMessageReveal?.threadKey === listIdentityKey ? taskMessageReveal.messageId : null);
   // Imported turns and post-steer work fold under synthetic keys, not the entries' run ids.
   const findFoldRunIds = findActive
     ? timelineTurnFoldRunIdsByEntryId({
@@ -736,6 +770,16 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const pendingApprovalRequestIds = new Set(
     pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
   );
+  const [taskReveal, setTaskReveal] = useState<{ threadKey: string; entryId: string } | null>(null);
+  if (
+    taskJump &&
+    (taskReveal?.threadKey !== listIdentityKey || taskReveal.entryId !== taskJump.match.entryId)
+  ) {
+    setTaskReveal({ threadKey: listIdentityKey, entryId: taskJump.match.entryId });
+  }
+  const revealedWorkEntryId =
+    taskJump?.match.entryId ??
+    (taskReveal?.threadKey === listIdentityKey ? taskReveal.entryId : undefined);
   const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     pendingApprovalRequestIds,
@@ -744,6 +788,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     expandedRunIds: visibleExpandedRunIds,
     expandedAttemptIds: visibleExpandedAttemptIds,
     expandedWorkGroupIds,
+    ...(revealedWorkEntryId ? { revealedWorkEntryId } : {}),
     isWorking,
     runlessWorkActive,
     activeTurnStartedAt,
@@ -793,7 +838,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
   if (nextOpening !== listOpening) setListOpening(nextOpening);
   const listOpenedOn = nextOpening.mounted ? nextOpening.identity : null;
   const viewportRef = useRef<TimelineViewport | null>(null);
-  const navigateTimeline = () => viewportRef.current?.navigate({ releasesFollow: true });
+  const navigateTimeline = useStableCallback(() =>
+    viewportRef.current?.navigate({ releasesFollow: true }),
+  );
   const restoreReady = restoringThreadPosition && rows.length > 0;
   // Z: syncs LegendList's scroll position with which thread it shows. The list
   // is not keyed per thread and reports no "new data" event, and the restore
@@ -1317,11 +1364,28 @@ const ConversationTimeline = memo(function ConversationTimeline({
     entries: timelineEntries,
     container: timelineViewportElement,
     query: normalizedFindQuery,
-    match: activeFindMatch,
+    match: taskJump ? null : activeFindMatch,
     navigationId: findNavigationId,
     rowIndex: activeFindMatch ? rows.findIndex((row) => row.id === activeFindMatch.entryId) : -1,
     listRef,
     contentInsetEndAdjustment,
+  });
+
+  useTaskJump({
+    jump: taskJump,
+    rowIndex: taskJump
+      ? rows.findIndex(
+          (row) =>
+            row.id === taskJump.match.entryId ||
+            (row.kind === "work" &&
+              row.groupedEntries.some((entry) => entry.id === taskJump.match.entryId)),
+        )
+      : -1,
+    listRef,
+    container: timelineViewportElement,
+    ready: !restoringThreadPosition,
+    navigate: navigateTimeline,
+    history: historyControls,
   });
 
   // LegendList moves rows one commit late; per-row providers prevent thread context leaks.
@@ -1603,6 +1667,14 @@ function getItemType(item: MessagesTimelineRow) {
 }
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
+  const { routeThreadKey } = use(TimelineRowCtx);
+  const taskHighlighted = useThreadTaskNavigation(
+    (state) =>
+      state.jump?.threadKey === routeThreadKey &&
+      row.kind === "message" &&
+      state.jump.messageId === row.message.id &&
+      state.jump.status === "located",
+  );
   const isExpandedToolGroup = row.kind === "work" && row.isExpandedToolGroup;
   const isSubagentGroup = row.kind === "event" && row.projectedItem.item.type === "subagent";
   const isWorkLogRow =
@@ -1641,6 +1713,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           : null,
       )}
       data-timeline-row-id={row.id}
+      data-task-jump-highlight={taskHighlighted ? "" : undefined}
       data-timeline-row-kind={row.kind}
       data-message-id={
         row.kind === "message" || row.kind === "assistant-meta" ? row.message.id : undefined

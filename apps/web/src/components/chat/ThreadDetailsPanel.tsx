@@ -1,4 +1,6 @@
 import { ThreadUsageSummary } from "./ThreadUsageSummary";
+import { ThreadTaskList } from "./ThreadTaskList";
+import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type {
   EditorId,
@@ -97,6 +99,9 @@ interface ThreadDetailsPanelProps extends Pick<
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const { text: uiText } = useUiLanguage();
+  const detailsCollapsed = useThreadDetailsPreferences((state) => state.detailsCollapsed);
+  const tasksCollapsed = useThreadDetailsPreferences((state) => state.tasksCollapsed);
+  const usageCollapsed = useThreadDetailsPreferences((state) => state.usageCollapsed);
   const visible = useClientSettings(resolveThreadDetailsVisibility);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
@@ -144,9 +149,12 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
-      contentKey={THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
-        .map((item) => item.id)
-        .join(",")}
+      contentKey={
+        `${detailsCollapsed}:${tasksCollapsed}:${usageCollapsed}:` +
+        THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
+          .map((item) => item.id)
+          .join(",")
+      }
       onContextMenu={(event) => {
         // Popups the card opens bubble here through React; they, fields, links, and selected text
         // keep their own menus.
@@ -182,7 +190,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         };
         return (
           <>
-            <div className="group/details-items">
+            <div className="group/details-items" hidden={detailsCollapsed}>
               {show.environment || show.openIn || show.scripts ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
@@ -316,6 +324,12 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               </div>
             </div>
 
+            {!props.draftId ? (
+              <ThreadTaskList
+                key={`${props.environmentId}:${props.threadId}`}
+                threadRef={activeThreadRef}
+              />
+            ) : null}
             <Menu
               open={menuPosition !== null}
               onOpenChange={(open) => !open && setMenuPosition(null)}

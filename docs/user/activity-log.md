@@ -18,6 +18,19 @@ it finished, and an interrupt or cancellation request does not mean the thread s
 details are unavailable, summaries use a broader description instead of guessing how many threads
 were affected.
 
+## Task list
+
+Use **Add task manually** to name your own task and select its source message in the conversation. You can search loaded messages and preview a location before saving. Optionally select an execution message: clicks then alternate between the two locations. Use **Load earlier tasks** to make older messages available. Manual tasks can be edited or deleted; they are saved in the current client and do not sync to other devices.
+
+On web and desktop, **Task list** appears alongside **Thread details** in the same panel. Each section can be collapsed independently, and the toolbar button shows or hides both together. Browse the
+agent's structured plan. Click a step to reveal its source in the conversation; click it again
+to jump to activity near its execution, when available. The list stays open as you navigate.
+Older plans are collapsed; **Load earlier tasks** brings in more conversation history.
+
+Execution locations are approximate and available only when the recorded plan identifies a
+single running step. Tasks without enough execution history keep their source link and explain
+why an execution jump is unavailable.
+
 ## Hide tool calls
 
 **Tool calls in chat** in **Settings → Chat** (web and desktop) or **Settings → Appearance**

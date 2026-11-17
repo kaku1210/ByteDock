@@ -1,4 +1,5 @@
 import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { useThreadTaskNavigation } from "./threadTaskNavigation";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -227,6 +228,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
   );
+  const taskJump = useThreadTaskNavigation((state) =>
+    state.jump?.threadKey === ctx.routeThreadKey && state.jump.match.entryId === workEntry.id
+      ? state.jump
+      : null,
+  );
+  const [revealedTaskRequest, setRevealedTaskRequest] = useState<number | null>(null);
+  if (taskJump && taskJump.requestId !== revealedTaskRequest) {
+    setRevealedTaskRequest(taskJump.requestId);
+    setExpanded(true);
+  }
   const onInitialOutputReady = () => {
     if (groupView) groupView.onContentReady?.(workEntry.id);
     else props.onContentReady?.();
@@ -448,6 +459,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   return (
     <WorkLogRow
       data-work-entry-id={workEntry.id}
+      data-task-jump-highlight={taskJump?.status === "located" ? "" : undefined}
       data-v2-item-type={workEntry.projectedItem?.item.type}
       data-v2-item-visibility={workEntry.projectedItem?.visibility}
       {...rowToggleProps}

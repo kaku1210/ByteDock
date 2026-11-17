@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  MessageId,
   ProjectId,
   ThreadId,
   type ScopedThreadRef,
@@ -16,47 +17,57 @@ const state = vi.hoisted(() => ({
   folder: "",
   pullRequests: [] as unknown[],
   configLoaded: true,
+  setProjection: (_snapshot: unknown) => {},
 }));
 
-vi.mock(import("~/state/entities"), async (importOriginal) => ({
-  ...(await importOriginal()),
-  useProject: ((ref: unknown) =>
-    ref === null
-      ? null
-      : {
-          id: "project",
-          environmentId: "environment",
-          title: state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain",
-          workspaceRoot: state.workspaceRoot,
-          scripts: [],
-        }) as never,
-  useProjects: (() => []) as never,
-  useQuietThreadShell: ((ref: unknown) =>
-    ref === null
-      ? null
-      : {
-          id: "thread",
-          environmentId: "environment",
-          projectId: "project",
-          worktreePath: state.folder,
-          branch: null,
-          pullRequests: state.pullRequests,
-        }) as never,
-  useServerConfigs: (() =>
-    new Map(
-      state.configLoaded
-        ? [
-            [
-              EnvironmentId.make("environment"),
-              {
-                scratchWorkspaceRoot: SCRATCH_ROOT,
-                environment: { capabilities: { pullRequests: true } },
-              },
-            ],
-          ]
-        : [],
-    )) as never,
-}));
+vi.mock(import("~/state/entities"), async (importOriginal) => {
+  const { create } = await import("zustand");
+  const useProjection = create<{ snapshot: unknown }>(() => ({ snapshot: null }));
+  state.setProjection = (snapshot) => useProjection.setState({ snapshot });
+  return {
+    ...(await importOriginal()),
+    useProject: ((ref: unknown) =>
+      ref === null
+        ? null
+        : {
+            id: "project",
+            environmentId: "environment",
+            title: state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain",
+            workspaceRoot: state.workspaceRoot,
+            scripts: [],
+          }) as never,
+    useProjects: (() => []) as never,
+    useQuietThreadProjection: ((ref: unknown) => {
+      const snapshot = useProjection((value) => value.snapshot);
+      return ref === null ? null : snapshot;
+    }) as never,
+    useQuietThreadShell: ((ref: unknown) =>
+      ref === null
+        ? null
+        : {
+            id: "thread",
+            environmentId: "environment",
+            projectId: "project",
+            worktreePath: state.folder,
+            branch: null,
+            pullRequests: state.pullRequests,
+          }) as never,
+    useServerConfigs: (() =>
+      new Map(
+        state.configLoaded
+          ? [
+              [
+                EnvironmentId.make("environment"),
+                {
+                  scratchWorkspaceRoot: SCRATCH_ROOT,
+                  environment: { capabilities: { pullRequests: true } },
+                },
+              ],
+            ]
+          : [],
+      )) as never,
+  };
+});
 // Neither folder is a repository, which is what the server reports for both.
 vi.mock(import("~/state/vcs"), async (importOriginal) => {
   const actual = await importOriginal();
@@ -81,7 +92,10 @@ vi.mock(import("~/state/vcs"), async (importOriginal) => {
   };
 });
 
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
+import * as DateTime from "effect/DateTime";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { useManualThreadTasks } from "./manualThreadTasks";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { PopoverCreateHandle } from "../ui/popover";
 import { ChatCanvasContext } from "./ChatCanvasContext";
@@ -112,7 +126,16 @@ function setup(input: {
   pullRequests?: ThreadPullRequestLink[];
   configLoaded?: boolean;
 }) {
-  useThreadDetailsPreferences.setState({ pinned: false, open: true, width: 360 });
+  useThreadDetailsPreferences.setState({
+    pinned: false,
+    open: true,
+    width: 360,
+    detailsCollapsed: false,
+    tasksCollapsed: false,
+    usageCollapsed: false,
+  });
+  state.setProjection(null);
+  useManualThreadTasks.setState({ tasks: [] });
   state.configLoaded = input.configLoaded ?? true;
   state.workspaceRoot = input.workspaceRoot;
   state.folder = input.folder;
@@ -123,7 +146,10 @@ function setup(input: {
   return {
     anchor: { current: anchor },
     handle: PopoverCreateHandle(),
-    [Symbol.dispose]: () => anchor.remove(),
+    [Symbol.dispose]: () => {
+      anchor.remove();
+      useManualThreadTasks.setState({ tasks: [] });
+    },
   };
 }
 
@@ -199,10 +225,121 @@ it("shows a linked pull request in a folder that is not a git repository", async
     folder: "/work/plain",
     pullRequests: [linkedPullRequest],
   });
+  const snapshot = {
+    projection: {
+      thread: {
+        id: threadRef.threadId,
+        createdAt: DateTime.makeUnsafe(0),
+        lineage: {
+          parentThreadId: null,
+          rootThreadId: threadRef.threadId,
+          relationshipToParent: null,
+        },
+      },
+      subagents: [],
+      contextTransfers: [],
+      checkpoints: [],
+      providerThreads: [],
+      runtimeRequests: [],
+      providerSessions: [],
+      nodes: [],
+      attempts: [],
+      checkpointScopes: [],
+      contextHandoffs: [],
+      visibleTurnItems: [],
+      runs: [],
+      providerTurns: [],
+      plans: [],
+      turnItems: [],
+      messages: [],
+    },
+  };
+  state.setProjection(snapshot);
   await using _screen = await render(<Panel fixture={fixture} />);
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Add task manually" })).toBeVisible();
+  await page.getByRole("button", { name: "Add task manually" }).click();
+  await expect.element(page.getByRole("textbox", { name: "Task name" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await act(() =>
+    useManualThreadTasks.getState().save({
+      threadKey: scopedThreadKey(threadRef),
+      title: "Manual task",
+      source: { messageId: MessageId.make("message"), runId: null, preview: "Source" },
+      execution: null,
+    }),
+  );
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .toHaveAttribute("aria-expanded", "true");
+  const usageToggle = page.getByRole("button", { name: "Thread usage", exact: true });
+  await expect.element(usageToggle).toHaveAttribute("aria-expanded", "true");
+  const usageContent = page.elementLocator(document.querySelector("[data-thread-usage]")!);
+  await expect.element(usageContent).toBeVisible();
+  await usageToggle.click();
+  await expect.element(usageContent).not.toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .toHaveAttribute("aria-expanded", "true");
+  await usageToggle.click();
+  await expect.element(usageContent).toBeVisible();
   await expect.element(page.getByRole("region", { name: "Workspace" })).toBeVisible();
   await expect.element(page.getByText("#27513")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Initialize Git" })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Add task manually" })).toBeVisible();
+  await page.getByRole("button", { name: "Thread details", exact: true }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Thread details", exact: true }))
+    .toHaveAttribute("aria-expanded", "false");
+  await expect
+    .element(page.getByRole("button", { name: "Initialize Git", includeHidden: true }))
+    .not.toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Add task manually" })).toBeVisible();
+  await expect.element(usageContent).not.toBeVisible();
+  await page.getByRole("button", { name: "Task list", exact: true }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Add task manually", includeHidden: true }))
+    .not.toBeVisible();
+  await page.getByRole("button", { name: "Thread details", exact: true }).click();
+  await expect.element(page.getByRole("button", { name: "Initialize Git" })).toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .toHaveAttribute("aria-expanded", "false");
+  await page.getByRole("button", { name: "Task list", exact: true }).click();
+  await expect.element(page.getByRole("button", { name: "Add task manually" })).toBeVisible();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Add task manually" })).toBeVisible();
+  await act(() =>
+    state.setProjection({
+      projection: {
+        ...snapshot.projection,
+        turnItems: [
+          {
+            id: "todo",
+            runId: null,
+            providerThreadId: null,
+            type: "todo_list",
+            planId: "plan",
+            startedAt: DateTime.makeUnsafe(0),
+            steps: [{ id: "step", text: "AI task", status: "pending" }],
+          },
+        ],
+      },
+    }),
+  );
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .toHaveAttribute("aria-expanded", "true");
+  await expect.element(page.getByText("AI task", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close details panel" }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Task list", exact: true }))
+    .not.toBeInTheDocument();
 });
 
 it("offers no Initialize Git before the server config says where No project lives", async () => {

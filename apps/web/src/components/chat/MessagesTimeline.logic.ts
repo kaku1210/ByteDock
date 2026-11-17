@@ -1475,6 +1475,7 @@ function timelineRowEntries(
     | "timelineEntries"
     | "toolCallVisibility"
     | "revealedMessageId"
+    | "revealedWorkEntryId"
     | "isWorking"
     | "latestRun"
     | "runningRunId"
@@ -1494,6 +1495,7 @@ function timelineRowEntries(
     const steerAnswerIds = deriveInFlightSteerAnswerIds(entries);
     const retainedReplyIds = retainedAssistantReplyEntryIds(entries);
     shown = entries.filter((entry, index) => {
+      if (entry.id === input.revealedWorkEntryId) return true;
       if (entry.kind !== "message") {
         return workShownAsFinalAnswerOnly(entry, input.pendingApprovalRequestIds);
       }
@@ -1511,7 +1513,9 @@ function timelineRowEntries(
   } else if (visibility !== "showAll") {
     shown = entries.filter(
       (entry) =>
-        entry.kind !== "work" || !workEntryHiddenByToolCallVisibility(entry.entry, visibility),
+        entry.id === input.revealedWorkEntryId ||
+        entry.kind !== "work" ||
+        !workEntryHiddenByToolCallVisibility(entry.entry, visibility),
     );
   }
   return withoutSubagentDelegationRows(settleSupersededReasoning(shown));
@@ -1557,6 +1561,7 @@ export function deriveMessagesTimelineRows(input: {
   expandedRunIds?: ReadonlySet<RunId>;
   expandedAttemptIds?: ReadonlySet<RunAttemptId>;
   expandedWorkGroupIds?: ReadonlySet<string>;
+  revealedWorkEntryId?: string;
   isWorking: boolean;
   /** Native subagent work has no app run; runless entries form the live response. */
   runlessWorkActive?: boolean;
@@ -1679,6 +1684,7 @@ export function deriveMessagesTimelineRows(input: {
       const entry = timelineEntries[index]!;
       if (
         entry.kind !== "work" ||
+        entry.id === input.revealedWorkEntryId ||
         entry.entry.tone === "error" ||
         entry.entry.sourceActivityKind === "runtime.error" ||
         entry.entry.itemType === "system_notice" ||
@@ -1982,6 +1988,7 @@ export function deriveMessagesTimelineRows(input: {
 
     if (timelineEntry.kind === "work") {
       if (
+        timelineEntry.id === input.revealedWorkEntryId ||
         isPendingApproval(timelineEntry.entry) ||
         (timelineEntry.entry.runId != null && itemizedRunIds.has(timelineEntry.entry.runId)) ||
         (timelineEntry.entry.itemType === "error" &&
@@ -2008,6 +2015,7 @@ export function deriveMessagesTimelineRows(input: {
         const nextEntry = timelineEntries[cursor];
         if (
           !nextEntry ||
+          nextEntry.id === input.revealedWorkEntryId ||
           nextEntry.kind !== "work" ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           (nextEntry.entry.itemType === "error" &&

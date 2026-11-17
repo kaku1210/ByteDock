@@ -63,6 +63,7 @@ import {
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
 import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
+import { useThreadTaskNavigation } from "./threadTaskNavigation";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
@@ -84,9 +85,18 @@ export const WorkGroupSection = memo(function WorkGroupSection({
     onWorkEntryContentReady,
     pendingApprovals,
   } = use(TimelineRowCtx);
+  const taskEntryId = useThreadTaskNavigation((state) =>
+    state.jump?.threadKey === routeThreadKey ? state.jump.match.entryId : null,
+  );
+  const [revealedTaskEntryId, setRevealedTaskEntryId] = useState<string | null>(null);
+  const selectedTaskEntryId = groupedEntries.some((entry) => entry.id === taskEntryId)
+    ? taskEntryId
+    : revealedTaskEntryId;
+  if (selectedTaskEntryId !== revealedTaskEntryId) setRevealedTaskEntryId(selectedTaskEntryId);
   const nonEmptyEntries = groupedEntries.filter((entry) => {
     const item = entry.projectedItem?.item;
     return (
+      entry.id === selectedTaskEntryId ||
       (item?.type === "approval_request" && pendingApprovals.has(item.requestId)) ||
       workEntryIsVisibleInGroup(entry, isExpandedToolGroup)
     );

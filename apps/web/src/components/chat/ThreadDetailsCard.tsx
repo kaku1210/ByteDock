@@ -1,4 +1,4 @@
-import { PinIcon, PinOffIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
@@ -96,7 +96,7 @@ export function ThreadDetailsCard({
       // PR lists, servers, lineage, side chats and automations scroll as they grow. Counting them
       // toward density would hide the section and workspace controls when the user asks to see more.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow]",
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-task-list-scroll]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
@@ -140,7 +140,15 @@ export function ThreadDetailsCard({
       data-thread-details-card
     >
       <div className="flex items-center justify-between gap-2 px-3 py-2">
-        <span className="text-xs font-medium">{text("Thread details")}</span>
+        <Button
+          variant="ghost"
+          size="xs"
+          aria-expanded={!preferences.detailsCollapsed}
+          onClick={() => preferences.setDetailsCollapsed(!preferences.detailsCollapsed)}
+        >
+          {preferences.detailsCollapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
+          {text("Thread details")}
+        </Button>
         <div className="flex gap-1">
           <Button
             variant="ghost"
