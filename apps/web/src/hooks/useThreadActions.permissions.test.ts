@@ -148,14 +148,20 @@ vi.mock("../components/Sidebar.logic", () => ({
   getFallbackThreadIdAfterDelete: () => null,
   pinOrderKeyBetween: () => "a",
 }));
-vi.mock("../composerDraftStore", () => ({
-  useComposerDraftStore: (select: (store: unknown) => unknown) =>
-    select({
-      clearDraftThread: (ref: ScopedThreadRef) =>
-        state.localEffects.push(`clear-draft:${ref.threadId}`),
-      clearProjectDraftThreadById: () => state.localEffects.push("clear-project-draft"),
+vi.mock("../temporaryChats", () => ({ forgetTemporaryChat: () => {} }));
+vi.mock("../composerDraftStore", () => {
+  const store = {
+    clearDraftThread: (ref: ScopedThreadRef) =>
+      state.localEffects.push(`clear-draft:${ref.threadId}`),
+    clearProjectDraftThreadById: () => state.localEffects.push("clear-project-draft"),
+  };
+  return {
+    useComposerDraftStore: Object.assign((select: (store: unknown) => unknown) => select(store), {
+      getState: () => store,
     }),
-}));
+    flushComposerDraftStorage: () => {},
+  };
+});
 vi.mock("../terminalUiStateStore", () => ({
   useTerminalUiStateStore: (select: (store: unknown) => unknown) =>
     select({

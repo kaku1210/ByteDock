@@ -791,6 +791,33 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
 });
 
+it("shows the temporary chat entry as an icon in the composer footer", async () => {
+  await page.viewport(1280, 800);
+  const thread = threadWithHistory("temporary-entry-placement", 1);
+  using _environment = installFakeEnvironment([thread]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, {
+    // AppRoot provides its own router.
+    router: false,
+  });
+  await expect
+    .element(screen.getByRole("button", { name: "Open temporary side chat", exact: true }))
+    .toBeVisible();
+  const buttons = screen.container.querySelectorAll(
+    'button[aria-label="Open temporary side chat"]',
+  );
+  expect(buttons).toHaveLength(1);
+  expect(buttons[0]?.closest("[data-chat-composer-footer]")).not.toBeNull();
+  expect(buttons[0]?.textContent).toBe("");
+});
+
 it("selecting a side-chat tab focuses that side chat's composer", async () => {
   const parent = threadWithHistory("focus-parent", 1);
   // The shell loaded by the file's first test stays; a family read serves side chats added later.

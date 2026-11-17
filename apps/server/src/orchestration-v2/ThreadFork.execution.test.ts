@@ -1169,6 +1169,67 @@ it.effect("closing a side chat deletes it only while unused; a deleted parent ta
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
+it.effect(
+  "closing a temporary side chat cancels only its work and cannot merge into its parent",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parentId = ThreadId.make("temporary-side-chat-parent");
+      const sideChatId = ThreadId.make("temporary-side-chat-child");
+      yield* createParent(parentId);
+      yield* writeParentRun({
+        threadId: parentId,
+        runId: RunId.make("temporary-side-chat-parent-stable"),
+        ordinal: 1,
+        status: "completed",
+        text: "Main task context",
+        stable: true,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("temporary-side-chat-fork"),
+        sourceThreadId: parentId,
+        targetThreadId: sideChatId,
+        sourcePoint: { type: "latest_stable" },
+        sideChat: true,
+        temporary: true,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.isTrue((yield* orchestrator.getThreadProjection(sideChatId)).thread.lineage.temporary);
+      yield* askSideChat(sideChatId, "temporary-side-chat-question");
+      const merge = yield* orchestrator
+        .dispatch({
+          type: "thread.merge_back",
+          commandId: CommandId.make("temporary-side-chat-merge"),
+          sourceThreadId: sideChatId,
+          targetThreadId: parentId,
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.flip);
+      assert.include(String(merge.cause), "Temporary side chats cannot be brought back");
+      yield* writeParentRun({
+        threadId: parentId,
+        runId: RunId.make("temporary-side-chat-parent-running"),
+        ordinal: 2,
+        status: "running",
+        text: "Main task in progress",
+      });
+      const parentBefore = yield* orchestrator.getThreadProjection(parentId);
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("temporary-side-chat-close"),
+        threadId: sideChatId,
+      });
+      const deleted = yield* orchestrator.getThreadProjection(sideChatId);
+      assert.isNotNull(deleted.thread.deletedAt);
+      assert.isTrue(deleted.runs.every((run) => run.status === "cancelled"));
+      assert.deepEqual(yield* orchestrator.getThreadProjection(parentId), parentBefore);
+    }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
 it.effect("a side chat opened during the parent's first turn starts from a digest", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

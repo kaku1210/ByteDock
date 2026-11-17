@@ -15,6 +15,13 @@ const fixture = vi.hoisted(() => ({
 vi.mock("../lib/terminalCloseConfirm", () => ({
   confirmTerminalClose: (labels: readonly string[]) => fixture.confirm(labels),
 }));
+vi.mock("../lib/composerDraftUploads", () => ({
+  releaseComposerDraftUploads: () => {},
+}));
+vi.mock("../temporaryChats", () => ({ forgetTemporaryChat: () => {} }));
+vi.mock("../components/ui/toast", () => ({
+  toastManager: { add: () => {} },
+}));
 vi.mock("../components/ChatView.logic", () => ({
   agentControlledBrowserCloseConfirmation: () => null,
 }));
@@ -42,7 +49,10 @@ vi.mock("../state/terminalSessions", () => ({ useKnownTerminalSessions: () => nu
 vi.mock("../composerDraftStore", async () => {
   const Schema = await import("effect/Schema");
   return {
-    useComposerDraftStore: () => null,
+    useComposerDraftStore: Object.assign(() => null, {
+      getState: () => ({ clearDraftThread: () => {} }),
+    }),
+    flushComposerDraftStorage: () => {},
     DraftId: Schema.String.pipe(Schema.brand("DraftId")),
   };
 });
@@ -66,6 +76,7 @@ vi.mock("../state/threads", () => ({ threadEnvironment: { delete: {} } }));
 vi.mock("../state/shell", () => ({ environmentShell: { stateValueAtom: () => null } }));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
   isAtomCommandInterrupted: () => false,
+  squashAtomCommandFailure: () => new Error("Side chat close failed"),
 }));
 
 function setup() {

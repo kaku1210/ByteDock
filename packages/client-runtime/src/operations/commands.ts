@@ -243,6 +243,7 @@ export interface ForkSideChatInput extends CommandMetadata {
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly title?: string;
+  readonly temporary?: boolean;
 }
 
 export interface MergeThreadBackInput extends CommandMetadata {
@@ -1095,6 +1096,7 @@ export const forkSideChat = Effect.fn("EnvironmentCommands.forkSideChat")(functi
     targetThreadId: input.targetThreadId,
     sourcePoint: { type: "latest_stable" },
     sideChat: true,
+    ...(input.temporary ? { temporary: true } : {}),
     ...(input.title === undefined ? {} : { title: input.title }),
   });
 });

@@ -11,7 +11,20 @@ export function useOpenLinkedThread() {
   const route = useRoute<Route<string, { environmentId?: string; threadId?: string }>>();
   const openInspector = useOpenThreadInspector();
   const openInInspector = use(ThreadInspectorNavigationContext);
-  return (target: { readonly environmentId: string; readonly threadId: string }) => {
+  return (target: {
+    readonly environmentId: string;
+    readonly threadId: string;
+    readonly temporary?: boolean;
+  }) => {
+    if (target.temporary) {
+      navigation.dispatch(
+        StackActions.push("Thread", {
+          environmentId: target.environmentId,
+          threadId: target.threadId,
+        }),
+      );
+      return;
+    }
     if (openInInspector) {
       openInInspector({ type: "thread", ...target });
       return;

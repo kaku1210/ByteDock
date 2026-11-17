@@ -12,12 +12,15 @@ import {
   type RuntimeMode,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import { useRef } from "react";
 
 import * as Dialog from "../../components/ui/Dialog";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+import { updateComposerDraftSettings } from "../../state/use-composer-drafts";
 import { waitForThreadShell } from "./threadForkNavigation";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
 
@@ -27,6 +30,7 @@ import { useOpenLinkedThread } from "./useOpenLinkedThread";
  * what the parent's composer would send, which its thread gets only on its next send.
  */
 export function useStartSideChat() {
+  const startingRef = useRef(false);
   const forkSideChat = useAtomCommand(threadEnvironment.forkSideChat, { reportFailure: false });
   const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const setRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, { reportFailure: false });
@@ -42,10 +46,14 @@ export function useStartSideChat() {
     Dialog.alert("Side chat not started", error instanceof Error ? error.message : fallback);
   };
 
-  return async (
+  const start = async (
     source: ScopedThreadRef,
     prompt: string,
-    settings: { readonly runtimeMode: RuntimeMode; readonly modelSelection: ModelSelection },
+    settings: {
+      readonly runtimeMode: RuntimeMode;
+      readonly modelSelection: ModelSelection;
+      readonly temporary?: boolean;
+    },
   ): Promise<boolean> => {
     const targetThreadId = ThreadId.make(uuidv4());
     const fork = await forkSideChat({
@@ -53,7 +61,8 @@ export function useStartSideChat() {
       input: {
         sourceThreadId: source.threadId,
         targetThreadId,
-        title: "Side chat",
+        title: settings.temporary ? "Temporary side chat" : "Side chat",
+        ...(settings.temporary ? { temporary: true } : {}),
         creationSource: "mobile",
       },
     });
@@ -97,29 +106,47 @@ export function useStartSideChat() {
         return false;
       }
     }
-    const turn = await startTurn({
-      environmentId: source.environmentId,
-      input: {
-        threadId: targetThreadId,
-        message: {
-          messageId: MessageId.make(uuidv4()),
-          role: "user",
-          text: prompt,
-          attachments: [],
+    if (prompt.trim()) {
+      const turn = await startTurn({
+        environmentId: source.environmentId,
+        input: {
+          threadId: targetThreadId,
+          message: {
+            messageId: MessageId.make(uuidv4()),
+            role: "user",
+            text: prompt,
+            attachments: [],
+          },
+          modelSelection: settings.modelSelection,
+          titleSeed: deriveThreadTitleSeed({ text: prompt, attachments: [] }),
+          runtimeMode: settings.runtimeMode,
+          interactionMode: "default",
+          createdAt: new Date().toISOString(),
         },
+      });
+      if (turn._tag === "Failure") {
+        alertFailure(turn, "Could not send the side chat message.");
+        discard();
+        return false;
+      }
+    } else {
+      updateComposerDraftSettings(scopedThreadKey(source.environmentId, targetThreadId), {
         modelSelection: settings.modelSelection,
-        titleSeed: deriveThreadTitleSeed({ text: prompt, attachments: [] }),
         runtimeMode: settings.runtimeMode,
-        interactionMode: "default",
-        createdAt: new Date().toISOString(),
-      },
-    });
-    if (turn._tag === "Failure") {
-      alertFailure(turn, "Could not send the side chat message.");
-      discard();
-      return false;
+      });
     }
-    openLinkedThread({ environmentId: source.environmentId, threadId: targetThreadId });
+    openLinkedThread({
+      environmentId: source.environmentId,
+      threadId: targetThreadId,
+      temporary: settings.temporary,
+    });
     return true;
+  };
+  return (...args: Parameters<typeof start>): Promise<boolean> => {
+    if (startingRef.current) return Promise.resolve(false);
+    startingRef.current = true;
+    return start(...args).finally(() => {
+      startingRef.current = false;
+    });
   };
 }

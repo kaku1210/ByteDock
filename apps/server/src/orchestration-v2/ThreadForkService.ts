@@ -60,6 +60,7 @@ export interface ThreadForkServiceV2Shape {
     readonly targetThreadId: ThreadId;
     readonly title?: string;
     readonly sideChat?: boolean;
+    readonly temporary?: boolean;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
@@ -77,6 +78,13 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
     plan: Effect.fn("ThreadForkService.plan")(function* (input) {
       const { sourceRun } = input;
       const sourceLineage = input.sourceProjection.thread.lineage;
+      if (input.temporary && !input.sideChat) {
+        return yield* new ThreadForkPlanError({
+          sourceThreadId: input.sourceProjection.thread.id,
+          targetThreadId: input.targetThreadId,
+          cause: "Only side chats can be temporary.",
+        });
+      }
       // A task a linked environment delegated here is a subagent of a remote thread.
       if (
         input.sideChat &&
@@ -119,6 +127,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           relationshipToParent: "fork",
           rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           ...(input.sideChat ? { sideChat: true } : {}),
+          ...(input.temporary ? { temporary: true } : {}),
         },
         forkedFrom:
           sourceRun === null

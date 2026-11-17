@@ -244,6 +244,10 @@ const composerPersistStorage: PersistStorage<ComposerPersistState> = {
   removeItem: (name) => composerDebouncedStorage.removeItem(name),
 };
 
+export function flushComposerDraftStorage() {
+  composerDebouncedStorage.flush();
+}
+
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("beforeunload", () => {
     composerDebouncedStorage.flush();

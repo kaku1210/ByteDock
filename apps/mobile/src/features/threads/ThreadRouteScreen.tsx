@@ -10,6 +10,7 @@ import { AppBar } from "../../components/ui/AppBar";
 import {
   StackActions,
   useNavigation,
+  usePreventRemove,
   useRoute,
   type StaticScreenProps,
 } from "@react-navigation/native";
@@ -91,6 +92,7 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
+import { clearComposerDraft } from "../../state/use-composer-drafts";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import { threadEnvironment } from "../../state/threads";
@@ -450,6 +452,48 @@ function ThreadRouteContent(
   })();
   const navigation = useNavigation();
   const selectDetail = useSelectWorkspaceDetail();
+  const deleteThread = useAtomCommand(threadEnvironment.delete, "temporary side chat delete");
+  const closingTemporaryRef = useRef(false);
+  const closedTemporaryRef = useRef<string | null>(null);
+  const temporary = selectedThread?.source.lineage.temporary === true;
+  const closeTemporarySideChat = async () => {
+    if (!selectedThread || !temporary) return false;
+    const key = scopedThreadKey(selectedThread.environmentId, selectedThread.id);
+    if (closedTemporaryRef.current === key) return true;
+    if (closingTemporaryRef.current) return false;
+    closingTemporaryRef.current = true;
+    const result = await deleteThread({
+      environmentId: selectedThread.environmentId,
+      input: { threadId: selectedThread.id },
+    });
+    closingTemporaryRef.current = false;
+    if (result._tag !== "Success") {
+      if (!isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        Dialog.alert(
+          "Could not delete temporary side chat",
+          error instanceof Error ? error.message : "Try again.",
+        );
+      }
+      return false;
+    }
+    closedTemporaryRef.current = key;
+    clearComposerDraft(key);
+    return true;
+  };
+  usePreventRemove(temporary && !props.inspectorPresentation, ({ data }) => {
+    void closeTemporarySideChat().then((closed) => {
+      if (closed) navigation.dispatch(data.action);
+    });
+  });
+  const handleCloseTemporarySideChat = async () => {
+    const parentThreadId = selectedThread?.source.lineage.parentThreadId;
+    if (!selectedThread || !parentThreadId) return;
+    const environmentId = selectedThread.environmentId;
+    if (await closeTemporarySideChat()) {
+      selectDetail({ name: "Thread", params: { environmentId, threadId: parentThreadId } });
+    }
+  };
   const openPullRequest = useOpenPullRequest();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
@@ -967,6 +1011,14 @@ function ThreadRouteContent(
           connectionState: routeConnectionState,
         });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
+  const handleOpenTemporarySideChat = () => {
+    if (!selectedThread || !composer.modelSelection || !composer.runtimeMode) return;
+    void startSideChat(scopeThreadRef(selectedThread.environmentId, selectedThread.id), "", {
+      runtimeMode: composer.runtimeMode,
+      modelSelection: composer.modelSelection,
+      temporary: true,
+    });
+  };
   const renderThreadRouteBody = () => (
     <>
       <GitActionProgressOverlay
@@ -987,6 +1039,15 @@ function ThreadRouteContent(
                 inspectorMode={inspectorMode}
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}
+                onOpenTemporarySideChat={
+                  composer.sideChatUnavailableReason === null &&
+                  serverConfig?.environment.capabilities.temporarySideChats === true
+                    ? handleOpenTemporarySideChat
+                    : undefined
+                }
+                onCloseTemporarySideChat={
+                  temporary ? () => void handleCloseTemporarySideChat() : undefined
+                }
               />
             )
           }

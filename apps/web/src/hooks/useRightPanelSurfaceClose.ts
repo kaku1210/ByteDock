@@ -104,34 +104,45 @@ export function useRightPanelSurfaceClose(input: {
       () => undefined,
     );
   };
+  const isTemporary = (ref: ScopedThreadRef, surface: RightPanelSurface) =>
+    surface.kind === "side-chat" &&
+    (surface.temporary === true ||
+      readThreadShell(scopeThreadRef(ref.environmentId, surface.threadId))?.lineage.temporary ===
+        true);
   // The active surface closes last so the panel does not flash through it.
-  const finishClose = (toClose: readonly RightPanelSurface[]) => {
-    if (!threadRef) return;
+  const finishClose = async (toClose: readonly RightPanelSurface[]) => {
+    if (!threadRef) return false;
+    const ref = threadRef;
     const store = useRightPanelStore.getState();
-    const activeId = selectThreadRightPanelState(store.byThreadKey, threadRef).activeSurfaceId;
+    const activeId = selectThreadRightPanelState(store.byThreadKey, ref).activeSurfaceId;
     const ordered = toClose.toSorted(
       (left, right) => Number(left.id === activeId) - Number(right.id === activeId),
     );
     for (const surface of ordered) {
+      if (isTemporary(ref, surface)) {
+        store.closeSurface(ref, surface.id);
+        continue;
+      }
       // Releasing a browser drops its session, which prunes the tab automatically; close it
       // first so the close stays a user action that hides the panel after the last tab.
-      store.closeSurface(threadRef, surface.id);
-      releaseSurfaceResources(threadRef, surface);
+      store.closeSurface(ref, surface.id);
+      releaseSurfaceResources(ref, surface);
     }
     const nextActiveSurface = selectActiveRightPanelSurface(
       useRightPanelStore.getState().byThreadKey,
-      threadRef,
+      ref,
     );
     if (nextActiveSurface?.kind === "preview" && nextActiveSurface.resourceId) {
-      setActivePreviewTab(threadRef, nextActiveSurface.resourceId);
+      setActivePreviewTab(ref, nextActiveSurface.resourceId);
     }
-    focusPanelTerminalAfterClose(threadRef, activeId);
+    focusPanelTerminalAfterClose(ref, activeId);
+    return true;
   };
   const labelFor = (terminalId: string) =>
     terminalLabelsById.get(terminalId) ?? getTerminalLabel(terminalId);
   const closeSurfaces = (toClose: readonly RightPanelSurface[]) => {
     if (!threadRef) return;
-    closeAfterAgentBrowserConfirmation(toClose, () => finishClose(toClose));
+    closeAfterAgentBrowserConfirmation(toClose, () => void finishClose(toClose));
   };
 
   const closeSurface = useStableCallback((surface: RightPanelSurface) => {
@@ -144,7 +155,7 @@ export function useRightPanelSurfaceClose(input: {
       surface.kind !== "terminal" ||
       !readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)
     ) {
-      finishClose([surface]);
+      void finishClose([surface]);
       return;
     }
     const otherLabels = surface.terminalIds
@@ -152,7 +163,7 @@ export function useRightPanelSurfaceClose(input: {
       .map(labelFor);
     void confirmTerminalClose([labelFor(surface.activeTerminalId), ...otherLabels]).then(
       (confirmed) => {
-        if (confirmed) finishClose([surface]);
+        if (confirmed) void finishClose([surface]);
       },
     );
   });
@@ -165,6 +176,22 @@ export function useRightPanelSurfaceClose(input: {
     closeSurfaces(surfaces.slice(surfaceIndex + 1));
   });
   const closeAllSurfaces = useStableCallback(() => closeSurfaces(surfaces));
+  const hideTemporarySideChats = useStableCallback(async () => {
+    if (threadRef === null) return false;
+    const ref = threadRef;
+    const currentSurfaces = () =>
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref).surfaces;
+    const closed = await finishClose(
+      currentSurfaces().filter((surface) => isTemporary(ref, surface)),
+    );
+    return closed && !currentSurfaces().some((surface) => isTemporary(ref, surface));
+  });
 
-  return { closeSurface, closeOtherSurfaces, closeSurfacesToRight, closeAllSurfaces };
+  return {
+    closeSurface,
+    closeOtherSurfaces,
+    closeSurfacesToRight,
+    closeAllSurfaces,
+    hideTemporarySideChats,
+  };
 }

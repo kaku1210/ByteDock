@@ -5,6 +5,7 @@ import {
   useWorkspacePaneState,
 } from "../layout/AdaptiveWorkspaceLayout";
 import type { ThreadInspectorMode } from "./thread-inspector-navigation";
+import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useWorkspaceBackNavigation } from "../layout/workspace/useAndroidWorkspaceNavigation";
 import {
   threadTerminalMenu,
@@ -21,7 +22,10 @@ export function ThreadHeader(props: {
   readonly hasThreadCwd: boolean;
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onOpenFilesInspector: () => void;
+  readonly onOpenTemporarySideChat?: (() => void) | undefined;
+  readonly onCloseTemporarySideChat?: (() => void) | undefined;
 }) {
+  const { text: uiText } = useUiLanguage();
   const goBack = useWorkspaceBackNavigation();
   const { toggleAuxiliaryPane, startNewTask } = useAdaptiveWorkspaceLayout();
   const { panes } = useWorkspacePaneState();
@@ -41,11 +45,20 @@ export function ThreadHeader(props: {
       ]
     : [];
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
+  if (props.onOpenTemporarySideChat) {
+    actions.unshift({
+      accessibilityLabel: uiText("Open temporary side chat"),
+      icon: "bubble.left.and.bubble.right",
+      onPress: props.onOpenTemporarySideChat,
+    });
+  }
 
   return (
     <AppBar
       title={props.title}
       subtitle={props.subtitle}
+      onClose={props.onCloseTemporarySideChat}
+      closeAccessibilityLabel={uiText("Close and delete temporary side chat")}
       onBackToList={goBack}
       onCompose={props.draft ? undefined : startNewTask}
       backInSplitView={

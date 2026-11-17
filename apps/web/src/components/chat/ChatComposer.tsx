@@ -248,7 +248,8 @@ import { observeResize } from "~/lib/observeResize";
 
 const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 import { toastManager } from "../ui/toast";
-import { BuildingIcon, PlayIcon, ReplyIcon } from "lucide-react";
+import { BuildingIcon, MessagesSquareIcon, PlayIcon, ReplyIcon } from "lucide-react";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useNavigate } from "@tanstack/react-router";
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 import { assistantCitationNavigation } from "../../lib/assistantCitationNavigation";
@@ -400,6 +401,8 @@ export interface ChatComposerProps {
   onToggleKeepFullHistory: () => void;
   onUsageLimitsCommand?: (() => void) | undefined;
   sideChatAvailable?: boolean;
+  onOpenTemporarySideChat?: (() => void) | undefined;
+  temporarySideChatDisabledReason?: string | null | undefined;
   sideChatDisabledReason?: string | null;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
   onFreshSession?: (() => void) | undefined;
@@ -513,7 +516,7 @@ const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
-  const { t } = useUiLanguage();
+  const { t, text: uiText } = useUiLanguage();
   const {
     composerDraftTarget,
     environmentId,
@@ -3932,6 +3935,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                           onStart={() => void speechInput.start()}
                         />
                       </>
+                    ) : null}
+                    {props.onOpenTemporarySideChat ? (
+                      <Tooltip>
+                        <TooltipTrigger render={<span className="shrink-0" />}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={uiText("Open temporary side chat")}
+                            disabled={Boolean(props.temporarySideChatDisabledReason)}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={props.onOpenTemporarySideChat}
+                          >
+                            <MessagesSquareIcon />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipPopup side="top">
+                          {uiText(props.temporarySideChatDisabledReason ?? "Temporary side chat")}
+                        </TooltipPopup>
+                      </Tooltip>
                     ) : null}
                     <VoiceInputSetup
                       environmentId={speechInput.transcriptionEnvironmentId}

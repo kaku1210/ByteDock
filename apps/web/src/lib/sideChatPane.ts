@@ -26,6 +26,6 @@ export function openSideChatTab(
   if (thread?.lineage.sideChat !== true || thread.lineage.parentThreadId !== parentRef.threadId) {
     return false;
   }
-  useRightPanelStore.getState().openSideChat(parentRef, thread.id);
+  useRightPanelStore.getState().openSideChat(parentRef, thread.id, thread.lineage.temporary);
   return true;
 }

@@ -49,7 +49,11 @@ export function ThreadSideChatsRow(props: {
                 accessibilityLabel={`Open side chat ${sideChat.title}${needs === null ? "" : `, needs ${needs}`}`}
                 className="max-w-48 flex-row items-center gap-1.5 rounded-full bg-subtle px-2.5 py-1"
                 onPress={() =>
-                  openLinkedThread({ environmentId: props.environmentId, threadId: sideChat.id })
+                  openLinkedThread({
+                    environmentId: props.environmentId,
+                    threadId: sideChat.id,
+                    temporary: sideChat.lineage.temporary,
+                  })
                 }
               >
                 {needs === null ? null : (

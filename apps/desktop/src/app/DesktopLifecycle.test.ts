@@ -68,10 +68,13 @@ const layerElectronTheme = Layer.succeed(ElectronTheme.ElectronTheme, {
   onUpdated: () => Effect.void,
 });
 
-function layerElectronWindow(destroyAll: Effect.Effect<void> = Effect.void) {
+function layerElectronWindow(
+  destroyAll: Effect.Effect<void> = Effect.void,
+  main: Effect.Effect<Option.Option<Electron.BrowserWindow>> = Effect.succeedNone,
+) {
   return Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected window creation"),
-    main: Effect.die("unexpected main window read"),
+    main,
     currentMainOrFirst: Effect.die("unexpected current window read"),
     focusedMainOrFirst: Effect.die("unexpected focused window read"),
     setMain: () => Effect.void,
@@ -173,6 +176,19 @@ describe("DesktopLifecycle", () => {
       const allowShutdown = yield* Deferred.make<void>();
       const quitRequested = yield* Deferred.make<void>();
       const events: string[] = [];
+      const rendererStarted = Promise.withResolvers<void>();
+      const allowRenderer = Promise.withResolvers<void>();
+      const main = {
+        isDestroyed: () => false,
+        webContents: {
+          isDestroyed: () => false,
+          executeJavaScript: async () => {
+            rendererStarted.resolve();
+            await allowRenderer.promise;
+            events.push("renderer-cleanup");
+          },
+        },
+      } as unknown as Electron.BrowserWindow;
 
       const quit = Effect.sync(() => {
         events.push("quit");
@@ -202,7 +218,7 @@ describe("DesktopLifecycle", () => {
       const layer = DesktopLifecycle.layer.pipe(
         Layer.provideMerge(layerElectronApp(appListeners, quit)),
         Layer.provideMerge(layerElectronTheme),
-        Layer.provideMerge(layerElectronWindow(destroyAll)),
+        Layer.provideMerge(layerElectronWindow(destroyAll, Effect.succeedSome(main))),
         Layer.provideMerge(layerDesktopWindow({ flushMainWindowBounds })),
         Layer.provideMerge(layerEnvironment),
         Layer.provideMerge(layerDesktopShutdown),
@@ -217,13 +233,22 @@ describe("DesktopLifecycle", () => {
           const event = { preventDefault: () => undefined } as Electron.Event;
           appListeners.get("before-quit")?.(event);
 
+          yield* Effect.promise(() => rendererStarted.promise);
+          assert.isFalse(yield* Deferred.isDone(shutdownRequested));
+          assert.deepEqual(events, []);
+          allowRenderer.resolve();
           yield* Deferred.await(shutdownRequested);
           const eventsBeforeCleanup = [...events];
           yield* Deferred.succeed(allowShutdown, undefined);
           yield* Deferred.await(quitRequested);
 
-          assert.deepEqual(eventsBeforeCleanup, ["flush", "destroy", "request"]);
-          assert.deepEqual(events, ["flush", "destroy", "request", "quit"]);
+          assert.deepEqual(eventsBeforeCleanup, [
+            "renderer-cleanup",
+            "flush",
+            "destroy",
+            "request",
+          ]);
+          assert.deepEqual(events, ["renderer-cleanup", "flush", "destroy", "request", "quit"]);
         }),
       ).pipe(Effect.provide(layer));
     }),

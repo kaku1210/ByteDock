@@ -15,10 +15,10 @@ import {
 import { Trash2Icon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useComposerDraftStore } from "../../composerDraftStore";
 import { ComposerHandleContext } from "../../composerHandleContext";
 import { useClientSettings } from "../../hooks/useSettings";
-import { releaseComposerDraftUploads } from "../../lib/composerDraftUploads";
+import { clearThreadLocalData } from "../../lib/clearThreadLocalData";
+import { forgetTemporaryChat } from "../../temporaryChats";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
 import { readLocalApi } from "../../localApi";
 import { hostRightPanel, useRightPanelStore } from "../../rightPanelStore";
@@ -32,6 +32,7 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { BackgroundThreadContext } from "./backgroundThread";
+import { useOpenThreadFamily } from "../../hooks/useOpenThreadFamily";
 
 /** A side chat tab: its title, Bring back, Delete and Close, over the side chat's own chat. */
 export default function SideChatPane(props: {
@@ -49,8 +50,10 @@ export default function SideChatPane(props: {
     [parentRef, threadId],
   );
   const shell = useQuietThreadShell(threadRef);
+  const temporary = shell?.lineage.temporary === true;
   const parent = useQuietThreadShell(parentRef);
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);
+  useOpenThreadFamily(threadRef, snapshotLoaded && shell === null);
   const projection = useQuietThreadProjection(shell === null ? null : threadRef)?.projection;
   const canOperate = useEnvironmentScope(parentRef.environmentId, AuthOrchestrationOperateScope);
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, { reportFailure: false });
@@ -62,11 +65,13 @@ export default function SideChatPane(props: {
   // A pending merge-back would fail the main thread's queued message, so the server refuses it.
   const bringBackBlockedReason = !canOperate
     ? "This connection cannot change threads."
-    : threadRuntimeIsActive(parent?.runtime)
-      ? "Available when the main thread is idle."
-      : mergeRun === null
-        ? "Available after a finished reply."
-        : null;
+    : temporary
+      ? "Temporary side chats cannot be brought back to the main thread."
+      : threadRuntimeIsActive(parent?.runtime)
+        ? "Available when the main thread is idle."
+        : mergeRun === null
+          ? "Available after a finished reply."
+          : null;
 
   const bringBack = async () => {
     if (bringBackBlockedReason !== null || mergeRun === null || bringingBack) return;
@@ -94,7 +99,7 @@ export default function SideChatPane(props: {
 
   const deleteSideChat = async () => {
     if (!canOperate || shell === null || deleting) return;
-    if (confirmThreadDelete) {
+    if (confirmThreadDelete && !temporary) {
       const api = readLocalApi();
       if (!api) return;
       const confirmed = await settlePromise(() =>
@@ -115,8 +120,8 @@ export default function SideChatPane(props: {
     });
     setDeleting(false);
     if (result._tag === "Success") {
-      releaseComposerDraftUploads(threadRef);
-      useComposerDraftStore.getState().clearDraftThread(threadRef);
+      clearThreadLocalData(threadRef);
+      forgetTemporaryChat(threadRef);
       useRightPanelStore.getState().closeSurface(parentRef, `side-chat:${threadId}`);
     } else if (!isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
@@ -134,36 +139,42 @@ export default function SideChatPane(props: {
         <span className="min-w-0 flex-1 truncate text-xs font-medium">
           {shell?.title ?? "Side chat"}
         </span>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="xs"
-                aria-disabled={bringBackBlockedReason !== null || bringingBack || undefined}
-                onClick={() => void bringBack()}
-              >
-                {uiText("Bring back")}
-              </Button>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {bringBackBlockedReason ?? "Adds this side chat to the main thread's next message."}
-          </TooltipPopup>
-        </Tooltip>
+        {temporary ? (
+          <span className="text-xs text-muted-foreground">{uiText("Temporary side chat")}</span>
+        ) : (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  aria-disabled={bringBackBlockedReason !== null || bringingBack || undefined}
+                  onClick={() => void bringBack()}
+                >
+                  {uiText("Bring back")}
+                </Button>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {bringBackBlockedReason ?? "Adds this side chat to the main thread's next message."}
+            </TooltipPopup>
+          </Tooltip>
+        )}
+        {!temporary ? (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={uiText("Delete side chat")}
+            disabled={!canOperate || shell === null || deleting}
+            onClick={() => void deleteSideChat()}
+          >
+            <Trash2Icon />
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label={uiText("Delete side chat")}
-          disabled={!canOperate || shell === null || deleting}
-          onClick={() => void deleteSideChat()}
-        >
-          <Trash2Icon />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={uiText("Close side chat")}
+          aria-label={uiText(temporary ? "Hide temporary side chat" : "Close side chat")}
           onClick={props.onClose}
         >
           <XIcon />

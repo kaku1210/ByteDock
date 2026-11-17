@@ -90,6 +90,33 @@ other action for a single message. From a hardware keyboard, `Cmd+Return`
 (`Ctrl+Shift+Return`) when Return inserts a new line. The button only offers
 Steer when the running agent supports it.
 
+## Side questions without interrupting
+
+Use the **Temporary side chat** icon beside voice input in the composer (in the thread header on native mobile) to ask a question or check progress
+while the main task continues. It starts with the main thread's context, and its
+messages never flow back into the main conversation. On web and desktop, the pane
+and tab close buttons only hide the temporary chat; reopen it from **Side chats**
+in thread details to continue. To stop and delete it, click the cross beside its
+entry in thread details and confirm. On mobile, Back closes and deletes it.
+
+On web and desktop, confirming closure of a temporary side chat also removes its draft and
+manual tasks. Exiting the desktop app waits briefly for deletion; closing or
+reloading the web page attempts the same cleanup. If the environment is offline,
+deletion is retried when this client reconnects or next opens. Hidden temporary chats
+are included in this cleanup. Desktop and browsers
+that support Web Locks also recover cleanup after a crash, without deleting a
+temporary chat still owned by another open window. Keep the app's local storage
+until pending cleanup has completed.
+
+Temporary chats are not an incognito mode. T3 marks conversation records as deleted
+but retains database history. Project changes, Git checkpoints, provider-owned
+history, logs and backups are not erased by closing a temporary chat.
+
+For a side chat you want to keep, send `/side your question` or `/btw your question`,
+or choose **Side chat** from the right panel's add menu on web and desktop. Closing
+a regular side chat keeps its history. **Bring back** explicitly adds its context
+to the main thread's next message; temporary side chats do not offer this action.
+
 ## Queue messages offline on mobile
 
 Mobile keeps local copies of draft attachments, so you can preview them and queue

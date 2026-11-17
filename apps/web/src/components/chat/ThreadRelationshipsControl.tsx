@@ -1,4 +1,6 @@
 import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { CloseTemporarySideChat } from "./CloseTemporarySideChat";
+import { useOpenThreadFamily } from "../../hooks/useOpenThreadFamily";
 import { useAtomValue } from "@effect/atom-react";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
@@ -445,6 +447,7 @@ export function ThreadRelationshipsPanel(props: {
 }) {
   const { text: uiText } = useUiLanguage();
   const ref = scopeThreadRef(props.environmentId, props.threadId);
+  useOpenThreadFamily(ref, props.showSideChats);
   const projection = useQuietThreadProjection(ref)?.projection ?? null;
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
@@ -951,6 +954,11 @@ export function ThreadRelationshipsPanel(props: {
               {threadRelationshipStatusLabel(rowStatus)}
             </span>
           </div>
+        ) : node?.thread?.lineage.sideChat && node.thread.lineage.temporary && !isParent ? (
+          <>
+            <div className="min-w-0 flex-1">{relationshipLink}</div>
+            <CloseTemporarySideChat parentRef={ref} threadId={threadId} title={threadTitle} />
+          </>
         ) : (
           relationshipLink
         )}

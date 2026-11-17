@@ -60,6 +60,7 @@ interface RightPanelActionsInput {
   readonly activeProjectCwd: string | null;
   readonly onDiffPanelOpen: (() => void) | undefined;
   readonly closeRightPanelSurface: (surface: RightPanelSurface) => void;
+  readonly hideTemporarySideChats: () => Promise<boolean>;
 }
 
 /**
@@ -69,6 +70,7 @@ interface RightPanelActionsInput {
 export function useRightPanelActions(input: RightPanelActionsInput) {
   const {
     closeRightPanelSurface,
+    hideTemporarySideChats,
     activeThreadRef,
     activeProject,
     activeRightPanelSurface,
@@ -163,8 +165,9 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
   };
   const openFileSurfaceStable = useStableCallback(openFileSurface);
-  const closePreviewPanel = () => {
+  const closePreviewPanel = async () => {
     if (activeThreadRef) {
+      if (!(await hideTemporarySideChats())) return;
       if (activeRightPanelSurface?.kind === "preview" && activeRightPanelSurface.resourceId) {
         usePreviewMiniPlayerStore
           .getState()

@@ -34,7 +34,8 @@ import { threadEnvironment } from "../state/threads";
 import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
-import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
+import { clearThreadLocalData } from "../lib/clearThreadLocalData";
+import { forgetTemporaryChat } from "../temporaryChats";
 import { announce } from "../lib/announce";
 import { readLocalApi } from "../localApi";
 import {
@@ -337,7 +338,6 @@ export function useThreadActions() {
   const sidebarThreadSortOrder = useClientSettings((settings) => settings.sidebarThreadSortOrder);
   const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
   const confirmThreadUnpin = useClientSettings((settings) => settings.confirmThreadUnpin);
-  const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearDraftThread);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadById,
   );
@@ -474,8 +474,8 @@ export function useThreadActions() {
             )
             .map((entry) => scopeThreadRef(target.environmentId, entry.id)),
         ]) {
-          releaseComposerDraftUploads(ref);
-          clearComposerDraftForThread(ref);
+          clearThreadLocalData(ref);
+          forgetTemporaryChat(ref);
         }
         expireThreadUndos(target, [...LIST_PLACEMENT_UNDO_KINDS, "archive"]);
         refreshArchivedThreadsForEnvironment(target.environmentId);
@@ -611,16 +611,16 @@ export function useThreadActions() {
     }
     expireThreadUndos(threadRef, [...LIST_PLACEMENT_UNDO_KINDS, "archive"]);
     refreshArchivedThreadsForEnvironment(threadRef.environmentId);
-    releaseComposerDraftUploads(threadRef);
-    clearComposerDraftForThread(threadRef);
+    clearThreadLocalData(threadRef);
+    forgetTemporaryChat(threadRef);
     // The server deletes the thread's side chats with it.
     for (const entry of threads) {
       if (entry.lineage.sideChat !== true || entry.lineage.parentThreadId !== threadRef.threadId) {
         continue;
       }
       const sideChatRef = scopeThreadRef(threadRef.environmentId, entry.id);
-      releaseComposerDraftUploads(sideChatRef);
-      clearComposerDraftForThread(sideChatRef);
+      clearThreadLocalData(sideChatRef);
+      forgetTemporaryChat(sideChatRef);
     }
     clearProjectDraftThreadById(
       scopeProjectRef(threadRef.environmentId, thread.projectId),

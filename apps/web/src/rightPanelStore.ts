@@ -78,7 +78,7 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId; temporary?: boolean };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -127,7 +127,7 @@ interface RightPanelStoreState {
     ref: ScopedThreadRef,
     kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
   ) => void;
-  openSideChat: (ref: ScopedThreadRef, threadId: ThreadId) => void;
+  openSideChat: (ref: ScopedThreadRef, threadId: ThreadId, temporary?: boolean) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -733,10 +733,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             );
           }),
         ),
-      openSideChat: (ref, threadId) =>
+      openSideChat: (ref, threadId, temporary) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, { id: `side-chat:${threadId}`, kind: "side-chat", threadId }),
+            upsertSurface(current, {
+              id: `side-chat:${threadId}`,
+              kind: "side-chat",
+              threadId,
+              ...(temporary ? { temporary: true } : {}),
+            }),
           ),
         ),
       renameDevice: (ref, surfaceId, title) =>
@@ -1233,6 +1238,7 @@ useRightPanelStore.subscribe((next, previous) => {
     for (const surface of closedInOrder.map(withoutReveal)) {
       if (
         surface.kind === "terminal" ||
+        (surface.kind === "side-chat" && surface.temporary === true) ||
         (surface.kind === "preview" && surface.resourceId !== null)
       )
         continue;

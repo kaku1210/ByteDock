@@ -52,7 +52,13 @@ vi.mock("./useHandleNewThread", () => ({
     router.state.location.href = "/draft/project";
   },
 }));
-vi.mock("../composerDraftStore", () => ({ useComposerDraftStore: () => vi.fn() }));
+vi.mock("../temporaryChats", () => ({ forgetTemporaryChat: () => {} }));
+vi.mock("../composerDraftStore", () => ({
+  useComposerDraftStore: Object.assign(() => vi.fn(), {
+    getState: () => ({ clearDraftThread: vi.fn() }),
+  }),
+  flushComposerDraftStorage: () => {},
+}));
 vi.mock("../lib/composerDraftUploads", () => ({ releaseComposerDraftUploads: vi.fn() }));
 vi.mock("../terminalUiStateStore", () => ({ useTerminalUiStateStore: () => vi.fn() }));
 vi.mock("../uiStateStore", () => ({ useUiStateStore: () => vi.fn() }));

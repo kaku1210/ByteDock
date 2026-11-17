@@ -2067,6 +2067,7 @@ export default function ChatView(props: ChatViewProps) {
     closeOtherSurfaces: closeOtherRightPanelSurfacesStable,
     closeSurfacesToRight: closeRightPanelSurfacesToRightStable,
     closeAllSurfaces: closeAllRightPanelSurfacesStable,
+    hideTemporarySideChats,
   } = useRightPanelSurfaceClose({
     threadRef: activeThreadRef,
     terminalLabelsById: activeTerminalLabelsById,
@@ -2436,6 +2437,7 @@ export default function ChatView(props: ChatViewProps) {
     activeProjectCwd,
     onDiffPanelOpen,
     closeRightPanelSurface,
+    hideTemporarySideChats,
   });
   const pullRequestSurfaceAvailable = supportsPullRequests && pullRequestPanelTarget !== null;
   const {
@@ -2864,6 +2866,14 @@ export default function ChatView(props: ChatViewProps) {
                 ? "Available once the thread's worktree is set up."
                 : null;
   const openSideChatStable = useStableCallback(() => void sideChat.open());
+  const temporarySideChatDisabledReason =
+    sideChatDisabledReason ??
+    (serverConfig?.environment.capabilities.temporarySideChats === true
+      ? null
+      : "Update this environment's T3 Code server to use temporary side chats.");
+  const openTemporarySideChatStable = useStableCallback(() => {
+    if (temporarySideChatDisabledReason === null) void sideChat.open(undefined, true);
+  });
   const sendSideChatStable = useStableCallback((prompt: string) => sideChat.open(prompt));
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
@@ -3456,6 +3466,11 @@ export default function ChatView(props: ChatViewProps) {
                   citationRequest={citationRequest}
                   citationHistory={citationHistory}
                   onCiteAssistantText={citeAssistantTextStable}
+                  onSlidCiteAssistantText={
+                    sideChat.available && temporarySideChatDisabledReason === null
+                      ? sideChat.cite
+                      : undefined
+                  }
                   onReplyToResponse={replyToResponseStable}
                   {...(activeProject
                     ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
@@ -3709,6 +3724,10 @@ export default function ChatView(props: ChatViewProps) {
                                 keepFullHistory={keepFullHistory}
                                 onToggleKeepFullHistory={toggleKeepFullHistoryStable}
                                 sideChatAvailable={sideChat.available}
+                                onOpenTemporarySideChat={
+                                  sideChatsOffered ? openTemporarySideChatStable : undefined
+                                }
+                                temporarySideChatDisabledReason={temporarySideChatDisabledReason}
                                 sideChatDisabledReason={sideChatDisabledReason}
                                 onFreshSession={
                                   freshSessionCommandAvailable ? armFreshSessionStable : undefined
