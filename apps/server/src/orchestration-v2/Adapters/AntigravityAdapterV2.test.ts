@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - FileSystem.symlink cannot select Windows directory junctions.
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -13,6 +15,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -469,17 +472,36 @@ describe("AntigravityAdapterV2 client file system", () => {
         context("fs/read_text_file"),
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(outsideRead));
-      const linkPath = path.join(workspace, "linked-secret.txt");
-      yield* fileSystem.symlink(outsideFile, linkPath);
+      const outsideLink = path.join(workspace, "outside-link");
+      const insideLink = path.join(workspace, "inside-link");
+      const platform = yield* HostProcess.Platform;
+      // Directory junctions exercise real-path containment without Windows symlink privileges.
+      if (platform === "win32") {
+        yield* Effect.promise(() =>
+          NodeFSP.symlink(path.dirname(outsideFile), outsideLink, "junction"),
+        );
+        yield* Effect.promise(() =>
+          NodeFSP.symlink(path.dirname(insidePath), insideLink, "junction"),
+        );
+      } else {
+        yield* fileSystem.symlink(outsideFile, outsideLink);
+        yield* fileSystem.symlink(insidePath, insideLink);
+      }
       const linkedRead = yield* readTextFile(
-        { sessionId: "mock-session-1", path: linkPath },
+        {
+          sessionId: "mock-session-1",
+          path:
+            platform === "win32" ? path.join(outsideLink, path.basename(outsideFile)) : outsideLink,
+        },
         context("fs/read_text_file"),
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(linkedRead), "a read through an escaping symlink is denied");
-      const insideLink = path.join(workspace, "inside-link.ts");
-      yield* fileSystem.symlink(insidePath, insideLink);
       const viaInsideLink = yield* readTextFile(
-        { sessionId: "mock-session-1", path: insideLink },
+        {
+          sessionId: "mock-session-1",
+          path:
+            platform === "win32" ? path.join(insideLink, path.basename(insidePath)) : insideLink,
+        },
         context("fs/read_text_file"),
       );
       assert.equal(viaInsideLink.content, "inside");
