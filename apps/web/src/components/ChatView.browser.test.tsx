@@ -381,6 +381,97 @@ it("retries and regenerates prompt suggestions without duplicate requests or rep
   expect((editor.element() as HTMLElement).textContent).toBe("");
 });
 
+it("applies a suggestion preference once and clears it only after a successful send", async () => {
+  const thread = threadWithHistory("suggestion-preference", 1);
+  const otherThread = threadWithHistory("suggestion-preference-other", 1);
+  let rejectSend = true;
+  const newSuggestion = "检查菜单的键盘操作。";
+  const suggestPrompt = vi.fn((_: ThreadPromptSuggestionInput) =>
+    Effect.succeed({ suggestion: newSuggestion }),
+  );
+  using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
+  using _environment = installFakeEnvironment([thread, otherThread], {
+    suggestPrompt,
+    acceptCommands: true,
+    holdCommand: (command) => rejectSend && command.type === "message.dispatch",
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+    uiLanguage: "zh-CN",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  // AppRoot brings its own router.
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+  const retry = page.getByTestId("composer-prompt-suggestion-control");
+  const editor = page.getByTestId("composer-editor");
+  await expect.element(retry).toHaveAttribute("data-state", "ready");
+  const preference = page.getByRole("textbox", { name: "建议倾向", exact: true });
+  const preferenceText = "优先优化键盘操作";
+  const requestsBeforePreference = suggestPrompt.mock.calls.length;
+  await preference.fill(preferenceText);
+  await userEvent.click(editor);
+  await expect.element(retry).toHaveAttribute("data-state", "ready");
+  expect(suggestPrompt.mock.calls.length).toBe(requestsBeforePreference);
+  await expect.element(retry).toHaveAttribute("aria-label", "按当前倾向生成建议");
+  await preference.fill("");
+  await userEvent.click(editor);
+  await preference.fill(preferenceText);
+  await userEvent.click(editor);
+  expect(suggestPrompt.mock.calls.length).toBe(requestsBeforePreference);
+  await retry.click();
+  await vi.waitFor(() =>
+    expect(suggestPrompt).toHaveBeenLastCalledWith({
+      threadId: thread.id,
+      runId: thread.runs[0]!.id,
+      preference: preferenceText,
+    }),
+  );
+  expect(dispatchedCommands().some((command) => command.type === "message.dispatch")).toBe(false);
+  await expect.element(retry).toHaveAttribute("data-state", "ready");
+  expect(suggestPrompt.mock.calls.length).toBe(requestsBeforePreference + 1);
+  await userEvent.click(preference);
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() =>
+    expect(suggestPrompt).toHaveBeenLastCalledWith({
+      threadId: thread.id,
+      runId: thread.runs[0]!.id,
+      preference: preferenceText,
+      regenerate: true,
+    }),
+  );
+  await expect.element(retry).toHaveAttribute("data-state", "ready");
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: ENVIRONMENT_ID, threadId: otherThread.id },
+  });
+  await expect.element(preference).toHaveValue("");
+  await router.navigate({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: ENVIRONMENT_ID, threadId: thread.id },
+  });
+  await expect.element(preference).toHaveValue(preferenceText);
+  await expect.element(retry).toHaveAttribute("data-state", "ready");
+  await page.getByRole("button", { name: newSuggestion, exact: true }).click();
+  await expect.element(editor).toHaveTextContent(newSuggestion);
+  await expect.element(preference).toHaveValue(preferenceText);
+  await userEvent.click(editor);
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() =>
+    expect(dispatchedCommands().some((command) => command.type === "message.dispatch")).toBe(true),
+  );
+  await rejectPendingCommand("Preference test rejected send");
+  await expect.element(editor).toHaveTextContent(newSuggestion);
+  await expect.element(preference).toHaveValue(preferenceText);
+  rejectSend = false;
+  await userEvent.click(editor);
+  await userEvent.keyboard("{Enter}");
+  await expect.element(preference).toHaveValue("");
+});
+
 it("opens the thread actions menu for an older settled thread the shell leaves out", async () => {
   const thread = { ...threadWithHistory("older-settled", 1), olderSettled: true as const };
   using _environment = installFakeEnvironment([thread]);

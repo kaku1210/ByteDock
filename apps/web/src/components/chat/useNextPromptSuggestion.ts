@@ -38,11 +38,12 @@ export function useNextPromptSuggestion(
   thread: ScopedThreadRef,
   runId: RunId | null,
   unavailableReason: PromptSuggestionUnavailableReason | null,
+  preference = "",
 ): { readonly state: PromptSuggestionState; readonly regenerate: (() => void) | null } {
   const { environmentId, threadId } = thread;
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(environmentId));
   const selection = settings?.nextPromptSuggestionModelSelection ?? null;
-  const key = JSON.stringify([environmentId, threadId, selection]);
+  const key = JSON.stringify([environmentId, threadId, selection, preference]);
   const cache = useSuggestionCache((entries) => entries[key]);
   const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
   const provider = providers?.find((entry) => entry.instanceId === selection?.instanceId);
@@ -76,6 +77,7 @@ export function useNextPromptSuggestion(
       input: {
         threadId,
         runId: completedRunId,
+        ...(preference ? { preference } : {}),
         ...(trigger === "regenerate" ? { regenerate: true } : {}),
       },
     }).then((result) => {

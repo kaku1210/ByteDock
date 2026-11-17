@@ -217,6 +217,11 @@ import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
 import { ContextWindowMeter } from "./ContextWindowMeter";
 import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { PromptSuggestionControl } from "./PromptSuggestionControl";
+import { PromptSuggestionPreference } from "./PromptSuggestionPreference";
+import {
+  applyPromptSuggestionPreference,
+  usePromptSuggestionPreference,
+} from "./promptSuggestionPreferences";
 import type { PromptSuggestionUnavailableReason } from "@t3tools/client-runtime/state/prompt-suggestions";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
@@ -2319,6 +2324,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const expandMobileComposerStable = useStableCallback(expandMobileComposer);
 
   const freshSessionArmed = useFreshSessionArmed(scopedThreadKey(routeThreadRef));
+  const suggestionPreference = usePromptSuggestionPreference(
+    scopedThreadKey(routeThreadRef),
+    activeThread?.latestRun?.runId ?? null,
+  );
+  const suggestionPreferenceChanged =
+    (suggestionPreference?.text.trim() ?? "") !== (suggestionPreference?.applied ?? "");
   const promptSuggestionUnavailableReason: PromptSuggestionUnavailableReason | null =
     phase === "running" || freshSessionArmed
       ? "running"
@@ -2347,7 +2358,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       routeThreadRef,
       promptSuggestionRunId ?? null,
       promptSuggestionUnavailableReason,
+      suggestionPreference?.applied ?? "",
     );
+  const generateWithPreference =
+    regeneratePromptSuggestion === null
+      ? null
+      : () => {
+          if (suggestionPreferenceChanged) {
+            applyPromptSuggestionPreference(scopedThreadKey(routeThreadRef));
+          } else {
+            regeneratePromptSuggestion();
+          }
+        };
   // Escape dismisses the suggestion so Tab moves focus again.
   const { suggestion: nativePromptSuggestion, dismiss: dismissNativePromptSuggestion } =
     usePromptSuggestion(environmentId, activeThread, activeThreadRuns);
@@ -2356,6 +2378,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     environmentId,
     routeThreadRef.threadId,
     promptSuggestionRunId,
+    suggestionPreference?.applied ?? "",
     promptSuggestionState.status === "ready" ? promptSuggestionState.suggestion : null,
   ]);
   const customPromptSuggestion =
@@ -2374,8 +2397,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     !isComposerApprovalState &&
     !activePendingProgress &&
     !projectSelectionRequired &&
-    !showProviderUnavailable
-      ? (customPromptSuggestion ?? nativePromptSuggestion)
+    !showProviderUnavailable &&
+    !suggestionPreferenceChanged
+      ? (customPromptSuggestion ??
+        (suggestionPreference?.text.trim() ? null : nativePromptSuggestion))
       : null;
 
   const acceptPromptSuggestion = () =>
@@ -2508,8 +2533,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <div data-composer-status-controls="true" className="flex shrink-0 items-center gap-0.5">
           <PromptSuggestionControl
             state={promptSuggestionState}
-            onRegenerate={regeneratePromptSuggestion}
+            onRegenerate={generateWithPreference}
+            preferenceChanged={suggestionPreferenceChanged}
           />
+          {routeKind === "server" &&
+          (promptSuggestionState.status !== "unavailable" ||
+            promptSuggestionState.reason !== "off") ? (
+            <PromptSuggestionPreference
+              threadKey={scopedThreadKey(routeThreadRef)}
+              runId={activeThread?.latestRun?.runId ?? null}
+              value={suggestionPreference?.text ?? ""}
+              onGenerate={generateWithPreference}
+            />
+          ) : null}
           <ContextWindowMeter
             usage={props.contextWindow}
             loading={reserveContextWindowMeter}

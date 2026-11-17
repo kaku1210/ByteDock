@@ -294,82 +294,114 @@ describe("mobile task permissions", () => {
     expect(state.setFreshPending).toHaveBeenCalledWith("secondary:thread", false);
   });
 
-  it("compacts a stale thread before sending unless kept or a fresh session is armed", async () => {
-    state.grantedEnvironments.add("secondary");
-    state.projection = {
-      thread: {
-        ...state.thread,
-        activeProviderThreadId: null,
-        lineage: { rootThreadId: "thread", parentThreadId: null, relationshipToParent: null },
-      },
-      runs: [],
-      attempts: [],
-      nodes: [],
-      subagents: [],
-      providerSessions: [],
-      providerThreads: [],
-      providerTurns: [],
-      runtimeRequests: [],
-      messages: [],
-      plans: [],
-      turnItems: [],
-      checkpointScopes: [],
-      checkpoints: [],
-      contextHandoffs: [],
-      contextTransfers: [],
-      visibleTurnItems: [],
-      updatedAt: DateTime.makeUnsafe(0),
-    } as unknown as OrchestrationV2ThreadProjection;
-    state.compactModel = "gpt-5.4";
-    // The notice's minute clock (the epoch here) trails a deadline the send's exact time has passed.
-    state.compactDueAt = "2026-01-01T00:00:00.000Z";
-    const unannounced = useThreadComposerState(NO_SIDE_CHATS);
-    expect(unannounced.compactBeforeSend).toBeNull();
-    await unannounced.onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ compactBeforeSend: true }),
-    );
-    state.compactDueAt = "";
-    const composer = useThreadComposerState(NO_SIDE_CHATS);
-    expect(composer.compactBeforeSend?.tokens).toBe(248_000);
-    await composer.onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ compactBeforeSend: true }),
-    );
-    // A model picked after the last render still decides the send.
-    state.draft = {
-      ...state.draft,
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
-    };
-    await composer.onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ compactBeforeSend: true }),
-    );
-    state.draft = { ...state.draft, modelSelection: undefined };
-    composer.compactBeforeSend?.toggleKeepFullHistory();
-    const kept = useThreadComposerState(NO_SIDE_CHATS);
-    expect(kept.compactBeforeSend?.keepFullHistory).toBe(true);
-    kept.compactBeforeSend?.toggleKeepFullHistory();
-    const compactAgain = useThreadComposerState(NO_SIDE_CHATS);
-    expect(compactAgain.compactBeforeSend?.keepFullHistory).toBe(false);
-    await compactAgain.onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ compactBeforeSend: true }),
-    );
-    compactAgain.compactBeforeSend?.toggleKeepFullHistory();
-    await useThreadComposerState(NO_SIDE_CHATS).onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ compactBeforeSend: true }),
-    );
-    // Keeping covers one send, as on web.
-    expect(useThreadComposerState(NO_SIDE_CHATS).compactBeforeSend?.keepFullHistory).toBe(false);
-    state.freshPending = true;
-    await composer.onSendMessage();
-    expect(state.enqueue).toHaveBeenLastCalledWith(
-      expect.not.objectContaining({ compactBeforeSend: true }),
-    );
-    expect(state.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ freshContext: true }));
-  });
+  it.each(["claudeAgent", "codex", "antigravity"])(
+    "%s respects the compaction toggle and fresh sessions",
+    async (driver) => {
+      state.serverConfig = {
+        ...state.serverConfig!,
+        providers: state.serverConfig!.providers.map((provider) => ({
+          ...provider,
+          driver: ProviderDriverKind.make(driver),
+          installed: true,
+          auth: { status: "authenticated" },
+          models: ["gpt-5.4", "gpt-5.5"].map((slug) => ({
+            slug,
+            name: slug,
+            isCustom: false,
+            capabilities: null,
+          })),
+        })),
+      };
+      state.grantedEnvironments.add("secondary");
+      state.projection = {
+        thread: {
+          ...state.thread,
+          activeProviderThreadId: null,
+          lineage: { rootThreadId: "thread", parentThreadId: null, relationshipToParent: null },
+        },
+        runs: [],
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        providerSessions: [],
+        providerThreads: [],
+        providerTurns: [],
+        runtimeRequests: [],
+        messages: [],
+        plans: [],
+        turnItems: [],
+        checkpointScopes: [],
+        checkpoints: [],
+        contextHandoffs: [],
+        contextTransfers: [],
+        visibleTurnItems: [],
+        updatedAt: DateTime.makeUnsafe(0),
+      } as unknown as OrchestrationV2ThreadProjection;
+      state.compactModel = "gpt-5.4";
+      // The notice's minute clock (the epoch here) trails a deadline the send's exact time has passed.
+      state.compactDueAt = "2026-01-01T00:00:00.000Z";
+      const unannounced = useThreadComposerState(NO_SIDE_CHATS);
+      expect(unannounced.compactBeforeSend).toBeNull();
+      await unannounced.onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ compactBeforeSend: true }),
+      );
+      state.compactDueAt = "";
+      const composer = useThreadComposerState(NO_SIDE_CHATS);
+      expect(composer.compactBeforeSend?.tokens).toBe(248_000);
+      expect(composer.compactBeforeSend?.keepFullHistory).toBe(driver !== "claudeAgent");
+      if (driver !== "claudeAgent") {
+        await composer.onSendMessage();
+        expect(state.enqueue).toHaveBeenLastCalledWith(
+          expect.not.objectContaining({ compactBeforeSend: true }),
+        );
+        composer.compactBeforeSend?.toggleKeepFullHistory();
+      }
+      await composer.onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ compactBeforeSend: true }),
+      );
+      // A model picked after the last render still decides the send.
+      state.draft = {
+        ...state.draft,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
+      };
+      await composer.onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ compactBeforeSend: true }),
+      );
+      state.draft = { ...state.draft, modelSelection: undefined };
+      const reset = useThreadComposerState(NO_SIDE_CHATS);
+      if (!reset.compactBeforeSend?.keepFullHistory)
+        reset.compactBeforeSend?.toggleKeepFullHistory();
+      const kept = useThreadComposerState(NO_SIDE_CHATS);
+      expect(kept.compactBeforeSend?.keepFullHistory).toBe(true);
+      kept.compactBeforeSend?.toggleKeepFullHistory();
+      const compactAgain = useThreadComposerState(NO_SIDE_CHATS);
+      expect(compactAgain.compactBeforeSend?.keepFullHistory).toBe(false);
+      await compactAgain.onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ compactBeforeSend: true }),
+      );
+      compactAgain.compactBeforeSend?.toggleKeepFullHistory();
+      await useThreadComposerState(NO_SIDE_CHATS).onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ compactBeforeSend: true }),
+      );
+      // Keeping covers one send, as on web.
+      expect(useThreadComposerState(NO_SIDE_CHATS).compactBeforeSend?.keepFullHistory).toBe(
+        driver !== "claudeAgent",
+      );
+      state.freshPending = true;
+      await composer.onSendMessage();
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ compactBeforeSend: true }),
+      );
+      expect(state.enqueue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ freshContext: true }),
+      );
+    },
+  );
 
   it("sends a typed /clear with an approval redirect as that reply's text", async () => {
     state.grantedEnvironments.add("secondary");

@@ -1349,9 +1349,7 @@ export function planComposerTurn(input: {
     !input.sendQueuesBehindSetup && (!input.isServerThread || input.activeMessageCount === 0);
   const shouldCreateWorktree =
     isFirstMessage && input.sendEnvMode === "worktree" && !input.worktreePath;
-  // A stale Claude session compacts before this message so the turn does not re-read the
-  // old history. The message queues behind the /compact run, since steering into it is
-  // rejected.
+  // The message queues behind /compact, since steering into a compaction is rejected.
   const compactBeforeSend =
     !input.freshContext &&
     input.resumeCompactionTokens !== null &&

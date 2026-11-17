@@ -22,6 +22,7 @@ const claude = ProviderInstanceId.make("claudeAgent");
 const claudeWork = ProviderInstanceId.make("claude_work");
 const claudeOtherHome = ProviderInstanceId.make("claude_other_home");
 const codex = ProviderInstanceId.make("codex");
+const antigravity = ProviderInstanceId.make("antigravity");
 const lastTurnAt = "2026-10-30T14:23:02.000Z";
 const returnedAt = "2026-10-30T23:03:21.000Z";
 
@@ -55,6 +56,7 @@ function sendInput(
     { instanceId: claudeWork, driver: "claudeAgent", groupKey: "claude:~/.claude" },
     { instanceId: claudeOtherHome, driver: "claudeAgent", groupKey: "claude:~/.claude-other" },
     { instanceId: codex, driver: "codex", groupKey: "codex:~/.codex" },
+    { instanceId: antigravity, driver: "antigravity", groupKey: "antigravity:test" },
   ].map(({ instanceId, driver, groupKey }) => ({
     instanceId,
     driver: ProviderDriverKind.make(driver),
@@ -216,7 +218,36 @@ describe("compactBeforeSendTokens", () => {
       },
       expected: false,
     },
-    { name: "on a Codex thread", source: codex, selected: codex, expected: false },
+    { name: "on a Codex thread", source: codex, selected: codex, expected: true },
+    {
+      name: "on an Antigravity thread",
+      source: antigravity,
+      selected: antigravity,
+      expected: true,
+    },
+    {
+      name: "on a recent Codex thread below Claude's idle threshold",
+      source: codex,
+      selected: codex,
+      usedTokens: 9000,
+      now: lastTurnAt,
+      settings: { idleCompaction: "off" },
+      expected: true,
+    },
+    {
+      name: "on Antigravity without native compaction",
+      source: antigravity,
+      selected: antigravity,
+      slashCommands: [],
+      expected: false,
+    },
+    {
+      name: "without used context",
+      source: codex,
+      selected: codex,
+      usedTokens: 0,
+      expected: false,
+    },
     {
       name: "after switching a stale Codex thread to Claude",
       source: codex,
@@ -258,7 +289,7 @@ describe("compactBeforeSendTokens", () => {
     { name: "for a typed /compact", text: "/compact keep the plan", expected: false },
   ] as const)("$name", ({ name: _name, expected, ...overrides }) => {
     expect(compactBeforeSendTokens(sendInput(overrides as Parameters<typeof sendInput>[0]))).toBe(
-      expected ? 293_611 : null,
+      expected ? ("usedTokens" in overrides ? overrides.usedTokens : 293_611) : null,
     );
   });
 });

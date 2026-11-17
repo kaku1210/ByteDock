@@ -19,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -38,6 +39,7 @@ import { normalizeAntigravitySessionUpdate } from "../../provider/acp/Antigravit
 import { ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE } from "../../provider/antigravityAuthSupport.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import {
   makeAntigravityAcpAdapterFlavor,
   makeAntigravityAdapterV2,
@@ -148,9 +150,15 @@ const layerSession = Layer.mergeAll(
 );
 
 describe("AntigravityAdapterV2 compaction", () => {
-  it.live.each([false, true])(
-    "negotiates native goals (%s) without enabling manual compaction",
-    (nativeGoals) =>
+  it.live.each([
+    { version: "1.3.0", commands: "compact", supported: false, nativeGoals: false },
+    { version: "1.5.8", commands: "compact", supported: false, nativeGoals: true },
+    { version: "unknown", commands: "compact", supported: false, nativeGoals: false },
+    { version: "1.5.9", commands: "compact", supported: true, nativeGoals: true },
+    { version: "1.5.9", commands: "plan", supported: false, nativeGoals: false },
+  ])(
+    "gates native compaction on runtime $version and commands $commands",
+    ({ version, commands, supported, nativeGoals }) =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const path = yield* Path.Path;
@@ -162,6 +170,7 @@ describe("AntigravityAdapterV2 compaction", () => {
         const goalSupport = yield* Ref.make(false);
         const startupMilestone = yield* Deferred.make<void>();
         const consumeStartupCommands = yield* Deferred.make<void>();
+        const prompts = yield* Ref.make<ReadonlyArray<EffectAcpSchema.PromptRequest["prompt"]>>([]);
         const adapter = yield* makeAntigravityAdapterV2({
           instanceId,
           selfInvocation: yield* resolveSelfInvocation(),
@@ -173,12 +182,21 @@ describe("AntigravityAdapterV2 compaction", () => {
                 command: process.execPath,
                 args: [mockAgentPath],
                 cwd: input.cwd,
-                env: { T3_ACP_ANTIGRAVITY: "1" },
+                env: {
+                  T3_ACP_ANTIGRAVITY: "1",
+                  T3_ACP_AGENT_VERSION: version,
+                  T3_ACP_AVAILABLE_COMMANDS: commands,
+                },
               },
             }).pipe(
               Effect.provideService(SecureRandom.SecureRandom, crypto),
               Effect.map((runtime) => ({
                 ...runtime,
+                // 1.5.9 completes /compact without compaction_update or assistant text.
+                prompt: (request) =>
+                  Ref.update(prompts, (current) => [...current, request.prompt]).pipe(
+                    Effect.as({ stopReason: "end_turn" as const }),
+                  ),
                 drainEvents: Deferred.succeed(startupMilestone, undefined).pipe(
                   Effect.andThen(runtime.drainEvents),
                 ),
@@ -211,9 +229,58 @@ describe("AntigravityAdapterV2 compaction", () => {
         yield* Deferred.await(startupMilestone);
         yield* Deferred.succeed(consumeStartupCommands, undefined);
         const session = yield* Fiber.join(opening);
-        assert.isUndefined(session.compactThread);
+        assert.isDefined(session.compactThread);
         assert.equal(session.providerSession.capabilities.turns.supportsNativeGoals, nativeGoals);
         assert.equal((yield* adapter.getCapabilities()).turns.supportsNativeGoals, nativeGoals);
+        const threadId = ThreadId.make("thread-antigravity-compaction");
+        const modelSelection = { instanceId, model: "gemini-test-low" };
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const result = yield* session.compactThread!(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            modelSelection,
+            now: yield* DateTime.now,
+            ordinal: 1,
+            messageText: "/compact",
+          }),
+        ).pipe(Effect.exit);
+        assert.equal(Exit.isSuccess(result), supported);
+        if (supported) {
+          const events = yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          );
+          assert.deepEqual(yield* Ref.get(prompts), [[{ type: "text", text: "/compact" }]]);
+          assert.equal(
+            events.filter(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "compaction" &&
+                event.turnItem.status === "completed",
+            ).length,
+            1,
+          );
+        } else {
+          const error = Exit.isFailure(result) ? Cause.squash(result.cause) : undefined;
+          assert.instanceOf(error, ProviderAdapter.ProviderAdapterTurnStartError);
+          assert.instanceOf(
+            (error as ProviderAdapter.ProviderAdapterTurnStartError).cause,
+            ProviderAdapter.ProviderCompactionUnsupportedError,
+          );
+          assert.deepEqual(yield* Ref.get(prompts), []);
+        }
       }).pipe(Effect.provide(layerSession)),
   );
 });

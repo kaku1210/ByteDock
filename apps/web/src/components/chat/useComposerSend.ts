@@ -1,4 +1,8 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
+import {
+  clearPromptSuggestionPreference,
+  readPromptSuggestionPreference,
+} from "./promptSuggestionPreferences";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import {
   mergeDirectPreviewAnnotation,
@@ -239,7 +243,7 @@ interface ComposerSendInput {
     SetStateAction<Record<string, ReadonlyArray<CodexFeedbackSubmission>>>
   >;
   readonly setThreadError: ReturnType<typeof makeThreadErrorSetter>;
-  readonly setKeepFullHistory: (threadKey: string, keep: boolean) => void;
+  readonly setKeepFullHistory: (threadKey: string, keep: boolean | undefined) => void;
   readonly anchorNewTurn: TimelineFollow["anchorNewTurn"];
   readonly acknowledgeActiveThreadWoke: () => void;
   /** Resolves true once the side chat started and got the prompt. */
@@ -388,6 +392,7 @@ export function useComposerSend(input: ComposerSendInput) {
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     const promptAtSend = promptRef.current;
+    const suggestionPreferenceAtSend = readPromptSuggestionPreference(routeThreadKey);
     if (
       usageLimitsOffered &&
       usageLimitsKey !== null &&
@@ -518,6 +523,9 @@ export function useComposerSend(input: ComposerSendInput) {
         return;
       }
       const started = await onSideChat(sideChatCommand.prompt);
+      if (started && suggestionPreferenceAtSend) {
+        clearPromptSuggestionPreference(routeThreadKey, suggestionPreferenceAtSend);
+      }
       // Clear only what was sent; the user may have edited the draft or left meanwhile.
       if (
         started &&
@@ -1026,6 +1034,9 @@ export function useComposerSend(input: ComposerSendInput) {
           messageTextForSend,
           onRespondToApprovalStable,
         ).catch(() => false);
+        if (sent && suggestionPreferenceAtSend) {
+          clearPromptSuggestionPreference(routeThreadKey, suggestionPreferenceAtSend);
+        }
         sendInFlightRef.current = false;
         if (
           sent &&
@@ -1228,7 +1239,9 @@ export function useComposerSend(input: ComposerSendInput) {
             role: "user",
             text: "/compact",
             attachments: [],
-            idleCompaction: "onReturn",
+            ...(ctxSelectedProvider === "claudeAgent"
+              ? { idleCompaction: "onReturn" as const }
+              : {}),
           },
           modelSelection: ctxSelectedModelSelection,
           runtimeMode,
@@ -1337,13 +1350,16 @@ export function useComposerSend(input: ComposerSendInput) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (suggestionPreferenceAtSend) {
+          clearPromptSuggestionPreference(routeThreadKey, suggestionPreferenceAtSend);
+        }
         if (checkoutPullRequestUrl) {
           linkCheckoutPullRequest(
             scopeThreadRef(environmentId, threadIdForSend),
             checkoutPullRequestUrl,
           );
         }
-        setKeepFullHistory(routeThreadKey, false);
+        setKeepFullHistory(routeThreadKey, undefined);
         if (freshArm !== undefined) disarmFreshSession(routeThreadKey, freshArm);
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {

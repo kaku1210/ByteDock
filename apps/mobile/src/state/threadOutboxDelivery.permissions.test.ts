@@ -611,7 +611,6 @@ describe("compaction before a queued send", () => {
       role: "user",
       text: "/compact",
       attachments: [],
-      idleCompaction: "onReturn",
     },
     dispatchMode: "queue",
   };

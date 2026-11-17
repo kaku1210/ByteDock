@@ -290,6 +290,46 @@ describe("Antigravity model catalog", () => {
 });
 
 it.layer(layerTest)("Antigravity provider snapshots", (it) => {
+  it.effect.each([
+    { version: "1.3.0", supported: false },
+    { version: "1.5.8", supported: false },
+    { version: "1.5.9", supported: true },
+    { version: "1.5.10", supported: true },
+    { version: "1.6.0", supported: true },
+    { version: "1.5.9-beta", supported: false },
+    { version: "unknown", supported: false },
+  ])("advertises compaction only for qualified runtime $version", ({ version, supported }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.initialize;
+      const compactCommands = [...commands, { name: "compact", description: "Compact context" }];
+      yield* harness.provider.onSessionStarted(
+        {
+          ...started,
+          initializeResult: {
+            ...initializeResult,
+            agentInfo: { ...initializeResult.agentInfo, version },
+          },
+        },
+        "/workspace",
+      );
+      yield* harness.provider.onAvailableCommands(compactCommands, "/workspace");
+      expect(
+        (yield* harness.provider.snapshot.getSnapshot).slashCommands.some(
+          (command) => command.name === "compact",
+        ),
+      ).toBe(supported);
+      expect(
+        (yield* harness.provider.snapshotForCwd("/workspace")).slashCommands.some(
+          (command) => command.name === "compact",
+        ),
+      ).toBe(supported);
+      yield* harness.provider.onSessionStarted(started, "/workspace");
+      expect((yield* harness.provider.snapshotForCwd("/workspace")).slashCommands).toEqual(
+        expectedCommands,
+      );
+    }),
+  );
   it.effect("does not probe or run helper safety checks while disabled", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ enabled: false });

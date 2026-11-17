@@ -244,6 +244,12 @@ const messages = {
   ],
   "composer.shortcutHints": [COMPOSER_SHORTCUT_HINTS, chineseComposerShortcutHints],
   "composer.acceptSuggestion": ["Tab or click to fill the draft", "按 Tab 或点击填入草稿"],
+  "composer.suggestionPreference": ["Suggestion preference", "建议倾向"],
+  "composer.generateWithPreference": ["Generate with current preference", "按当前倾向生成建议"],
+  "composer.suggestionPreferenceHelp": [
+    "Click the suggestion button or press Enter to generate. Editing or clicking outside does not generate. Cleared after your next message is sent.",
+    "点击建议按钮或按 Enter 才生成；编辑或点击框外不会生成。下一条消息发送成功后清空。",
+  ],
   "composer.promptSuggestionEmpty": ["No suggestion", "暂无建议"],
   "composer.promptSuggestionEmpty.not-configured": [
     "No suggestion · Check the suggestion settings and select a model",

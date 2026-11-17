@@ -492,7 +492,11 @@ export interface AcpAdapterV2Flavor {
   readonly subagentsIdleOnTurnCompletion?: boolean;
   readonly supportsCompaction?: boolean;
   /** Sends `/compact` as a prompt, only to sessions whose advertised commands include `compact`. */
-  readonly compactViaAdvertisedCommand?: boolean;
+  readonly compactViaAdvertisedCommand?:
+    | boolean
+    | ((
+        initializeResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["initializeResult"],
+      ) => boolean);
   /**
    * Native steering: `send` queues a message into the running turn and returns the
    * agent's id for it, which `injectedSteerId` reads from the update that delivers it.
@@ -2112,7 +2116,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const compactsContext =
           flavor.supportsCompaction === true ||
           flavor.compactSession !== undefined ||
-          flavor.compactViaAdvertisedCommand === true;
+          (flavor.compactViaAdvertisedCommand !== undefined &&
+            flavor.compactViaAdvertisedCommand !== false);
         const runtimeRestartRequired = yield* Ref.make(false);
         const runtimeTeardownState = yield* Ref.make<AcpRuntimeTeardownState>({ _tag: "Idle" });
         const runtimeCallbackGeneration = yield* Ref.make(0);
@@ -8520,9 +8525,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const compactionSetup = yield* Ref.get(activeSessionSetup);
             if (
               isCompactionMessage(turnInput.message) &&
-              ((flavor.compactViaAdvertisedCommand === true &&
-                (yield* Ref.get(advertisedCommandNames)).get(requestedSessionId)?.has("compact") !==
-                  true) ||
+              ((flavor.compactViaAdvertisedCommand &&
+                ((yield* Ref.get(advertisedCommandNames))
+                  .get(requestedSessionId)
+                  ?.has("compact") !== true ||
+                  (typeof flavor.compactViaAdvertisedCommand === "function" &&
+                    (compactionSetup === null ||
+                      !flavor.compactViaAdvertisedCommand(compactionSetup.initializeResult))))) ||
                 (flavor.compactSession !== undefined &&
                   (compactionSetup === null ||
                     !flavor.compactSession.supported(compactionSetup.initializeResult))))

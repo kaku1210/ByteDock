@@ -574,6 +574,7 @@ export function installFakeEnvironment(
     /** Commands left unanswered even when accepting, until `rejectPendingCommand`. */
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
+    readonly providerInstances?: ServerConfig["settings"]["providerInstances"];
   },
 ): Disposable {
   threads = fixtures;
@@ -581,6 +582,12 @@ export function installFakeEnvironment(
     ...makeServerConfig(options?.providers ?? [CODEX_PROVIDER]),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
+  if (options?.providerInstances !== undefined) {
+    baseServerConfig = {
+      ...baseServerConfig,
+      settings: { ...baseServerConfig.settings, providerInstances: options.providerInstances },
+    };
+  }
   dispatched = [];
   acceptCommands = options?.acceptCommands === true;
   projects = [

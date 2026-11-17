@@ -910,7 +910,11 @@ export function createThreadOutboxDelivery(): {
             role: "user",
             text: "/compact",
             attachments: [],
-            idleCompaction: "onReturn",
+            ...(currentConfig.providers.find(
+              (provider) => provider.instanceId === sendSettings.modelSelection.instanceId,
+            )?.driver === "claudeAgent"
+              ? { idleCompaction: "onReturn" as const }
+              : {}),
           },
           modelSelection: sendSettings.modelSelection,
           runtimeMode: sendSettings.runtimeMode,

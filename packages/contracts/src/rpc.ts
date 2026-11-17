@@ -1471,6 +1471,7 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
 export const ThreadPromptSuggestionInput = Schema.Struct({
   threadId: ThreadId,
   runId: RunId,
+  preference: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
   /** Replace a completed cached suggestion; concurrent requests still share the pending attempt. */
   regenerate: Schema.optionalKey(Schema.Boolean),
 });

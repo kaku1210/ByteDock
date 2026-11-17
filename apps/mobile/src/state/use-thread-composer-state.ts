@@ -3,7 +3,10 @@ import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import { useAtomValue } from "@effect/atom-react";
-import { compactBeforeSendTokens } from "@t3tools/client-runtime/state/context-window";
+import {
+  compactBeforeSendTokens,
+  keepFullHistoryBeforeSend,
+} from "@t3tools/client-runtime/state/context-window";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { threadSteersDuringCompaction } from "@t3tools/client-runtime/state/thread-workflows";
@@ -127,15 +130,17 @@ import { useAtomCommand } from "./use-atom-command";
 const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
   Atom.withLabel("mobile-thread-queue-workflow:empty"),
 );
-// Threads whose next send keeps the full history instead of compacting first.
-const fullHistoryThreadKeysAtom = Atom.make<Readonly<Record<string, true>>>({}).pipe(
+const fullHistoryPreferencesAtom = Atom.make<Readonly<Record<string, boolean>>>({}).pipe(
   Atom.keepAlive,
 );
 
-function setKeepFullHistory(threadKey: string, keep: boolean) {
-  const { [threadKey]: kept, ...rest } = appAtomRegistry.get(fullHistoryThreadKeysAtom);
-  if ((kept === true) === keep) return;
-  appAtomRegistry.set(fullHistoryThreadKeysAtom, keep ? { ...rest, [threadKey]: true } : rest);
+function setKeepFullHistory(threadKey: string, keep: boolean | undefined) {
+  const { [threadKey]: kept, ...rest } = appAtomRegistry.get(fullHistoryPreferencesAtom);
+  if (kept === keep) return;
+  appAtomRegistry.set(
+    fullHistoryPreferencesAtom,
+    keep === undefined ? rest : { ...rest, [threadKey]: keep },
+  );
 }
 
 const EMPTY_CHECKPOINT_SUMMARIES_ATOM = Atom.make<ReadonlyArray<ThreadCheckpointSummary>>([]);
@@ -452,9 +457,15 @@ export function useThreadComposerState(input: {
     selectedDraft.freshContext === true
       ? null
       : resumeCompactionTokens(modelSelection, "", new Date(nowMinuteMs).toISOString());
-  const fullHistoryThreadKeys = useAtomValue(fullHistoryThreadKeysAtom);
-  const keepFullHistory =
-    selectedThreadKey !== null && fullHistoryThreadKeys[selectedThreadKey] === true;
+  const fullHistoryPreferences = useAtomValue(fullHistoryPreferencesAtom);
+  const selectedDriver = serverConfig?.providers.find(
+    (entry) => entry.instanceId === modelSelection?.instanceId,
+  )?.driver;
+  const fullHistoryPreferenceKey = `${selectedThreadKey}:${selectedDriver}`;
+  const keepFullHistory = keepFullHistoryBeforeSend(
+    selectedDriver,
+    fullHistoryPreferences[fullHistoryPreferenceKey],
+  );
   const interruptibleRunId = threadRuntimeHasInterruptibleRun(selectedThreadRuntime)
     ? (selectedThreadRuntime?.activeRunId ?? null)
     : null;
@@ -794,7 +805,10 @@ export function useThreadComposerState(input: {
       compactTokens !== null &&
       !freshContext &&
       followUpDispatchMode === null &&
-      appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
+      !keepFullHistoryBeforeSend(
+        provider?.driver,
+        appAtomRegistry.get(fullHistoryPreferencesAtom)[`${threadKey}:${provider?.driver}`],
+      ) &&
       resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
@@ -822,7 +836,7 @@ export function useThreadComposerState(input: {
     if (freshContext) setFreshSessionPending(threadKey, false);
     enqueuePromise.then(
       () => {
-        setKeepFullHistory(threadKey, false);
+        setKeepFullHistory(`${threadKey}:${provider?.driver}`, undefined);
         scheduleUnusedComposerAttachmentCleanup(attachments);
       },
       (error: unknown) => {
@@ -916,7 +930,8 @@ export function useThreadComposerState(input: {
         : {
             tokens: compactTokens,
             keepFullHistory,
-            toggleKeepFullHistory: () => setKeepFullHistory(selectedThreadKey, !keepFullHistory),
+            toggleKeepFullHistory: () =>
+              setKeepFullHistory(fullHistoryPreferenceKey, !keepFullHistory),
           },
     composerDraftKey,
     followUpBehavior,

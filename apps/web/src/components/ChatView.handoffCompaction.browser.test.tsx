@@ -17,6 +17,7 @@ import { AppRoot } from "~/AppRoot";
 import "~/components/ChatView";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import {
   CLAUDE_PROVIDER,
   CODEX_PROVIDER,
@@ -78,6 +79,7 @@ function coldClaudeThread() {
 }
 
 it("sends a Codex follow-up on a cold Claude thread without compacting first", async () => {
+  using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
   const thread = coldClaudeThread();
   using _environment = installFakeEnvironment([thread], {
     acceptCommands: true,
@@ -123,3 +125,78 @@ it("sends a Codex follow-up on a cold Claude thread without compacting first", a
   await vi.waitFor(() => expect(messages()).toContainEqual(sent));
   expect(messages()).toEqual([sent]);
 });
+
+it.each(["codex", "antigravity"])(
+  "%s compacts before sending only when selected",
+  async (driver) => {
+    using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
+    const instanceId = ProviderInstanceId.make(driver);
+    const driverKind = ProviderDriverKind.make(driver);
+    const history = threadWithHistory(`thread-compact-${driver}`, 3, {
+      instanceId,
+      model: "gpt-5.4",
+    });
+    const thread = {
+      ...history,
+      providerThreads: [
+        {
+          ...coldClaudeThread().providerThreads[0]!,
+          appThreadId: history.id,
+          driver: driverKind,
+          providerInstanceId: instanceId,
+          nativeThreadRef: {
+            driver: driverKind,
+            nativeId: `native-${driver}`,
+            strength: "strong" as const,
+          },
+          contextUsage: { usedTokens: 9000, maxTokens: 1_000_000 },
+        },
+      ],
+    };
+    using _environment = installFakeEnvironment([thread], {
+      acceptCommands: true,
+      providerInstances: {
+        [instanceId]: { driver: driverKind, enabled: true, config: {} },
+      },
+      providers: [
+        {
+          ...CODEX_PROVIDER,
+          instanceId,
+          driver,
+          version: "1.5.9",
+          slashCommands: [{ name: "compact" }],
+        },
+      ],
+    });
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const router = getRouter(
+      createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+    );
+    await router.load();
+    await using _app = await render(<AppRoot router={router} />, {
+      // AppRoot brings its own router.
+      router: false,
+    });
+    await expect.element(page.getByText(`Answer 2 for ${thread.id}.`)).toBeVisible();
+    const toggle = page.getByRole("button", {
+      name: "Compact 9k tokens of history before sending",
+    });
+    await expect.element(toggle).toHaveAttribute("aria-pressed", "false");
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-pressed", "false");
+    await toggle.click();
+    await userEvent.type(page.getByTestId("composer-editor"), "keep going");
+    await userEvent.keyboard("{Enter}");
+    const messages = () =>
+      dispatchedCommands().filter((command) => command.type === "message.dispatch");
+    await vi.waitFor(() =>
+      expect(messages().map((command) => command.text)).toEqual(["/compact", "keep going"]),
+    );
+    expect(messages()[0]?.idleCompaction).toBeUndefined();
+  },
+);

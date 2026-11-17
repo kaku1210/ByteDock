@@ -37,7 +37,10 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveUsageLimitsAfterProbe } from "@t3tools/provider-core/server/usageLimits";
 
-import { antigravityThinkingConfig } from "./acp/AntigravityAcpSupport.ts";
+import {
+  antigravitySupportsManualCompaction,
+  antigravityThinkingConfig,
+} from "./acp/AntigravityAcpSupport.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
@@ -45,6 +48,22 @@ const HEALTH_CHECK_TIMEOUT_MS = 90_000;
 const SIGN_IN_MESSAGE = "Sign in with Google to use Antigravity.";
 const AUTH_UNCHECKED_MESSAGE =
   "Antigravity is installed. Google account access is not checked yet.";
+
+function withCompactionCapability(draft: ServerProviderDraft): ServerProviderDraft {
+  if (antigravitySupportsManualCompaction(draft.version)) return draft;
+  return {
+    ...draft,
+    slashCommands: draft.slashCommands.filter((command) => command.name !== "compact"),
+    ...(draft.workspaceSnapshots === undefined
+      ? {}
+      : {
+          workspaceSnapshots: draft.workspaceSnapshots.map((workspace) => ({
+            ...workspace,
+            slashCommands: workspace.slashCommands.filter((command) => command.name !== "compact"),
+          })),
+        }),
+  };
+}
 // Set while a finished quota read republishes, so that health check does not read again.
 const PublishingUsage = Context.Reference<boolean>("t3/provider/AntigravityPublishingUsage", {
   defaultValue: () => false,
@@ -226,7 +245,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     }
   };
   const getSnapshot = SubscriptionRef.get(metadata).pipe(
-    Effect.flatMap((state) => options.stampIdentity(state.draft)),
+    Effect.flatMap((state) => options.stampIdentity(withCompactionCapability(state.draft))),
   );
 
   // The quota read can take 30 seconds, so it never blocks readiness or a session start.
@@ -338,7 +357,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       } satisfies AntigravityProviderState;
     });
     if (initialized !== undefined) yield* refreshUsage();
-    return yield* options.stampIdentity(next.draft);
+    return yield* options.stampIdentity(withCompactionCapability(next.draft));
   });
 
   const maintenanceCapabilities =
@@ -357,7 +376,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     enrichSnapshot: ({ publishSnapshot }) =>
       SubscriptionRef.changes(metadata).pipe(
         Stream.runForEach((state) =>
-          options.stampIdentity(state.draft).pipe(Effect.flatMap(publishSnapshot)),
+          options
+            .stampIdentity(withCompactionCapability(state.draft))
+            .pipe(Effect.flatMap(publishSnapshot)),
         ),
       ),
   });

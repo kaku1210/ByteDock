@@ -65,6 +65,13 @@ function compareVersions(left: ReadonlyArray<number>, right: ReadonlyArray<numbe
   return 0;
 }
 
+// 1.5.9 is the first release qualified with an ACP prompt and a native summary checkpoint.
+export function antigravitySupportsManualCompaction(version: string | null | undefined): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(version?.trim() ?? "")) return false;
+  const parsed = parseAntigravityVersion(version);
+  return parsed !== undefined && compareVersions(parsed, [1, 5, 9]) >= 0;
+}
+
 /**
  * 1.4.2 through 1.4.5 create or overwrite skills/system/run-workflow/SKILL.md in the workspace
  * unless `run_workflow` is disabled. Older builds offer the tool and leave the file alone.

@@ -18,11 +18,14 @@ import type { PromptSuggestionState } from "@t3tools/client-runtime/state/prompt
 export function PromptSuggestionControl({
   state,
   onRegenerate,
+  preferenceChanged = false,
 }: {
   state: PromptSuggestionState;
   onRegenerate: (() => void) | null;
+  preferenceChanged?: boolean;
 }) {
   const { t } = useUiLanguage();
+  const pendingPreference = preferenceChanged && onRegenerate !== null;
   const emptyReason = state.status === "empty" ? state.reason : undefined;
   const failed = state.status === "failed" || emptyReason === "invalid-suggestion";
   const blocked =
@@ -40,21 +43,24 @@ export function PromptSuggestionControl({
         : state.status === "empty"
           ? "empty"
           : state.status;
-  const Icon = blocked
-    ? TriangleAlertIcon
-    : failed
-      ? RotateCwIcon
-      : state.status === "generating"
-        ? Loader2Icon
-        : state.status === "ready"
-          ? CircleCheckIcon
-          : state.status === "empty"
-            ? CircleMinusIcon
-            : state.status === "unavailable" && state.reason === "off"
-              ? PowerIcon
-              : RotateCwIcon;
-  const title =
-    state.status === "unavailable"
+  const Icon = pendingPreference
+    ? RotateCwIcon
+    : blocked
+      ? TriangleAlertIcon
+      : failed
+        ? RotateCwIcon
+        : state.status === "generating"
+          ? Loader2Icon
+          : state.status === "ready"
+            ? CircleCheckIcon
+            : state.status === "empty"
+              ? CircleMinusIcon
+              : state.status === "unavailable" && state.reason === "off"
+                ? PowerIcon
+                : RotateCwIcon;
+  const title = pendingPreference
+    ? t("composer.generateWithPreference")
+    : state.status === "unavailable"
       ? t(`composer.promptSuggestionUnavailable.${state.reason}`)
       : state.status === "generating"
         ? t("composer.promptSuggestionGenerating")
@@ -89,7 +95,7 @@ export function PromptSuggestionControl({
                   ? "text-warning"
                   : failed
                     ? "text-destructive"
-                    : state.status === "ready"
+                    : state.status === "ready" && !pendingPreference
                       ? "text-success"
                       : "",
                 state.status === "generating" && "animate-spin motion-reduce:animate-none",
@@ -106,10 +112,10 @@ export function PromptSuggestionControl({
           {state.status === "failed" && state.detail ? (
             <p className="whitespace-pre-wrap text-muted-foreground">{state.detail}</p>
           ) : null}
-          {state.status === "ready" ? (
+          {state.status === "ready" && !preferenceChanged ? (
             <p className="line-clamp-3 text-muted-foreground">{state.suggestion}</p>
           ) : null}
-          {onRegenerate !== null ? (
+          {onRegenerate !== null && !pendingPreference ? (
             <p>
               {t(
                 state.status === "ready"

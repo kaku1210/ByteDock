@@ -342,6 +342,7 @@ import { hasAvailableCompactionProvider } from "./chat/compaction.logic";
 import {
   deriveLatestContextWindowSnapshot,
   hasDismissedResumeCompaction,
+  keepFullHistoryBeforeSend,
   latestProviderTurnTokenUsage,
   shouldOfferResumeCompaction,
 } from "@t3tools/client-runtime/state/context-window";
@@ -2530,12 +2531,13 @@ export default function ChatView(props: ChatViewProps) {
   const resumeCompactionTokens =
     activeContextWindow &&
     pendingHandoff === null &&
-    resolveIdleCompaction(
-      settings,
-      activeProviderInstanceId ?? ProviderInstanceId.make("claudeAgent"),
-    ) !== "off" &&
-    !resumeCompactionPermanentlyDismissed &&
-    !nativeResumeCompactionDismissed &&
+    (selectedProvider !== "claudeAgent" ||
+      (resolveIdleCompaction(
+        settings,
+        activeProviderInstanceId ?? ProviderInstanceId.make("claudeAgent"),
+      ) !== "off" &&
+        !resumeCompactionPermanentlyDismissed &&
+        !nativeResumeCompactionDismissed)) &&
     !compactDisabled &&
     !hasHeldQueuedRuns &&
     multipleModelSelections === null &&
@@ -2548,16 +2550,20 @@ export default function ChatView(props: ChatViewProps) {
     })
       ? activeContextWindow.usedTokens
       : null;
-  const [fullHistoryThreadKeys, setFullHistoryThreadKeys] = useState<ReadonlySet<string>>(
-    () => new Set(),
+  const [fullHistoryPreferences, setFullHistoryPreferences] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+  const keepFullHistory = keepFullHistoryBeforeSend(
+    selectedProvider,
+    fullHistoryPreferences.get(`${routeThreadKey}:${selectedProvider}`),
   );
-  const keepFullHistory = fullHistoryThreadKeys.has(routeThreadKey);
-  const setKeepFullHistory = (threadKey: string, keep: boolean) => {
-    setFullHistoryThreadKeys((current) => {
-      if (current.has(threadKey) === keep) return current;
-      const next = new Set(current);
-      if (keep) next.add(threadKey);
-      else next.delete(threadKey);
+  const setKeepFullHistory = (threadKey: string, keep: boolean | undefined) => {
+    const preferenceKey = `${threadKey}:${selectedProvider}`;
+    setFullHistoryPreferences((current) => {
+      if (current.get(preferenceKey) === keep) return current;
+      const next = new Map(current);
+      if (keep !== undefined) next.set(preferenceKey, keep);
+      else next.delete(preferenceKey);
       return next;
     });
   };

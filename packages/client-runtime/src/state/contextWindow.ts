@@ -229,12 +229,10 @@ export function shouldOfferResumeCompaction(input: {
   readonly promptCacheTtlMs?: number | undefined;
   readonly now: string;
 }): boolean {
-  if (
-    input.provider !== "claudeAgent" ||
-    (input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS
-  ) {
+  if (!input.provider || !Number.isFinite(input.usedTokens) || (input.usedTokens ?? 0) <= 0)
     return false;
-  }
+  if (input.provider !== "claudeAgent") return true;
+  if ((input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS) return false;
 
   const updatedAt = Date.parse(input.updatedAt ?? "");
   const now = Date.parse(input.now);
@@ -245,11 +243,16 @@ export function shouldOfferResumeCompaction(input: {
   );
 }
 
+export function keepFullHistoryBeforeSend(
+  provider: string | null | undefined,
+  preference?: boolean,
+): boolean {
+  return preference ?? provider !== "claudeAgent";
+}
+
 /**
- * The tokens a plain send into an idle thread compacts first, as web's composer does under
- * "When you return", or null when it sends as is. Web reads the same state for its "Compact and
- * send" button. A send that hands off to another conversation starts that one fresh, so only the
- * resumed one counts.
+ * Context eligible for the composer's compact-before-send toggle. Claude offers it on return;
+ * other providers require opting in. A handoff never compacts the conversation being left.
  */
 export function compactBeforeSendTokens(input: {
   readonly projection: Pick<
@@ -279,7 +282,8 @@ export function compactBeforeSendTokens(input: {
     provider === undefined ||
     !input.threadIdle ||
     COMPACT_COMMAND_PATTERN.test(input.text) ||
-    resolveIdleCompaction(input.settings, provider.instanceId) === "off" ||
+    (provider.driver === "claudeAgent" &&
+      resolveIdleCompaction(input.settings, provider.instanceId) === "off") ||
     !provider.slashCommands.some((command) => command.name === "compact") ||
     resolvePendingHandoff(projection, input.selection, input.providers) !== null ||
     projection.runtimeRequests.some((request) => request.status === "pending") ||
@@ -297,11 +301,15 @@ export function compactBeforeSendTokens(input: {
             ({ item }) => item.type === "user_message" && item.runId === run.id,
           ),
       )) ||
-    hasDismissedResumeCompaction(
-      projection.runtimeRequests
-        .filter((request) => request.kind === "user_input" && request.status === "resolved")
-        .map((request) => ({ kind: "user-input.resolved", payload: { answers: request.answers } })),
-    )
+    (provider.driver === "claudeAgent" &&
+      hasDismissedResumeCompaction(
+        projection.runtimeRequests
+          .filter((request) => request.kind === "user_input" && request.status === "resolved")
+          .map((request) => ({
+            kind: "user-input.resolved",
+            payload: { answers: request.answers },
+          })),
+      ))
   ) {
     return null;
   }

@@ -80,6 +80,21 @@ it.effect("uses the finished turn's text and the selected suggestion model", () 
     assert.deepEqual(yield* service.generate({ threadId, runId }), result);
     assert.equal(generatePromptSuggestion.mock.calls.length, 1);
 
+    const preference = "优先检查键盘操作体验";
+    generatePromptSuggestion.mockReturnValueOnce(
+      Effect.succeed({ suggestion: "检查菜单的键盘操作。" }),
+    );
+    assert.deepEqual(yield* service.generate({ threadId, runId, preference }), {
+      suggestion: "检查菜单的键盘操作。",
+    });
+    assert.include(generatePromptSuggestion.mock.calls[1]![0].prompt, preference);
+    assert.deepEqual(
+      yield* service.generate({ threadId, runId, preference: `  ${preference}  ` }),
+      { suggestion: "检查菜单的键盘操作。" },
+    );
+    assert.deepEqual(yield* service.generate({ threadId, runId, preference: "  " }), result);
+    assert.equal(generatePromptSuggestion.mock.calls.length, 2);
+
     generatePromptSuggestion.mockReturnValueOnce(Effect.succeed({ suggestion: null }));
     assert.deepEqual(yield* service.generate({ threadId, runId, regenerate: true }), {
       suggestion: null,

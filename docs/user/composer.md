@@ -188,6 +188,17 @@ closes when idle or when its provider is stopped. A timeout leaves a retry in th
 control; it does not stop your chat.
 Suggestion progress and failures stay in this control instead of the global slow-request alert.
 
+On web and desktop, use **Suggestion preference** beside the suggestion control to guide
+the next suggestion, for example “focus on keyboard usability”. The small field expands
+while focused. Click the suggestion button or press Enter to generate using the current
+preference; Shift+Enter adds a line break. Editing, clearing, or clicking outside the field
+does not generate a suggestion. Unapplied edits hide the previous suggestion until you
+generate again or restore the previous preference.
+The preference stays while you regenerate suggestions or edit your draft, and clears when
+your next message is successfully submitted. A failed send keeps it for retry. Preferences
+are separate for each conversation and environment, expire when a new run starts, and are
+not restored after reloading the client. They guide suggestions only, not the running agent.
+
 The context ring beside it always shows the latest reported percentage used. Hover it for
 the full used/limit token counts and existing compaction actions. An unknown report or
 limit shows `—%`, not zero. The ring uses warning color from 70% and error color above 90%;
@@ -335,6 +346,11 @@ Provider commands must start the message to run. T3 Code commands such as
 
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it.
+
+For providers other than Claude, a **Keep / Compact** toggle appears beside Send
+once context usage is reported and native compaction is available. It defaults
+to **Keep**. Choose **Compact** to summarize the context before your next message;
+the choice resets after sending. Claude keeps its idle-compaction behavior described below.
 
 Send `/clear` on its own, or pick it from the slash menu, to start a fresh session
 in the same thread. Your next message goes to a new provider session that doesn't see the
