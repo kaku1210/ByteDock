@@ -2,7 +2,7 @@
 
 T3 Code shows a Welcome page when you open a new installation. Existing
 workspaces skip it. It shows what T3 Code found on the computer you are using,
-on one page: your agents, projects from your Claude Code, Codex, and Pi history,
+on one page: your agents, projects from your Claude Code, Codex, Pi and Antigravity history,
 and the phone app. Only an agent is needed to start chatting.
 
 To see the page again, go to **Settings → About → Welcome page** and select
@@ -64,7 +64,7 @@ app with a code from **Settings → Sharing & access**.
 
 ## Projects
 
-T3 Code finds directories that Claude Code, Codex or Pi has used. Git repositories
+T3 Code finds directories that Claude Code, Codex, Pi or Antigravity has used. Git repositories
 are listed first, newest activity on top. When the remote is on GitHub, the
 group shows the repository as `owner/name`. Clones with the same remote share
 one group. Directories that are not git repositories sit under "Other folders".
@@ -89,6 +89,19 @@ its sessions too. Pi sessions
 are read from each enabled Pi provider's session directory, which follows
 `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` in its environment. A
 Pi conversation imports its active branch, the one Pi reopens.
+
+When Antigravity is enabled, T3 Code also reads main conversations from the local
+Antigravity desktop app. These are visible-history snapshots: continuing one starts
+a new agent session with the imported context, rather than resuming the original
+desktop conversation. Internal child conversations are not separate imports. Threads
+archived in the original history stay archived when first imported.
+
+Import runs when you select projects and finish the Welcome page. It does not
+continuously sync new conversations. To add later conversations, reopen
+**Settings → About → Welcome page**, choose **Rescan**, then **Review all** and select the existing
+projects you want to check again, and finish. Existing T3 threads, their messages
+and their archive state are preserved; matching source conversation IDs are not
+duplicated.
 
 Conversation import is best effort. T3 Code keeps the first user prompt and the
 newest remaining visible user and assistant messages, with 200 messages total.

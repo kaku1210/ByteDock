@@ -78,6 +78,11 @@ const timestamp = (value: Fields) => {
   return seconds > 0 ? seconds * 1000 + Math.floor(numberAt(value, 2) / 1_000_000) : null;
 };
 
+/** Creation time in a persisted Antigravity step's metadata, in epoch milliseconds. */
+export function readAntigravityStepTimestamp(metadata: Uint8Array): number | null {
+  return timestamp(nested(fields(metadata), 1));
+}
+
 // Offline fallback for records without names. New names are learned from the scanned metadata.
 // Cross-checked against ccusage's Antigravity parser and mrexodia/agent-cost-dashboard.
 const MODEL_IDS: Record<number, string> = {

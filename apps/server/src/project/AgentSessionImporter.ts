@@ -275,7 +275,7 @@ const make = Effect.gen(function* () {
         }
         const source = outcome.source;
         const threadId = ThreadId.make(
-          `import:${source.providerInstanceId}:${source.providerSessionId}`,
+          `import:${source.provider === "antigravity" ? "antigravity" : source.providerInstanceId}:${source.providerSessionId}`,
         );
         if (outcome._tag === "AlreadyImported") {
           importedThreadIds.add(threadId);
@@ -290,6 +290,7 @@ const make = Effect.gen(function* () {
 
         const imported = yield* Effect.gen(function* () {
           const thread = outcome.thread;
+          const snapshotOnly = thread.source === "antigravity";
           if (
             thread.source === "claudeAgent" &&
             !CLAUDE_SESSION_ID_PATTERN.test(thread.providerSessionId)
@@ -312,8 +313,9 @@ const make = Effect.gen(function* () {
               runtimeMode,
               status: "stopped",
               lastSeenAt: thread.updatedAt,
-              resumeCursor:
-                thread.source === "claudeAgent"
+              resumeCursor: snapshotOnly
+                ? null
+                : thread.source === "claudeAgent"
                   ? { threadId, resume: thread.providerSessionId }
                   : { threadId: nativeThreadId },
               runtimePayload: { cwd: outcome.worktree?.path ?? project.workspaceRoot },
@@ -324,6 +326,8 @@ const make = Effect.gen(function* () {
             orchestrator.getThreadRecords(threadId, ["messages"]),
           );
           if (Option.isSome(existing)) {
+            // Desktop snapshots keep their identity even after the T3 thread is moved or continued.
+            if (snapshotOnly) return null;
             if (existing.value.thread.projectId !== input.projectId) {
               return yield* new AgentSessionThreadProjectConflictError({
                 threadId,
@@ -375,7 +379,7 @@ const make = Effect.gen(function* () {
             worktreePath: outcome.worktree?.path ?? null,
             linkedPullRequest: null,
             branchPullRequest: null,
-            activeProviderThreadId: providerThreadId,
+            activeProviderThreadId: snapshotOnly ? null : providerThreadId,
             historyOrigin: "v1_import",
             lineage: {
               parentThreadId: null,
@@ -385,7 +389,7 @@ const make = Effect.gen(function* () {
             forkedFrom: null,
             createdAt,
             updatedAt,
-            archivedAt: null,
+            archivedAt: thread.archived === true ? updatedAt : null,
             settledOverride: "settled",
             settledAt: updatedAt,
             unsettledAt: null,
@@ -421,7 +425,7 @@ const make = Effect.gen(function* () {
           };
 
           const committed = yield* eventSink.write({
-            unlessNativeThreadOwned: providerThread,
+            ...(snapshotOnly ? {} : { unlessNativeThreadOwned: providerThread }),
             events: [
               {
                 id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${threadId}:created`),
@@ -431,6 +435,35 @@ const make = Effect.gen(function* () {
                 occurredAt: createdAt,
                 payload: appThread,
               },
+              ...(snapshotOnly
+                ? [
+                    {
+                      id: EventId.make(`${IMPORT_EVENT_PREFIX}:snapshot:${threadId}`),
+                      type: "turn-item.updated" as const,
+                      threadId,
+                      occurredAt: createdAt,
+                      payload: {
+                        id: TurnItemId.make(`${IMPORT_EVENT_PREFIX}:snapshot:${threadId}`),
+                        threadId,
+                        runId: null,
+                        nodeId: null,
+                        providerThreadId: null,
+                        providerTurnId: null,
+                        nativeItemRef: null,
+                        parentItemId: null,
+                        ordinal: 0,
+                        status: "completed" as const,
+                        title: null,
+                        startedAt: createdAt,
+                        completedAt: createdAt,
+                        updatedAt: createdAt,
+                        type: "system_notice" as const,
+                        message:
+                          "Imported Antigravity desktop history. Continuing starts a new session with this visible history; it does not resume the original conversation. Rescanning adds new conversations and preserves existing T3 threads.",
+                      },
+                    },
+                  ]
+                : []),
               ...(thread.omittedMessageCount > 0
                 ? [
                     {
@@ -462,15 +495,21 @@ const make = Effect.gen(function* () {
               ...thread.messages.flatMap((message, index) =>
                 messageEvents({ threadId, index, message }),
               ),
-              {
-                id: EventId.make(`${IMPORT_EVENT_PREFIX}:provider-thread:${providerThreadId}`),
-                type: "provider-thread.updated",
-                threadId,
-                driver,
-                providerInstanceId: thread.providerInstanceId,
-                occurredAt: updatedAt,
-                payload: providerThread,
-              },
+              ...(!snapshotOnly
+                ? [
+                    {
+                      id: EventId.make(
+                        `${IMPORT_EVENT_PREFIX}:provider-thread:${providerThreadId}`,
+                      ),
+                      type: "provider-thread.updated" as const,
+                      threadId,
+                      driver,
+                      providerInstanceId: thread.providerInstanceId,
+                      occurredAt: updatedAt,
+                      payload: providerThread,
+                    },
+                  ]
+                : []),
             ],
           });
           if (committed.length === 0) return null;
@@ -478,6 +517,7 @@ const make = Effect.gen(function* () {
           yield* runtimes.recordImportedTranscript({ threadId, source });
           return true;
         }).pipe(
+          (effect) => threadCommands.withLock(threadId, effect),
           Effect.catch((cause) =>
             Effect.logWarning("Could not import an agent session", {
               provider: outcome.thread.source,

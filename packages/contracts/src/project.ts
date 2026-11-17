@@ -553,6 +553,20 @@ export const ProjectCreateFromThreadResult = Schema.Struct({
 });
 export type ProjectCreateFromThreadResult = typeof ProjectCreateFromThreadResult.Type;
 
+/** Reclassify one stopped thread without changing its history or working directory. */
+export const ProjectMoveThreadToScratchInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedProjectId: ProjectId,
+});
+export type ProjectMoveThreadToScratchInput = typeof ProjectMoveThreadToScratchInput.Type;
+
+export const ProjectMoveThreadToScratchResult = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  worktreePath: TrimmedNonEmptyString,
+});
+export type ProjectMoveThreadToScratchResult = typeof ProjectMoveThreadToScratchResult.Type;
+
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
   {

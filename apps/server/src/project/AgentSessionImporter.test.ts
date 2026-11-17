@@ -286,6 +286,65 @@ const makeImporter = Effect.fn(function* (
 });
 
 it.effect(
+  "imports Antigravity snapshots without claiming native resume, and preserves archived history on rescans",
+  () =>
+    Effect.gen(function* () {
+      const source = candidate(
+        { instanceId: ProviderInstanceId.make("antigravity"), model: "antigravity-default" },
+        "desktop-history",
+        "antigravity" as AgentSessionSource,
+      );
+      Object.assign(source.thread, { archived: true });
+      const importer = yield* makeImporter([source]);
+      expect(yield* importer.run).toEqual({ importedCount: 1, skippedCount: 0 });
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const records = yield* projections.getThreadRecords(importId(source), [
+        "messages",
+        "turnItems",
+        "providerThreads",
+      ]);
+      expect(records.thread.archivedAt).toEqual(now);
+      expect(records.thread.activeProviderThreadId).toBeNull();
+      expect(records.providerThreads).toEqual([]);
+      expect(records.messages.map((message) => message.text)).toEqual(["Fix it", "Fixed"]);
+      expect(records.turnItems).toContainEqual(
+        expect.objectContaining({
+          type: "system_notice",
+          message: expect.stringContaining("does not resume"),
+        }),
+      );
+      const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      expect(
+        Option.getOrThrow(yield* runtimes.getByThreadId({ threadId: importId(source) }))
+          .resumeCursor,
+      ).toBeNull();
+      const published = importer.published.length;
+      expect(yield* importer.run).toEqual({ importedCount: 0, skippedCount: 0 });
+      expect(importer.published).toHaveLength(published);
+      expect(
+        yield* projections.getThreadRecords(importId(source), [
+          "messages",
+          "turnItems",
+          "providerThreads",
+        ]),
+      ).toEqual(records);
+      Object.assign(source.thread, { archived: false });
+      const alternate = candidate(
+        { instanceId: ProviderInstanceId.make("antigravity-other"), model: "antigravity-default" },
+        "desktop-history",
+        "antigravity",
+      );
+      const rescan = yield* makeImporter([source, alternate]);
+      expect(yield* rescan.run).toEqual({ importedCount: 0, skippedCount: 0 });
+      expect(rescan.published).toEqual([]);
+      expect(yield* Effect.option(projections.getThread(importId(alternate)))).toEqual(
+        Option.none(),
+      );
+      expect((yield* projections.getThread(importId(source))).archivedAt).toEqual(now);
+    }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+it.effect(
   "ignores owned sessions, including archived and deleted threads, but imports other instances and unowned sessions",
   () =>
     Effect.gen(function* () {

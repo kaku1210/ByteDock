@@ -43,6 +43,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { piHome, resolvePiSessionsDir } from "@t3tools/provider-pi/server/usage";
 import * as ServerSettings from "../serverSettings.ts";
+import * as AntigravityHistory from "./AntigravityHistory.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
   createTranscriptJsonReader,
@@ -216,6 +217,8 @@ export interface AgentSessionThread {
   readonly updatedAt: string;
   readonly messages: ReadonlyArray<AgentSessionThreadMessage>;
   readonly omittedMessageCount: number;
+  /** Original archive state applies only when creating a snapshot, never to existing T3 threads. */
+  readonly archived?: boolean;
 }
 
 export type AgentSessionRecentThread =
@@ -254,6 +257,7 @@ interface RawCandidate {
     readonly filePath: string;
     readonly mtimeMs: number | null;
     readonly projectRoots?: ReadonlyArray<string> | undefined;
+    readonly antigravity?: AntigravityHistory.AntigravityHistoryEntry;
   }>;
 }
 
@@ -848,6 +852,10 @@ export const make = Effect.gen(function* () {
     path.join(homeDir, "Downloads"),
     path.join(homeDir, "Documents", "Codex"),
   ];
+  // The portable history workspace remains a project when an old ~/.t3 alias resolves into this home.
+  const portableHistoryWorkspace = normalizeProjectPathForComparison(
+    path.join(baseDir, "imported-history", "workspaces", "antigravity-no-project"),
+  );
 
   const isExcludedProjectPath = (candidatePath: string) =>
     excludedProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
@@ -856,9 +864,10 @@ export const make = Effect.gen(function* () {
         normalizeForWorktreeMatch(ancestor, foldWorktreeCase),
       ),
     ) ||
-    normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
-      normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
-    ) ||
+    (normalizeProjectPathForComparison(candidatePath) !== portableHistoryWorkspace &&
+      normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
+        normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
+      )) ||
     isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
 
   const listDirectory = (directory: string) =>
@@ -1810,6 +1819,55 @@ export const make = Effect.gen(function* () {
       metadataTruncated ||= metadataBudget.truncated;
     }
 
+    // Desktop history belongs to one import source; managed ACP profiles have separate native IDs.
+    const antigravityInstances = Object.entries(settings.providerInstances)
+      .filter(
+        ([, instance]) =>
+          instance.driver === "antigravity" && resolveProviderInstanceEnabled(instance),
+      )
+      .sort(([left], [right]) => Number(right === "antigravity") - Number(left === "antigravity"));
+    const antigravityInstance = antigravityInstances[0];
+    if (antigravityInstance !== undefined) {
+      const importedProjects = yield* projectStore
+        .listShells()
+        .pipe(
+          Effect.mapError(
+            (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+          ),
+        );
+      const unassigned =
+        importedProjects.find((project) =>
+          /[\\/]imported-history[\\/]workspaces[\\/]antigravity-no-project$/.test(
+            project.workspaceRoot,
+          ),
+        )?.workspaceRoot ?? path.join(homeDir, ".gemini", "antigravity", "scratch");
+      const catalog = yield* AntigravityHistory.scanAntigravityHistory(
+        path.join(homeDir, ".gemini", "antigravity"),
+        unassigned,
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
+      truncated ||= catalog.truncated;
+      for (const [cwd, entries] of Map.groupBy(catalog.entries, (entry) => entry.cwd)) {
+        raw.push({
+          cwd,
+          source: "antigravity",
+          providerInstanceId: ProviderInstanceId.make(antigravityInstance[0]),
+          homePath: path.join(homeDir, ".gemini", "antigravity"),
+          threadCount: entries.length,
+          lastActiveAtMs: Math.max(...entries.map((entry) => Date.parse(entry.updatedAt))),
+          transcripts: entries.map((entry) => ({
+            filePath: entry.filePath,
+            mtimeMs: Date.parse(entry.updatedAt),
+            antigravity: entry,
+          })),
+        });
+      }
+    }
     return { candidates: raw, truncated: truncated || metadataTruncated, metadataTruncated };
   });
 
@@ -2096,6 +2154,39 @@ export const make = Effect.gen(function* () {
           }
           transcriptsRemaining -= 1;
           bytesRemaining -= identity.size;
+          if (transcript.antigravity !== undefined) {
+            const entry = transcript.antigravity;
+            const history = yield* AntigravityHistory.readAntigravityHistory(entry).pipe(
+              Effect.provideService(Path.Path, path),
+              Effect.mapError(
+                (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+              ),
+            );
+            if (history.messages.length === 0)
+              return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+            const source = {
+              ...identity,
+              provider: "antigravity" as const,
+              providerInstanceId: candidate.providerInstanceId,
+              providerSessionId: entry.id,
+            };
+            const thread: AgentSessionThread = {
+              source: "antigravity",
+              providerInstanceId: candidate.providerInstanceId,
+              providerSessionId: entry.id,
+              title: entry.title.trim() || history.messages[0]!.text.slice(0, 160),
+              model: "antigravity-default",
+              createdAt: history.messages[0]!.createdAt,
+              updatedAt: entry.updatedAt,
+              ...history,
+            };
+            return Option.some<AgentSessionRecentThread>({
+              _tag: "Importable",
+              source,
+              thread,
+              worktree: yield* rootWorktree(path.resolve(candidate.cwd)),
+            });
+          }
           const snapshot = yield* readTranscript(transcript.filePath, identity, candidate.source);
           if (snapshot === null) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });

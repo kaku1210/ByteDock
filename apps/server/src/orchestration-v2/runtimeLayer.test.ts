@@ -87,6 +87,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
+import * as ThreadProjectMove from "../project/ThreadProjectMove.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -9526,9 +9527,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           });
         }
         yield* TestClock.adjust("61 seconds");
-        yield* worker.drain();
+        // Dispatch the continuation without starting its newly queued provider turn.
+        yield* worker.runOnce();
         assert.lengthOf(yield* retriesOf, stopped ? 0 : 1);
-      }),
+      }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
   it.effect.each([
@@ -10471,6 +10473,187 @@ it.layer(layerScratchPromotionTest)("turning a No project thread into a project"
         error.message,
         "Only a No project thread with its own folder can become a project.",
       );
+    }),
+  );
+});
+
+const layerThreadProjectMoveTest = ThreadProjectMove.layer.pipe(
+  Layer.provide(
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      ensureScratchProject: Effect.succeed({ projectId: SCRATCH_PROJECT_ID }),
+      isScratchProject: (projectId) => Effect.succeed(projectId === SCRATCH_PROJECT_ID),
+    }),
+  ),
+  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Layer.provideMerge(layerProjectDeletionTest),
+);
+
+it.layer(layerThreadProjectMoveTest)("moving existing threads to No project", (it) => {
+  const setup = Effect.fn(function* (name: string, worktreePath: string | null = null) {
+    const projects = yield* ProjectService.ProjectService;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    if (Option.isNone(yield* projects.getById(SCRATCH_PROJECT_ID))) {
+      yield* projects.create({
+        commandId: CommandId.make("move-thread-scratch-create"),
+        projectId: SCRATCH_PROJECT_ID,
+        title: "No project",
+        workspaceRoot: SCRATCH_ROOT,
+      });
+    }
+    const sourceId = ProjectId.make(`move-thread-${name}-project`);
+    const root = `/tmp/move-thread-${name}`;
+    yield* projects.create({
+      commandId: CommandId.make(`${sourceId}-create`),
+      projectId: sourceId,
+      title: "Imported history",
+      workspaceRoot: root,
+    });
+    const threadId = ThreadId.make(`move-thread-${name}`);
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`${threadId}-create`),
+      threadId,
+      projectId: sourceId,
+      title: "Imported conversation",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath,
+      createdBy: "system",
+      creationSource: "server",
+    });
+    return { threadId, sourceId, root, orchestrator };
+  });
+
+  it.effect.each([null, "/tmp/existing-imported-workspace"] as const)(
+    "keeps history, lifecycle, cwd and bound tasks when the original worktree is %s",
+    (worktreePath) =>
+      Effect.gen(function* () {
+        const move = yield* ThreadProjectMove.ThreadProjectMove;
+        const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+        const sink = yield* EventSink.EventSinkV2;
+        const name = worktreePath === null ? "root" : "worktree";
+        const { threadId, sourceId, root, orchestrator } = yield* setup(name, worktreePath);
+        const at = yield* DateTime.now;
+        yield* sink.write({
+          events: ["user", "assistant"].map((role) => ({
+            id: EventId.make(`${threadId}-${role}-history`),
+            type: "message.updated" as const,
+            threadId,
+            occurredAt: at,
+            payload: {
+              id: MessageId.make(`${threadId}-${role}`),
+              threadId,
+              runId: null,
+              nodeId: null,
+              role: role as "user" | "assistant",
+              createdBy: role === "user" ? ("user" as const) : ("agent" as const),
+              creationSource: "server" as const,
+              text: role === "user" ? "原始提问" : "原始回答",
+              attachments: [],
+              streaming: false,
+              createdAt: at,
+              updatedAt: at,
+            },
+          })),
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make(`${threadId}-settle`),
+          threadId,
+        });
+        const { task } = yield* tasks.upsert({
+          id: ScheduledTaskId.make(`${threadId}-task`),
+          title: "Bound history task",
+          prompt: "Check in",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: sourceId,
+          threadId,
+          workspaceStrategy: { type: "root" },
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`${threadId}-archive`),
+          threadId,
+        });
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        if (worktreePath === null) {
+          const write = vi
+            .spyOn(sink, "write")
+            .mockReturnValueOnce(Effect.fail(new EventSink.EventSinkWriteError({ eventCount: 1 })));
+          const failed = yield* move
+            .moveToScratch({ threadId, expectedProjectId: sourceId })
+            .pipe(Effect.flip);
+          write.mockRestore();
+          assert.equal(failed.reason, "Could not move the thread to No project.");
+          assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
+          assert.equal(
+            (yield* tasks.list()).tasks.find((entry) => entry.id === task.id)?.projectId,
+            sourceId,
+          );
+        }
+        const result = yield* move.moveToScratch({ threadId, expectedProjectId: sourceId });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(result, {
+          threadId,
+          projectId: SCRATCH_PROJECT_ID,
+          worktreePath: worktreePath ?? root,
+        });
+        assert.deepEqual(after, {
+          ...before,
+          thread: {
+            ...before.thread,
+            projectId: SCRATCH_PROJECT_ID,
+            worktreePath: worktreePath ?? root,
+          },
+        });
+        assert.equal(
+          (yield* tasks.list()).tasks.find((entry) => entry.id === task.id)?.projectId,
+          SCRATCH_PROJECT_ID,
+        );
+        const sequence = yield* sink.latestSequence({ threadId });
+        assert.deepEqual(
+          yield* move.moveToScratch({ threadId, expectedProjectId: sourceId }),
+          result,
+        );
+        assert.equal(yield* sink.latestSequence({ threadId }), sequence);
+      }),
+  );
+
+  it.effect("rejects stale projects and unfinished runs without moving anything", () =>
+    Effect.gen(function* () {
+      const move = yield* ThreadProjectMove.ThreadProjectMove;
+      const { threadId, sourceId, orchestrator } = yield* setup("busy");
+      const stale = yield* move
+        .moveToScratch({ threadId, expectedProjectId: ProjectId.make("stale-project") })
+        .pipe(Effect.flip);
+      assert.equal(stale.reason, "The thread's project changed. Read it again before moving.");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${threadId}-message`),
+        threadId,
+        messageId: MessageId.make(`${threadId}-message`),
+        text: "Keep working",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const busy = yield* move
+        .moveToScratch({ threadId, expectedProjectId: sourceId })
+        .pipe(Effect.flip);
+      assert.equal(busy.reason, "The thread still has work in progress. Finish or stop it first.");
+      assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
     }),
   );
 });

@@ -122,6 +122,10 @@ const layerScannerTest = (input: ScannerTestInput) =>
               ],
               config: {},
             },
+            [ProviderInstanceId.make("antigravity")]: {
+              driver: ProviderDriverKind.make("antigravity"),
+              enabled: false,
+            },
             ...input.providerInstances,
           },
         }),
@@ -197,6 +201,61 @@ const codexRolloutLine = (cwd: string) =>
   `${JSON.stringify({ timestamp: "2026-01-01T00:00:00.000Z", type: "session_meta", payload: { id: "r1", cwd } })}\n`;
 
 const decodeImportSource = Schema.decodeUnknownSync(AgentSessionImportSource);
+
+it.effect.skipIf(!symlinksSupported)(
+  "allows the portable Antigravity history workspace through a legacy T3 home alias without exposing other state directories",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const base = yield* fs.realPath(yield* makeTempDir("t3code-portable-history-base-"));
+      const links = yield* makeTempDir("t3code-portable-history-links-");
+      const alias = path.join(links, "legacy-home");
+      const workspace = path.join(base, "imported-history", "workspaces", "antigravity-no-project");
+      const privateDirectory = path.join(base, "state-repo");
+      yield* fs.makeDirectory(workspace, { recursive: true });
+      yield* fs.makeDirectory(privateDirectory);
+      yield* fs.symlink(base, alias);
+      const workspaceAlias = path.join(
+        alias,
+        "imported-history",
+        "workspaces",
+        "antigravity-no-project",
+      );
+      const claudeHomePath = yield* makeTempDir("t3code-portable-history-claude-");
+      const codexHomePath = yield* makeTempDir("t3code-portable-history-codex-");
+      const nowMs = Date.parse("2026-08-24T12:00:00.000Z");
+      yield* TestClock.setTime(nowMs);
+      for (const [id, cwd] of [
+        ["portable", workspaceAlias],
+        ["private", path.join(alias, "state-repo")],
+      ]) {
+        yield* writeTranscript({
+          filePath: path.join(codexHomePath, "sessions", "2026", "08", "24", `rollout-${id}.jsonl`),
+          contents: [
+            JSON.stringify({ type: "session_meta", payload: { id, cwd } }),
+            JSON.stringify({
+              type: "event_msg",
+              payload: { type: "user_message", message: "Retained history" },
+            }),
+          ].join("\n"),
+          mtimeMs: nowMs,
+        });
+      }
+      const input = {
+        claudeHomePath,
+        codexHomePath,
+        configBaseDir: base,
+        importedWorkspaceRoots: [workspaceAlias],
+      };
+      const scan = yield* runScan(input);
+      expect(scan.candidates).toMatchObject([
+        { path: workspaceAlias, projectId: "project-1", threadCount: 1 },
+      ]);
+      expect(yield* runRecentThreads({ ...input, workspaceRoot: workspaceAlias })).toHaveLength(1);
+      expect(yield* runRecentThreads({ ...input, workspaceRoot: privateDirectory })).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 const encodeTranscriptRecord = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 

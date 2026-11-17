@@ -591,6 +591,8 @@ it("leaves projects already in T3 Code out of the default import, unless the box
   // With every project already in T3 Code, checking the box still picks them.
   appAtomRegistry.set(candidatesAtom(), appAtomRegistry.get(candidatesAtom()).slice(0, 2));
   await using _screen = await mountWelcome();
+  await click("Rescan");
+  expect(state.refreshScan).toHaveBeenCalledOnce();
   const importProjects = document.querySelector<HTMLElement>('[role="checkbox"]');
   await act(async () => importProjects?.click());
   await vi.waitFor(() => expect(pageText()).toContain("Import 2 projects and their threads"));

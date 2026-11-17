@@ -13,6 +13,8 @@ import {
   ProviderInteractionMode,
   Project,
   ProjectCreatePayload,
+  ProjectMoveThreadToScratchInput,
+  ProjectMoveThreadToScratchResult,
   ProjectUpdatePayload,
   ProjectId,
   OrchestratorMcpClientRequestId,
@@ -34,6 +36,7 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
+import * as ThreadProjectMove from "../../../project/ThreadProjectMove.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
@@ -86,6 +89,20 @@ const ProjectCreateTool = Tool.make("t3_project_create", {
   }),
   success: Schema.Struct({ ...Project.fields, commitError: Schema.optional(Schema.String) }),
   dependencies: [...shared.dependencies, ManagedProjectFolders.ManagedProjectFolders],
+}).annotate(Tool.Destructive, true);
+const ThreadMoveToNoProjectTool = Tool.make("t3_thread_move_to_no_project", {
+  ...shared,
+  description:
+    "Move one stopped thread into No project, keeping its history, files, working directory and lifecycle state. Read it first and pass expectedProjectId. Active or queued work and open requests must finish first. Repeating a completed move does nothing.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...ProjectMoveThreadToScratchInput.fields,
+  }),
+  success: Schema.Struct({
+    ...ProjectMoveThreadToScratchResult.fields,
+    link: Schema.String,
+  }),
+  dependencies: [...shared.dependencies, ThreadProjectMove.ThreadProjectMove],
 }).annotate(Tool.Destructive, true);
 const ProjectUpdateTool = Tool.make("t3_project_update", {
   ...shared,
@@ -181,6 +198,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
 
 export const ProjectToolkit = Toolkit.make(
   ThreadLaunchTool,
+  ThreadMoveToNoProjectTool,
   ProjectListTool,
   ProjectReadTool,
   ProjectCreateTool,

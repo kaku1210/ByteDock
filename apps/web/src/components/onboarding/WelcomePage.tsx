@@ -848,6 +848,16 @@ function ProjectsSection({
           <Button
             variant="ghost-muted"
             size="xs"
+            onClick={scan.refresh}
+            disabled={scan.isPending || isImporting}
+          >
+            Rescan
+          </Button>
+        ) : null}
+        {canWrite ? (
+          <Button
+            variant="ghost-muted"
+            size="xs"
             aria-expanded={reviewing}
             onClick={() => setReviewing((open) => !open)}
           >
@@ -1849,6 +1859,7 @@ const IMPORT_SOURCE_NAMES: Record<AgentSessionSource, string> = {
   claudeAgent: "Claude Code",
   codex: "Codex",
   pi: "Pi",
+  antigravity: "Antigravity (history snapshot)",
 };
 const IMPORT_SOURCES_LABEL = new Intl.ListFormat("en", { type: "conjunction" }).format(
   AgentSessionSource.literals.map((source) => IMPORT_SOURCE_NAMES[source]),

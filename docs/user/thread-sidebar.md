@@ -40,6 +40,11 @@ folder, so the files the agent wrote stay until you delete them. Branch, worktre
 these folders are not Git repositories. This is unavailable when the data
 directory itself sits inside a Git checkout.
 
+An agent can also move an existing thread into **No project**. The move keeps its
+current working directory, files, history, and archive or settled state. Active
+or queued work and open requests must finish first; moving a thread does not stop
+its agent or copy its files into a new scratch folder.
+
 When the work grows into something real, pick **Turn into project** from the
 thread's menu. The thread's folder becomes a project where it is, so nothing
 moves and the agent keeps working in the same place. Other threads in that folder
