@@ -65,6 +65,7 @@ export function ChatCanvas({
   const [timelineElement, registerTimeline] = useState<HTMLElement | null>(null);
   const measurements = useStore(store, (state) => state.measurements);
   const detailsCardMeasurement = useStore(store, (state) => state.detailsCardMeasurement);
+  const detailsCardResizeWidth = useStore(store, (state) => state.detailsCardResizeWidth);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes canvas, find bar and timeline resizes and writes the measurements to the canvas store
   useLayoutEffect(() => {
     const element = elementRef.current;
@@ -140,13 +141,17 @@ export function ChatCanvas({
       ? false
       : selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );
-  const detailsPinned = useThreadDetailsPreferences((s) => s.pinned);
+  const pinnedDetailsWidth = useThreadDetailsPreferences((s) => (s.pinned ? s.width : null));
+  const pinnedDetailsOpen = useThreadDetailsPreferences((s) => (s.pinned ? s.open : null));
   const model = resolveChatCanvasModel({
     measurements,
     detailsCardMeasurement,
     threadRef,
     preview,
-    detailsCardInlineOpen: detailsCardInlineOpen && !detailsPinned,
+    detailsCardInlineOpen: pinnedDetailsOpen ?? detailsCardInlineOpen,
+    ...(pinnedDetailsWidth === null
+      ? {}
+      : { pinnedDetailsWidth: detailsCardResizeWidth ?? pinnedDetailsWidth }),
   });
   const context = {
     container: model.container,
@@ -155,6 +160,7 @@ export function ChatCanvas({
     previewKey: preview?.key ?? null,
     registerTimeline,
     measureDetailsCard: store.getState().measureDetailsCard,
+    resizeDetailsCard: store.getState().resizeDetailsCard,
     detailsCardTopInset: model.detailsCardTopInset,
     preferredDetailsCard: model.preferredDetailsCard,
     detailsCardPlacement: model.detailsCardPlacement,

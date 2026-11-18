@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { resolveStorage } from "../../lib/storage";
+import {
+  THREAD_DETAILS_CARD_MAX_WIDTH,
+  THREAD_DETAILS_CARD_WIDTH,
+} from "./threadDetailsCardLayout";
 
 export const useThreadDetailsPreferences = create<{
   pinned: boolean;
@@ -29,7 +33,13 @@ export const useThreadDetailsPreferences = create<{
       setUsageCollapsed: (usageCollapsed) => set({ usageCollapsed }),
       setPinned: (pinned) => set({ pinned, open: true }),
       setOpen: (open) => set({ open }),
-      setWidth: (width) => set({ width: Math.max(280, Math.min(640, width)) }),
+      setWidth: (width) =>
+        set({
+          width: Math.max(
+            THREAD_DETAILS_CARD_WIDTH,
+            Math.min(THREAD_DETAILS_CARD_MAX_WIDTH, width),
+          ),
+        }),
     }),
     {
       name: "t3code:thread-details-preferences",

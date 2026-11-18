@@ -17,6 +17,7 @@ export const ChatCanvasContext = createContext<{
   previewKey: string | null;
   registerTimeline: (element: HTMLElement | null) => void;
   measureDetailsCard: (measurement: DetailsCardMeasurement) => void;
+  resizeDetailsCard?: (width: number | null) => void;
   detailsCardTopInset: number;
   /** Where an inline card sits when nothing overlaps it; null when the canvas is too narrow. */
   preferredDetailsCard: ReturnType<typeof resolveThreadDetailsCardLayout>;

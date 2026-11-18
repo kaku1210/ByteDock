@@ -27,8 +27,10 @@ export interface ChatCanvasMeasurements {
 interface ChatCanvasStoreState {
   readonly measurements: ChatCanvasMeasurements;
   readonly detailsCardMeasurement: DetailsCardMeasurement | null;
+  readonly detailsCardResizeWidth: number | null;
   readonly setMeasurements: (next: ChatCanvasMeasurements) => void;
   readonly measureDetailsCard: (next: DetailsCardMeasurement) => void;
+  readonly resizeDetailsCard: (width: number | null) => void;
 }
 
 const INITIAL_MEASUREMENTS: ChatCanvasMeasurements = {
@@ -65,6 +67,11 @@ export const createChatCanvasStore = () =>
   createStore<ChatCanvasStoreState>()((set) => ({
     measurements: INITIAL_MEASUREMENTS,
     detailsCardMeasurement: null,
+    detailsCardResizeWidth: null,
+    resizeDetailsCard: (width) =>
+      set((state) =>
+        state.detailsCardResizeWidth === width ? state : { detailsCardResizeWidth: width },
+      ),
     setMeasurements: (next) =>
       set((state) => (sameMeasurements(state.measurements, next) ? state : { measurements: next })),
     measureDetailsCard: (next) =>
@@ -87,6 +94,7 @@ export function resolveChatCanvasModel({
   threadRef,
   preview,
   detailsCardInlineOpen,
+  pinnedDetailsWidth,
 }: {
   measurements: ChatCanvasMeasurements;
   detailsCardMeasurement: DetailsCardMeasurement | null;
@@ -94,6 +102,7 @@ export function resolveChatCanvasModel({
   threadRef: ScopedThreadRef | null;
   preview: ChatCanvasPreview | null;
   detailsCardInlineOpen: boolean;
+  pinnedDetailsWidth?: number;
 }) {
   const container = { width: measurements.width, height: measurements.height };
   const { findBar } = measurements;
@@ -101,12 +110,16 @@ export function resolveChatCanvasModel({
   const lane = { padding: measurements.padding, minChatWidth: measurements.minChatWidth };
   // The preview avoids where an open inline card would sit, whether or not a
   // preview overlap has pushed the card itself into popover mode.
-  const preferredDetailsCard = resolveThreadDetailsCardLayout({
+  const detailsCardLayout = {
     container,
     narrowestWidth: measurements.narrowestWidth ?? measurements.width,
     lane,
-    frame: null,
     topInset: detailsCardTopInset,
+    ...(pinnedDetailsWidth === undefined ? {} : { pinnedWidth: pinnedDetailsWidth }),
+  };
+  const preferredDetailsCard = resolveThreadDetailsCardLayout({
+    ...detailsCardLayout,
+    frame: null,
   });
   // The canvas outlives thread switches, so a measurement only counts for the
   // thread whose card is shown now.
@@ -117,20 +130,21 @@ export function resolveChatCanvasModel({
     detailsCardMeasurement.threadRef.threadId === threadRef.threadId
       ? detailsCardMeasurement
       : null;
+  const detailsCardHeight =
+    pinnedDetailsWidth !== undefined
+      ? (preferredDetailsCard?.height ?? 0)
+      : detailsCardMeasured?.width === preferredDetailsCard?.width
+        ? (detailsCardMeasured?.fullContentHeight ?? 0)
+        : 0;
   const detailsCard =
-    detailsCardInlineOpen &&
-    preferredDetailsCard &&
-    detailsCardMeasured?.width === preferredDetailsCard.width &&
-    detailsCardMeasured.fullContentHeight > 0
+    detailsCardInlineOpen && preferredDetailsCard && detailsCardHeight > 0
       ? {
           left: preferredDetailsCard.x,
           right: preferredDetailsCard.x + preferredDetailsCard.width,
-          bottom:
-            preferredDetailsCard.y +
-            Math.min(detailsCardMeasured.fullContentHeight, preferredDetailsCard.height),
+          bottom: preferredDetailsCard.y + Math.min(detailsCardHeight, preferredDetailsCard.height),
         }
       : null;
-  const layout = resolveChatCanvasLayout({
+  const layoutInput = {
     container,
     preview,
     padding: measurements.padding,
@@ -139,20 +153,21 @@ export function resolveChatCanvasModel({
     composerHeight: measurements.composerHeight,
     detailsCard,
     findBar,
-  });
+  };
+  const layout = resolveChatCanvasLayout(layoutInput);
   const detailsCardPlacement = resolveThreadDetailsCardLayout({
-    container,
-    narrowestWidth: measurements.narrowestWidth ?? measurements.width,
-    lane,
+    ...detailsCardLayout,
     frame: layout.frame,
     overlapsDetailsCard: layout.overlapsDetailsCard,
-    topInset: detailsCardTopInset,
   });
   const detailsCardMode: ThreadPanelPresentation = detailsCardPlacement ? "inline" : "popover";
   return {
     container,
     lane,
-    layout,
+    layout:
+      pinnedDetailsWidth !== undefined && detailsCard && !detailsCardPlacement
+        ? resolveChatCanvasLayout({ ...layoutInput, detailsCard: null })
+        : layout,
     detailsCardTopInset,
     preferredDetailsCard,
     detailsCardPlacement,

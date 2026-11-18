@@ -31,17 +31,26 @@ const preview: ChatCanvasPreview = {
 
 describe("chat canvas model", () => {
   it("shows the details card inline only where the canvas fits it beside the chat", () => {
-    const resolve = (width: number, narrowestWidth = width) =>
+    const resolve = (width: number, narrowestWidth = width, pinnedDetailsWidth?: number) =>
       resolveChatCanvasModel({
         measurements: { ...measurements(width), narrowestWidth },
         detailsCardMeasurement: null,
         threadRef,
         preview: null,
         detailsCardInlineOpen: true,
-      }).detailsCardMode;
-    expect(resolve(1400)).toBe("inline");
-    expect(resolve(900)).toBe("popover");
-    expect(resolve(1400, 900)).toBe("popover");
+        ...(pinnedDetailsWidth === undefined ? {} : { pinnedDetailsWidth }),
+      });
+    expect(resolve(1400).detailsCardMode).toBe("inline");
+    expect(resolve(900).detailsCardMode).toBe("popover");
+    expect(resolve(1400, 900).detailsCardMode).toBe("popover");
+
+    const pinned = resolve(1400, 1400, 360);
+    expect(pinned.detailsCardPlacement?.width).toBe(360);
+    expect(pinned.layout.chat.left + pinned.layout.chat.width).toBeLessThan(
+      pinned.detailsCardPlacement!.x,
+    );
+    expect(resolve(1024, 1024, 360).detailsCardPlacement?.width).toBe(292);
+    expect(resolve(900, 900, 360).detailsCardMode).toBe("popover");
   });
 
   it("moves the card into a popover when a preview below it leaves too little height", () => {
