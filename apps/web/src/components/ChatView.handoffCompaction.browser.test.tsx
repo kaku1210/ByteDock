@@ -28,6 +28,7 @@ import {
   type FakeDriver,
 } from "../../test/fakeEnvironment";
 import { render } from "../../test/render";
+import { useThreadDetailsPreferences } from "./chat/threadDetailsPreferences";
 
 // The socket is the only fake layer; see test/appScenarios.renders.tsx.
 vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (importOriginal) => {
@@ -48,8 +49,8 @@ const CLAUDE = ProviderInstanceId.make("claudeAgent");
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 
 /** A Claude thread whose 250k-token context went cold long ago, with its native thread kept for handoff. */
-function coldClaudeThread() {
-  const thread = threadWithHistory("thread-claude", 3, {
+function coldClaudeThread(name = "thread-claude") {
+  const thread = threadWithHistory(name, 3, {
     instanceId: CLAUDE,
     model: "claude-opus-4-6",
   });
@@ -77,6 +78,42 @@ function coldClaudeThread() {
   };
   return { ...thread, providerThreads: [providerThread] };
 }
+
+it("compacts from thread details without submitting the composer's draft", async () => {
+  const thread = coldClaudeThread("thread-compact-now");
+  using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
+  using _environment = installFakeEnvironment([thread], {
+    providers: [CLAUDE_PROVIDER],
+    acceptCommands: true,
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    threadDetailsItems: { context: true },
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const preferences = useThreadDetailsPreferences.getState();
+  using _details = { [Symbol.dispose]: () => useThreadDetailsPreferences.setState(preferences) };
+  useThreadDetailsPreferences.setState({ pinned: true, open: true, detailsCollapsed: false });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByText(`Answer 2 for ${thread.id}.`)).toBeVisible();
+  const editor = screen.getByTestId("composer-editor");
+  await editor.fill("Keep this draft");
+  await screen.getByRole("region", { name: "Context window" }).getByRole("button").click();
+  await page.getByRole("button", { name: "Compact now" }).click();
+  await vi.waitFor(() =>
+    expect(
+      dispatchedCommands().filter((command) => command.type === "message.dispatch"),
+    ).toMatchObject([{ threadId: thread.id, text: "/compact", attachments: [] }]),
+  );
+  await expect.element(editor).toHaveTextContent("Keep this draft");
+});
 
 it("sends a Codex follow-up on a cold Claude thread without compacting first", async () => {
   using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };

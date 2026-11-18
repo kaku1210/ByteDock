@@ -311,6 +311,7 @@ import {
   WorkspaceTitlebarControls,
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import { resolveContextWindowModelDisplayName } from "./chat/ContextWindowDetails.logic";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
@@ -733,6 +734,7 @@ export default function ChatView(props: ChatViewProps) {
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const [workspaceLayoutElement, setWorkspaceLayoutElement] = useState<HTMLDivElement | null>(null);
   const threadPanelPopoverAnchorRef = useRef<HTMLElement | null>(null);
+  const threadPanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const [terminalUiLaunchContext, setTerminalUiLaunchContext] =
     useState<TerminalLaunchContext | null>(null);
   // Overrides chosen before a server thread's first turn; they belong to that thread only.
@@ -1981,16 +1983,20 @@ export default function ChatView(props: ChatViewProps) {
   // Selects only the mode, so canvas resizes rerender the chat view only when the
   // card switches presentation.
   const pinnedDetailsOpen = useThreadDetailsPreferences((s) => (s.pinned ? s.open : null));
-  const threadPanelPresentation = useStore(chatCanvasStore, (state) =>
-    pinnedDetailsOpen !== null
-      ? "inline"
-      : resolveChatCanvasModel({
-          measurements: state.measurements,
-          detailsCardMeasurement: state.detailsCardMeasurement,
-          threadRef: activeThreadRef,
-          preview: canvasPreview,
-          detailsCardInlineOpen: threadPanelInlineOpen && pinnedDetailsOpen === null,
-        }).detailsCardMode,
+  const pinnedDetailsWidth = useThreadDetailsPreferences((s) => (s.pinned ? s.width : null));
+  const threadPanelPresentation = useStore(
+    chatCanvasStore,
+    (state) =>
+      resolveChatCanvasModel({
+        measurements: state.measurements,
+        detailsCardMeasurement: state.detailsCardMeasurement,
+        threadRef: activeThreadRef,
+        preview: canvasPreview,
+        detailsCardInlineOpen: pinnedDetailsOpen ?? threadPanelInlineOpen,
+        ...(pinnedDetailsWidth === null
+          ? {}
+          : { pinnedDetailsWidth: state.detailsCardResizeWidth ?? pinnedDetailsWidth }),
+      }).detailsCardMode,
   );
   const unpinnedThreadPanelOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(
@@ -1999,7 +2005,8 @@ export default function ChatView(props: ChatViewProps) {
       threadPanelPresentation,
     ),
   );
-  const threadPanelOpen = pinnedDetailsOpen ?? unpinnedThreadPanelOpen;
+  const threadPanelOpen =
+    (threadPanelPresentation === "inline" ? pinnedDetailsOpen : null) ?? unpinnedThreadPanelOpen;
   const supportsThreadPullRequests = serverConfig !== null;
   const visiblePullRequests = visibleThreadPullRequests(
     (activeThreadShell ?? activeThread)?.pullRequests ?? [],
@@ -2392,6 +2399,7 @@ export default function ChatView(props: ChatViewProps) {
         branchPullRequest: activeThreadShell?.branchPullRequest ?? activeThread.branchPullRequest,
       })
     : null;
+  const getThreadPanelToggle = useStableCallback(() => threadPanelToggleRef.current);
   const {
     activateRightPanelSurfaceStable,
     addDeviceSurfaceStable,
@@ -2421,6 +2429,7 @@ export default function ChatView(props: ChatViewProps) {
     deviceStateLoaded,
     pullRequestPanelTarget,
     threadPanelPresentation,
+    getThreadPanelToggle,
     isServerThread,
     embedded,
     isGitRepo,
@@ -2528,7 +2537,6 @@ export default function ChatView(props: ChatViewProps) {
     feedbackUploading ||
     pendingApprovals.length > 0 ||
     pendingUserInputs.length > 0;
-  const compactDisabled = compactThreadUnavailable;
   // The context window is the current conversation's, so a handoff destination never inherits it.
   const resumeCompactionTokens =
     activeContextWindow &&
@@ -2540,7 +2548,7 @@ export default function ChatView(props: ChatViewProps) {
       ) !== "off" &&
         !resumeCompactionPermanentlyDismissed &&
         !nativeResumeCompactionDismissed)) &&
-    !compactDisabled &&
+    !compactThreadUnavailable &&
     !hasHeldQueuedRuns &&
     multipleModelSelections === null &&
     shouldOfferResumeCompaction({
@@ -2895,11 +2903,6 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       setThreadError,
     });
-  const onCompactContext = () => {
-    if (compactDisabled) return;
-    void sendStandaloneCommand("/compact", "Failed to compact context.");
-  };
-
   const {
     getModelDisabledReason,
     handleRuntimeModeChangeStable,
@@ -3041,7 +3044,24 @@ export default function ChatView(props: ChatViewProps) {
   };
   const sendPreviewAnnotationStable = useStableCallback(sendPreviewAnnotation);
   const onComposerResumeStable = useStableCallback(onResume);
-  const onComposerCompactContextStable = useStableCallback(onCompactContext);
+  const composerSendBusy =
+    (isSendBusy && !sendQueuesBehindSetup) ||
+    (setupQueueSendThreadKey !== null && setupQueueSendThreadKey === activeThreadKey) ||
+    queuedRunEdit.isSaving ||
+    isResuming;
+  const manualCompactDisabled =
+    compactThreadUnavailable ||
+    composerSendBusy ||
+    !clientSettingsHydrated ||
+    pendingHandoff !== null;
+  const compactContextNow = useStableCallback(() => {
+    if (
+      manualCompactDisabled ||
+      !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
+    void sendStandaloneCommand("/compact", "Failed to compact context.");
+  });
   // Read from the projection the footer renders, so the scroll below sees the new message.
   const pendingGuestMessageIds =
     serverProjection?.thread.guestShare?.messages.flatMap((message) =>
@@ -3309,6 +3329,7 @@ export default function ChatView(props: ChatViewProps) {
     threadPanelOpen,
     threadPanelPresentation,
     threadPanelPopoverHandle,
+    threadPanelToggleRef,
     threadPanelShortcutLabel: shortcutLabelForCommand(keybindings, "threadPanel.toggle"),
     rightPanelAvailable: activeProject !== null,
     rightPanelOpen,
@@ -3677,8 +3698,6 @@ export default function ChatView(props: ChatViewProps) {
                                     : null
                                 }
                                 activeThreadRuns={serverProjection?.runs ?? EMPTY_RUNS}
-                                contextWindow={activeContextWindow}
-                                threadDetailLoading={threadDetailLoading}
                                 isCompacting={isCompacting}
                                 promptHistoryEntries={timelineEntries}
                                 forceExpandedOnMobile={
@@ -3690,13 +3709,7 @@ export default function ChatView(props: ChatViewProps) {
                                 phase={phase}
                                 canSteer={!compactionBlocksSteer}
                                 canInterrupt={canInterruptRunningThread}
-                                isSendBusy={
-                                  (isSendBusy && !sendQueuesBehindSetup) ||
-                                  (setupQueueSendThreadKey !== null &&
-                                    setupQueueSendThreadKey === activeThreadKey) ||
-                                  queuedRunEdit.isSaving ||
-                                  isResuming
-                                }
+                                isSendBusy={composerSendBusy}
                                 canResume={canResume}
                                 isRevertingCheckpoint={isRevertingCheckpoint}
                                 sendDisabledReason={
@@ -3762,7 +3775,6 @@ export default function ChatView(props: ChatViewProps) {
                                 activeProjectId={activeProject?.id ?? null}
                                 projectName={activeProject?.title}
                                 compactThreadUnavailable={compactThreadUnavailable}
-                                compactDisabled={compactDisabled}
                                 resolvedTheme={resolvedTheme}
                                 settings={settings}
                                 keybindings={keybindings}
@@ -3788,7 +3800,6 @@ export default function ChatView(props: ChatViewProps) {
                                 onPageScrollKeyDown={onComposerPageScrollKeyDownStable}
                                 onPageScrollKeyUp={onComposerPageScrollKeyUpStable}
                                 onPageScrollRelease={onComposerPageScrollReleaseStable}
-                                onCompactContext={onComposerCompactContextStable}
                                 onSend={onComposerSendStable}
                                 onResume={onComposerResumeStable}
                                 onInterrupt={onInterruptStable}
@@ -3929,6 +3940,7 @@ export default function ChatView(props: ChatViewProps) {
                 <ThreadDetailsPanel
                   anchor={threadPanelPopoverAnchorRef}
                   handle={threadPanelPopoverHandle}
+                  getToggle={getThreadPanelToggle}
                   forceNewWorktree={multipleModelSelections !== null}
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
@@ -3994,7 +4006,20 @@ export default function ChatView(props: ChatViewProps) {
                     providerInstanceId: activeProviderInstanceId,
                     providers: providerStatuses,
                     sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
-                    contextWindow: activeContextWindow,
+                  }}
+                  context={{
+                    usage: activeContextWindow,
+                    loading: threadDetailLoading,
+                    modelDisplayName: resolveContextWindowModelDisplayName(
+                      activeThread.modelSelection,
+                      providerInstanceEntries,
+                      settings,
+                    ),
+                    compactDisabled: manualCompactDisabled,
+                    onCompact:
+                      composerMounted && manualCompactionProviderAvailable && canOperateThread
+                        ? compactContextNow
+                        : undefined,
                   }}
                 />
 

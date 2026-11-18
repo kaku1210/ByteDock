@@ -2,6 +2,7 @@ import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
 import { MessageId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { expect, it, vi } from "vite-plus/test";
@@ -27,6 +28,48 @@ import {
   threadWithHistory,
 } from "../../test/fakeEnvironment";
 import { render } from "../../test/render";
+
+it("lets a click on a long side-chat suggestion focus the empty editor", async () => {
+  const parent = threadWithHistory("suggestion-parent", 1);
+  const side = {
+    ...threadWithHistory("suggestion-side", 1),
+    sideChatOf: parent.id,
+    olderSettled: true as const,
+  };
+  const suggestion = "请同步完主分支后，复跑编译检查和全部测试，再验证完整流程。".repeat(4);
+  using _environment = installFakeEnvironment([parent, side], {
+    suggestPrompt: ({ threadId }) =>
+      Effect.succeed({ suggestion: threadId === side.id ? suggestion : null }),
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  await page.viewport(1400, 900);
+  useRightPanelStore.getState().openSideChat(scopeThreadRef(ENVIRONMENT_ID, parent.id), side.id);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${parent.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const editor = screen.getByRole("textbox", { name: `Message ${side.title}`, exact: true });
+  const preview = screen.getByText(suggestion, { exact: true });
+  await expect.element(preview).toBeVisible();
+  const bounds = preview.element().getBoundingClientRect();
+  const hit = document.elementFromPoint(bounds.left + 12, bounds.top + 8);
+  expect(editor.element().contains(hit)).toBe(true);
+  await preview.click({ position: { x: 12, y: 8 }, force: true });
+  await expect.element(editor).toHaveFocus();
+  await userEvent.keyboard("my draft");
+  expect(editor.element().textContent).toBe("my draft");
+  await editor.fill("");
+  await expect.element(preview).toBeVisible();
+  await userEvent.keyboard("{Tab}");
+  await expect.element(editor).toHaveTextContent(suggestion);
+});
 
 it.each(["empty", "draft", "used", "ordinary", "hidden", "creating"] as const)(
   "temporary chat button reuses only the visible unused temporary chat (%s)",
@@ -366,7 +409,11 @@ it.each(["pane", "tab", "panel"] as const)(
     expect(useManualThreadTasks.getState().tasks).toHaveLength(2);
     await screen.getByRole("button", { name: new RegExp(`^${side.title}`) }).click();
     await expect.element(sideEditor).toHaveTextContent("A private side question");
-    const closeFromDetails = screen.getByRole("button", {
+    await screen
+      .getByRole("button", { name: "Toggle thread details panel", exact: true })
+      .first()
+      .click();
+    const closeFromDetails = page.getByRole("button", {
       name: `Close temporary side chat: ${side.title}`,
       exact: true,
     });

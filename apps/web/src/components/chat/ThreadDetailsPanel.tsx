@@ -23,7 +23,7 @@ import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
 } from "../ProjectScriptsControl";
-import { memo, useState, type ComponentProps } from "react";
+import { memo, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
@@ -36,24 +36,17 @@ import {
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
+import { ThreadDetailsNote } from "./ThreadDetailsNote";
 import { resolveThreadDetailsVisibility, THREAD_DETAILS_ITEMS } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
 import { useProject, useServerConfigs } from "../../state/entities";
 import { ThreadDetailsThreadPrRows } from "./ThreadDetailsPrRows";
-import { cn } from "../../lib/utils";
-import { SlidersHorizontalIcon } from "lucide-react";
-import { ThreadDetailsControl } from "./ThreadDetailsControl";
-import {
-  THREAD_DETAILS_PANEL_ICON_CLASS,
-  THREAD_DETAILS_PANEL_LABEL_CLASS,
-} from "./threadDetailsPanelStyles";
-import { Menu, MenuPopup } from "../ui/menu";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
 interface ThreadDetailsPanelProps extends Pick<
   ComponentProps<typeof ThreadDetailsCard>,
-  "anchor" | "handle"
+  "anchor" | "handle" | "getToggle"
 > {
   forceNewWorktree?: boolean;
   environmentId: EnvironmentId;
@@ -95,6 +88,7 @@ interface ThreadDetailsPanelProps extends Pick<
   ) => Promise<ProjectScriptActionResult>;
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   usage: ThreadDetailsUsageInput;
+  context: ComponentProps<typeof ThreadDetailsContext>;
 }
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
@@ -103,7 +97,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const tasksCollapsed = useThreadDetailsPreferences((state) => state.tasksCollapsed);
   const usageCollapsed = useThreadDetailsPreferences((state) => state.usageCollapsed);
   const visible = useClientSettings(resolveThreadDetailsVisibility);
-  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
@@ -149,30 +142,14 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
       threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
       anchor={props.anchor}
       handle={props.handle}
+      getToggle={props.getToggle}
+      menuItems={<ThreadDetailsItemsMenuItems />}
       contentKey={
         `${detailsCollapsed}:${tasksCollapsed}:${usageCollapsed}:` +
         THREAD_DETAILS_ITEMS.filter((item) => visible[item.id])
           .map((item) => item.id)
           .join(",")
       }
-      onContextMenu={(event) => {
-        // Popups the card opens bubble here through React; they, fields, links, and selected text
-        // keep their own menus.
-        const target = event.target;
-        const selection = window.getSelection();
-        if (
-          !(target instanceof Element) ||
-          !event.currentTarget.contains(target) ||
-          target.closest("input, textarea, [contenteditable], a[href]") ||
-          (selection &&
-            !selection.isCollapsed &&
-            (event.currentTarget.contains(selection.anchorNode) ||
-              event.currentTarget.contains(selection.focusNode)))
-        )
-          return;
-        event.preventDefault();
-        setMenuPosition({ x: event.clientX, y: event.clientY });
-      }}
     >
       {(density) => {
         // Section flags follow the rows that will render, so no empty section steals the divider rule.
@@ -190,7 +167,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
         };
         return (
           <>
-            <div className="group/details-items" hidden={detailsCollapsed}>
+            <div hidden={detailsCollapsed}>
               {show.environment || show.openIn || show.scripts ? (
                 <ThreadDetailsSection
                   headingId="thread-details-workspace-heading"
@@ -274,7 +251,16 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   </div>
                 </ThreadDetailsSection>
               ) : null}
+            </div>
 
+            {visible.note && props.isServerThread && !props.draftId ? (
+              <ThreadDetailsNote
+                key={`note:${props.environmentId}:${props.threadId}`}
+                threadRef={activeThreadRef}
+              />
+            ) : null}
+
+            <div hidden={detailsCollapsed}>
               {density === "full" && !props.draftId && visible.servers ? (
                 <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
               ) : null}
@@ -300,55 +286,17 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               ) : null}
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 
-              {visible.context && props.usage.contextWindow ? (
-                <ThreadDetailsContext usage={props.usage.contextWindow} />
+              {visible.context && props.isServerThread ? (
+                <ThreadDetailsContext {...props.context} />
               ) : null}
-
-              {/* Shown only when no section above has content, so an emptied card can be refilled. */}
-              <div className="p-2 group-has-[>section>:last-child:not(:empty)]/details-items:hidden">
-                <ThreadDetailsControl
-                  size="xs"
-                  variant="ghost"
-                  part="row"
-                  panel
-                  onClick={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setMenuPosition({ x: rect.left, y: rect.bottom });
-                  }}
-                >
-                  <SlidersHorizontalIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
-                  <span className={cn("ml-0.5", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-                    {uiText("Choose what to show")}
-                  </span>
-                </ThreadDetailsControl>
-              </div>
             </div>
 
-            {!props.draftId ? (
+            {visible.tasks && !props.draftId ? (
               <ThreadTaskList
                 key={`${props.environmentId}:${props.threadId}`}
                 threadRef={activeThreadRef}
               />
             ) : null}
-            <Menu
-              open={menuPosition !== null}
-              onOpenChange={(open) => !open && setMenuPosition(null)}
-            >
-              <MenuPopup
-                anchor={
-                  menuPosition
-                    ? {
-                        getBoundingClientRect: () =>
-                          new DOMRect(menuPosition.x, menuPosition.y, 0, 0),
-                      }
-                    : undefined
-                }
-                align="start"
-                side="bottom"
-              >
-                <ThreadDetailsItemsMenuItems />
-              </MenuPopup>
-            </Menu>
           </>
         );
       }}

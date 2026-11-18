@@ -19,7 +19,7 @@ import {
   type RightPanelSurface,
   useRightPanelStore,
 } from "../../rightPanelStore";
-import { requestWorkspaceContentFocus, requestWorkspaceFocus } from "../../lib/workspaceFocus";
+import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 import { setActivePreviewTab } from "../../previewStateStore";
 import { isBrowserSettingsReadError } from "../../browser/openFileInPreview";
 import { addBrowserSurface } from "../preview/addBrowserSurface";
@@ -43,6 +43,7 @@ interface RightPanelActionsInput {
   readonly deviceStateLoaded: boolean;
   readonly pullRequestPanelTarget: ReturnType<typeof threadPullRequestPanelTarget> | null;
   readonly threadPanelPresentation: ThreadPanelPresentation;
+  readonly getThreadPanelToggle: () => HTMLElement | null;
   readonly isServerThread: boolean;
   /** A side chat pane; the main view already answers preview bus actions. */
   readonly embedded: boolean;
@@ -79,6 +80,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     deviceStateLoaded,
     pullRequestPanelTarget,
     threadPanelPresentation,
+    getThreadPanelToggle,
     isServerThread,
     embedded,
     isGitRepo,
@@ -230,24 +232,23 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
   };
   const toggleRightPanelStable = useStableCallback(toggleRightPanel);
   const toggleThreadPanel = () => {
-    const preferences = useThreadDetailsPreferences.getState();
-    if (preferences.pinned) {
-      preferences.setOpen(!preferences.open);
-      return;
-    }
     if (!activeThreadRef) return;
+    const preferences = useThreadDetailsPreferences.getState();
     const store = useRightPanelStore.getState();
-    if (threadPanelPresentation === "inline") {
-      const open = selectThreadPanelOpen(
-        store.threadPanelVisibilityByThreadKey,
-        activeThreadRef,
-        "inline",
-      );
-      if (!open) requestWorkspaceFocus({ area: "details" });
-      else if (document.activeElement?.closest('[data-workspace-area="details"]'))
-        requestWorkspaceContentFocus();
-    }
-    store.toggleThreadPanel(activeThreadRef, threadPanelPresentation);
+    const pinnedInline = preferences.pinned && threadPanelPresentation === "inline";
+    const open = pinnedInline
+      ? preferences.open
+      : selectThreadPanelOpen(
+          store.threadPanelVisibilityByThreadKey,
+          activeThreadRef,
+          threadPanelPresentation,
+        );
+    if (pinnedInline) preferences.setOpen(!open);
+    else store.setThreadPanelOpen(activeThreadRef, threadPanelPresentation, !open);
+
+    if (!open && threadPanelPresentation === "inline") requestWorkspaceFocus({ area: "details" });
+    if (open && document.activeElement?.closest('[data-workspace-area="details"]'))
+      getThreadPanelToggle()?.focus({ preventScroll: true });
   };
   const toggleThreadPanelStable = useStableCallback(toggleThreadPanel);
   const toggleRightPanelMaximized = () => {

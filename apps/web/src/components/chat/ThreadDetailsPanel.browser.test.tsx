@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 const SCRATCH_ROOT = "/home/user/.t3/scratch";
 
@@ -102,13 +102,16 @@ import { ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout } from "./chatCanvasLayout";
 import { ThreadDetailsPanel } from "./ThreadDetailsPanel";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
+import { UiLanguageContext } from "../../i18n/useUiLanguage";
+import { ThreadDetailsItemsRow } from "../settings/ThreadDetailsItemsRow";
+import { __setClientSettingsForTests, getClientSettings } from "../../hooks/useSettings";
 
 const threadRef: ScopedThreadRef = {
   environmentId: EnvironmentId.make("environment"),
   threadId: ThreadId.make("thread"),
 };
 const container = { width: 1200, height: 800 };
-const placement = { x: 908, y: 0, right: 12, width: 280, height: 400 } as const;
+const placement = { x: 908, y: 0, right: 12, width: 280, maxWidth: 640, height: 400 } as const;
 const linkedPullRequest: ThreadPullRequestLink = {
   host: "github.com",
   repository: "pingdotgg/t3code",
@@ -153,7 +156,13 @@ function setup(input: {
   };
 }
 
-function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
+function Panel({
+  fixture,
+  activeThreadRef = threadRef,
+}: {
+  fixture: ReturnType<typeof setup>;
+  activeThreadRef?: ScopedThreadRef;
+}) {
   const noop = () => {};
   const scriptResult = async () => ({ ok: true }) as never;
   return (
@@ -173,10 +182,10 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
       <ThreadDetailsPanel
         anchor={fixture.anchor}
         handle={fixture.handle}
-        environmentId={threadRef.environmentId}
-        threadId={threadRef.threadId}
+        environmentId={activeThreadRef.environmentId}
+        threadId={activeThreadRef.threadId}
         projectId={ProjectId.make("project")}
-        composerDraftTarget={threadRef}
+        composerDraftTarget={activeThreadRef}
         worktreePath={state.folder}
         isServerThread
         activeProjectName={state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain"}
@@ -200,7 +209,8 @@ function Panel({ fixture }: { fixture: ReturnType<typeof setup> }) {
         onAddProjectScript={scriptResult}
         onUpdateProjectScript={scriptResult}
         onDeleteProjectScript={scriptResult}
-        usage={{} as never}
+        usage={{ providerInstanceId: null, providers: [], sources: [] }}
+        context={{ usage: null }}
       />
     </ChatCanvasContext>
   );
@@ -353,4 +363,69 @@ it("offers no Initialize Git before the server config says where No project live
   await expect
     .element(page.getByRole("button", { name: "Initialize Git" }))
     .not.toBeInTheDocument();
+});
+
+it("hides tasks from the Chinese card menu and restores them from appearance settings", async () => {
+  using fixture = setup({ workspaceRoot: "/work/plain", folder: "/work/plain" });
+  const previousSettings = getClientSettings();
+  using _settings = { [Symbol.dispose]: () => __setClientSettingsForTests(previousSettings) };
+  __setClientSettingsForTests({ ...previousSettings, threadDetailsItems: {} });
+  await using screen = await render(
+    <UiLanguageContext value="zh-CN">
+      <Panel fixture={fixture} />
+      <ThreadDetailsItemsRow />
+    </UiLanguageContext>,
+  );
+  const addTask = screen.getByRole("button", { name: "手动添加任务" });
+  await addTask.click({ button: "right" });
+  await expect.element(page.getByRole("menuitemcheckbox", { name: "环境与工作树" })).toBeVisible();
+  const tasks = page.getByRole("menuitemcheckbox", { name: "任务列表" });
+  await expect.element(tasks).toBeChecked();
+  await tasks.click();
+  await expect.element(addTask).not.toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  await page.getByRole("button", { name: /^会话详情：已启用/ }).click();
+  await expect.element(tasks).not.toBeChecked();
+  await tasks.click();
+  await expect.element(addTask).toBeVisible();
+});
+
+it("saves each thread's note on leaving it and restores it when the note is shown again", async () => {
+  using fixture = setup({ workspaceRoot: "/work/plain", folder: "/work/plain" });
+  const first = { ...threadRef, threadId: ThreadId.make("note-first") };
+  const second = { ...first, environmentId: EnvironmentId.make("another-environment") };
+  const previousSettings = getClientSettings();
+  using _cleanup = {
+    [Symbol.dispose]() {
+      for (const ref of [first, second]) {
+        localStorage.removeItem(`t3code:thread-note:v1:${scopedThreadKey(ref)}`);
+      }
+      __setClientSettingsForTests(previousSettings);
+    },
+  };
+  __setClientSettingsForTests({ ...previousSettings, threadDetailsItems: {} });
+  await using screen = await render(<Panel fixture={fixture} activeThreadRef={first} />);
+  const note = page.getByRole("button", { name: "Thread note" });
+  const editor = page.getByRole("textbox", { name: "Thread note" });
+  await note.click();
+  await expect.element(editor).toHaveFocus();
+  await editor.fill("First environment\nRemember the branch.");
+
+  await screen.rerender(<Panel fixture={fixture} activeThreadRef={second} />);
+  await note.click();
+  await expect.element(editor).toHaveValue("");
+  await editor.fill("Second environment");
+
+  await screen.rerender(<Panel fixture={fixture} activeThreadRef={first} />);
+  await note.click();
+  await expect.element(editor).toHaveValue("First environment\nRemember the branch.");
+  await page.getByRole("button", { name: "Choose what to show" }).click();
+  const noteSetting = page.getByRole("menuitemcheckbox", { name: "Thread note" });
+  await noteSetting.click();
+  await expect.element(note).not.toBeInTheDocument();
+  await noteSetting.click();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByText("Remember the branch.", { exact: false })).toBeVisible();
+  await note.click();
+  await expect.element(editor).toHaveValue("First environment\nRemember the branch.");
 });

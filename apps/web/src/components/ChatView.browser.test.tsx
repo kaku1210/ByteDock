@@ -347,7 +347,7 @@ it("retries and regenerates prompt suggestions without duplicate requests or rep
 
   const suggestion = "先跑一下刚才改动涉及的测试。";
   resolveRetry({ suggestion });
-  await expect.element(page.getByRole("button", { name: suggestion, exact: true })).toBeVisible();
+  await expect.element(page.getByText(suggestion, { exact: true })).toBeVisible();
   await expect.element(retry).toHaveAttribute("data-state", "ready");
   expect(suggestPrompt).toHaveBeenCalledTimes(2);
   expect(suggestPrompt).toHaveBeenLastCalledWith({
@@ -374,9 +374,7 @@ it("retries and regenerates prompt suggestions without duplicate requests or rep
   suggestPrompt.mockReturnValue(Effect.succeed({ suggestion: newSuggestion }));
   await expect.element(editor).toHaveTextContent("保留我正在输入的内容");
   await editor.fill("");
-  await expect
-    .element(page.getByRole("button", { name: newSuggestion, exact: true }))
-    .toBeVisible();
+  await expect.element(page.getByText(newSuggestion, { exact: true })).toBeVisible();
   await expect.element(retry).toHaveAttribute("data-state", "ready");
   expect((editor.element() as HTMLElement).textContent).toBe("");
 });
@@ -455,7 +453,7 @@ it("applies a suggestion preference once and clears it only after a successful s
   });
   await expect.element(preference).toHaveValue(preferenceText);
   await expect.element(retry).toHaveAttribute("data-state", "ready");
-  await page.getByRole("button", { name: newSuggestion, exact: true }).click();
+  await page.getByRole("button", { name: "采用建议", exact: true }).click();
   await expect.element(editor).toHaveTextContent(newSuggestion);
   await expect.element(preference).toHaveValue(preferenceText);
   await userEvent.click(editor);

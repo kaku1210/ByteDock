@@ -214,8 +214,6 @@ import {
 } from "./ComposerAttachmentStrip";
 import { CollapsedComposerStopAction, ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerFooterPrimaryActions } from "./ComposerFooterControls";
-import { ContextWindowMeter } from "./ContextWindowMeter";
-import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { PromptSuggestionControl } from "./PromptSuggestionControl";
 import { PromptSuggestionPreference } from "./PromptSuggestionPreference";
 import {
@@ -291,6 +289,8 @@ import {
   usePreparingComposerImages,
 } from "./preparingComposerImages";
 import { ComposerControlsBar } from "./ComposerControlsBar";
+import { ComposerControl } from "./ComposerControl";
+import { Kbd } from "../ui/kbd";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { usePromptSuggestion } from "./usePromptSuggestion";
 import { useFreshSessionArmed } from "./freshSessionArms";
@@ -323,7 +323,6 @@ export interface ChatComposerHandle {
   openControl: (command: KeybindingCommand) => void;
   isModelPickerOpen: () => boolean;
   isCaretAtStart: () => boolean;
-  compactContext: () => void;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -380,8 +379,6 @@ export interface ChatComposerProps {
   activeThread: Thread | undefined;
   activeThreadRuns: ReadonlyArray<OrchestrationV2Run>;
   promptSuggestionRunId?: RunId | null;
-  contextWindow: React.ComponentProps<typeof ContextWindowMeter>["usage"];
-  threadDetailLoading: boolean;
   isCompacting: boolean;
   promptHistoryEntries: ReadonlyArray<TimelineEntry>;
   forceExpandedOnMobile: boolean;
@@ -447,7 +444,6 @@ export interface ChatComposerProps {
   projectName?: string | undefined;
 
   compactThreadUnavailable: boolean;
-  compactDisabled: boolean;
 
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
@@ -476,7 +472,6 @@ export interface ChatComposerProps {
   }> | null;
   onRemoveEditingQueuedAttachment: (attachmentId: string) => void;
 
-  onCompactContext: () => void;
   onSend: (
     e?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
@@ -567,7 +562,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeProjectId,
     projectName,
     compactThreadUnavailable,
-    compactDisabled,
     resolvedTheme,
     settings,
     keybindings,
@@ -585,7 +579,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPageScrollKeyDown,
     onPageScrollKeyUp,
     onPageScrollRelease,
-    onCompactContext,
     onSend,
     onResume,
     onInterrupt,
@@ -1001,14 +994,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   })();
 
-  const activeThreadModelDisplayName = resolveContextWindowModelDisplayName(
-    activeThreadModelSelection,
-    modelOptionsByInstance,
-  );
-  const reserveContextWindowMeter =
-    props.threadDetailLoading &&
-    threadHasStarted(activeThread) &&
-    selectedProviderStatus?.reportsContextWindow !== false;
   const [composerCursor, setComposerCursor] = useState(() => {
     const value = isLiteralPendingAnswer ? (activePendingProgress?.customAnswer ?? prompt) : prompt;
     return collapseExpandedComposerCursor(value, value.length, isLiteralPendingAnswer);
@@ -2286,22 +2271,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setPrompt(savedValue);
   };
   const saveCitationDraftToPromptStable = useStableCallback(saveCitationDraftToPrompt);
-  const compactThreadContext = () => {
-    if (
-      !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
-      compactDisabled ||
-      noProviderAvailable ||
-      activePendingApproval !== null ||
-      pendingUserInputs.length > 0 ||
-      phase === "running" ||
-      isSendBusy ||
-      !activeThreadId
-    ) {
-      return;
-    }
-    onCompactContext();
-  };
-  const compactThreadContextStable = useStableCallback(compactThreadContext);
   const expandMobileComposer = () => {
     if (composerBlurFrameRef.current !== null) {
       window.cancelAnimationFrame(composerBlurFrameRef.current);
@@ -2549,18 +2518,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               onGenerate={generateWithPreference}
             />
           ) : null}
-          <ContextWindowMeter
-            usage={props.contextWindow}
-            loading={reserveContextWindowMeter}
-            modelDisplayName={activeThreadModelDisplayName}
-            compactDisabled={compactDisabled || noProviderAvailable || isSendBusy}
-            compactDisabledReason={
-              compactThreadUnavailable || noProviderAvailable
-                ? t("composer.compactionUnavailable")
-                : null
-            }
-            {...(!compactThreadUnavailable ? { onCompact: compactThreadContextStable } : {})}
-          />
         </div>
       }
       environmentId={environmentId}
@@ -3232,7 +3189,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (command === "composer.effort") markOpenToEffort(trigger);
         trigger.click();
       },
-      compactContext: compactThreadContextStable,
       isModelPickerOpen: () => isComposerModelPickerOpen,
       isCaretAtStart: () => {
         const range = composerEditorRef.current?.readSelectionRange();
@@ -3397,7 +3353,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
-      compactThreadContextStable,
     ],
   );
 
@@ -3780,18 +3735,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   />
                 </ComposerContextActionsContext>
                 {offeredPromptSuggestion !== null ? (
-                  <div className="pointer-events-none absolute inset-x-0 top-0 flex flex-wrap items-baseline gap-x-2 text-(length:--font-size-prompt,var(--text-sm)) text-muted-foreground">
-                    <button
-                      type="button"
-                      className="pointer-events-auto cursor-pointer text-left hover:text-foreground"
+                  <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-(length:--font-size-prompt,var(--text-sm)) text-placeholder">
+                      {offeredPromptSuggestion}
+                    </span>
+                    <ComposerControl
+                      size="xs"
+                      className="pointer-events-auto"
                       data-composer-prompt-suggestion
-                      aria-description={t("composer.acceptSuggestion")}
+                      aria-description={offeredPromptSuggestion}
+                      aria-keyshortcuts="Tab"
+                      title={offeredPromptSuggestion}
                       onClick={acceptPromptSuggestion}
                     >
-                      {offeredPromptSuggestion}
-                    </button>
-                    <span>{t("composer.acceptSuggestion")}</span>
-                    <span>{t("composer.shortcutHints")}</span>
+                      {t("composer.acceptSuggestion")}
+                      <Kbd aria-hidden="true">Tab</Kbd>
+                    </ComposerControl>
                   </div>
                 ) : null}
                 {showMobilePendingAnswerActions ? (

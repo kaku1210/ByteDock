@@ -1,34 +1,40 @@
-import { ChevronDownIcon, ChevronRightIcon, PinIcon, PinOffIcon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  PinIcon,
+  PinOffIcon,
+  SlidersHorizontalIcon,
+  XIcon,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
-import {
-  useLayoutEffect,
-  useState,
-  type MouseEventHandler,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useLayoutEffect, useState, type ReactNode, type RefObject } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { Popover, PopoverPopup, PopoverCreateHandle } from "../ui/popover";
+import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { selectThreadPanelOpen, useRightPanelStore } from "../../rightPanelStore";
 import { useChatCanvas } from "./ChatCanvasContext";
 import {
   THREAD_DETAILS_CARD_GAP,
+  THREAD_DETAILS_CARD_WIDTH,
   resolveThreadDetailsCardDensity,
 } from "./threadDetailsCardLayout";
 import { observeResize } from "../../lib/observeResize";
 import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
+
+type MenuAnchor = "trigger" | { x: number; y: number };
 
 export function ThreadDetailsCard({
   threadRef,
   anchor,
   handle,
   contentKey,
-  onContextMenu,
+  getToggle,
+  menuItems,
   children,
 }: {
   threadRef: ScopedThreadRef;
@@ -36,7 +42,8 @@ export function ThreadDetailsCard({
   handle: ReturnType<typeof PopoverCreateHandle>;
   /** Changes when the set of rendered items changes, so cached heights are measured again. */
   contentKey: string;
-  onContextMenu?: MouseEventHandler<HTMLDivElement>;
+  getToggle?: (() => HTMLElement | null) | undefined;
+  menuItems?: ReactNode;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const { text } = useUiLanguage();
@@ -44,14 +51,7 @@ export function ThreadDetailsCard({
   const detailsArea = workspaceAreaProps("details", 3, "Thread details");
   const canvas = useChatCanvas();
   const preferredPlacement = canvas?.preferredDetailsCard ?? null;
-  const placement = preferences.pinned
-    ? {
-        right: 12,
-        y: 12,
-        width: Math.min(preferences.width, Math.max(240, (canvas?.container.width ?? 400) - 24)),
-        height: Math.max(160, (canvas?.container.height ?? 600) - 24),
-      }
-    : (canvas?.detailsCardPlacement ?? null);
+  const placement = canvas?.detailsCardPlacement ?? null;
   const mode = placement ? "inline" : "popover";
   const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
@@ -60,18 +60,27 @@ export function ThreadDetailsCard({
   const popoverOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "popover"),
   );
-  const measurementKey = `${threadRef.environmentId}:${threadRef.threadId}:${preferredPlacement?.width ?? "popup"}:${contentKey}`;
+  const showInline = mode === "inline" && (preferences.pinned ? preferences.open : inlineOpen);
+  const { environmentId, threadId } = threadRef;
+  const menuScope = `${environmentId}:${threadId}:${mode}:${showInline || popoverOpen}`;
+  const [menuState, setMenuState] = useState<{ scope: string; anchor: MenuAnchor } | null>(null);
+  const menu = menuState?.scope === menuScope ? menuState.anchor : null;
+  if (menuState && !menu) setMenuState(null);
+  const setMenu = (anchor: MenuAnchor | null) =>
+    setMenuState(anchor === null ? null : { scope: menuScope, anchor });
+  const measurementKey = `${environmentId}:${threadId}:${preferredPlacement?.width ?? "popup"}:${contentKey}`;
   const [measurements, setMeasurements] = useState({
     key: measurementKey,
     heights: { full: 0, compact: 0 },
   });
   const contentHeights =
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
-  const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
+  const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - topInset - 16);
   const density = preferences.pinned
     ? "full"
     : resolveThreadDetailsCardDensity(height, contentHeights);
   const measureDetailsCard = canvas?.measureDetailsCard;
+  const resizeDetailsCard = canvas?.resizeDetailsCard;
   const cardWidth = preferredPlacement?.width;
   // The mode derives from canvas measurements, the preview frame and the
   // inline flag, which live in three stores, so no single write site sees the
@@ -82,21 +91,24 @@ export function ThreadDetailsCard({
     if (mode === "inline" && popoverOpen)
       useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", false);
   }, [mode, popoverOpen, threadRef]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- drops the transient drag width if the resize handle unmounts during a drag
+  useLayoutEffect(() => {
+    if (mode !== "inline" || !preferences.pinned || !preferences.open) return;
+    return () => resizeDetailsCard?.(null);
+  }, [mode, preferences.pinned, preferences.open, resizeDetailsCard]);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
-  const { environmentId, threadId } = threadRef;
   // Re-measures when the density or measurement key changes, so each density's
   // height is measured once it renders.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the card's DOM height via ResizeObserver and reports it to the canvas
   useLayoutEffect(() => {
     const element = contentElement;
-    if (!element || density === "essential") return;
+    if (!element || preferences.pinned || density === "essential") return;
     const measure = () => {
       const frame = element.closest<HTMLElement>("[data-thread-details-card]");
       const next = element.offsetHeight + (frame ? frame.offsetHeight - frame.clientHeight : 0);
-      // PR lists, servers, lineage, side chats and automations scroll as they grow. Counting them
-      // toward density would hide the section and workspace controls when the user asks to see more.
+      // Expanded lists and the note editor can scroll instead of hiding workspace controls.
       const lists = element.querySelectorAll<HTMLElement>(
-        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-task-list-scroll]",
+        "[data-thread-relationships-panel], [data-thread-side-chats-panel], [data-thread-details-pr-list], [data-thread-automations-panel], [data-thread-details-server-overflow], [data-thread-task-list-scroll], [data-thread-details-note-editor]",
       );
       const fittingHeight =
         next - Array.from(lists).reduce((sum, list) => sum + list.offsetHeight, 0);
@@ -108,7 +120,7 @@ export function ThreadDetailsCard({
       });
       // Only the laid-out DOM knows the full card height, and the canvas keeps preview
       // frames clear of it, so it is reported from this measure effect.
-      if (!preferences.pinned && density === "full" && cardWidth !== undefined) {
+      if (density === "full" && cardWidth !== undefined) {
         measureDetailsCard?.({
           threadRef: { environmentId, threadId },
           width: cardWidth,
@@ -136,7 +148,23 @@ export function ThreadDetailsCard({
           "max-h-[min(calc(100dvh-6.5rem),calc(var(--available-height,100dvh)-1rem))]",
       )}
       style={placement ? { maxHeight: height } : undefined}
-      onContextMenu={onContextMenu}
+      onContextMenu={(event) => {
+        if (!menuItems) return;
+        const target = event.target;
+        const selection = window.getSelection();
+        if (
+          !(target instanceof Element) ||
+          !event.currentTarget.contains(target) ||
+          target.closest("input, textarea, [contenteditable], a[href]") ||
+          (selection &&
+            !selection.isCollapsed &&
+            (event.currentTarget.contains(selection.anchorNode) ||
+              event.currentTarget.contains(selection.focusNode)))
+        )
+          return;
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
       data-thread-details-card
     >
       <div className="flex items-center justify-between gap-2 px-3 py-2">
@@ -150,6 +178,32 @@ export function ThreadDetailsCard({
           {text("Thread details")}
         </Button>
         <div className="flex gap-1">
+          {menuItems ? (
+            <Menu open={menu !== null} onOpenChange={(open) => setMenu(open ? "trigger" : null)}>
+              <MenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={text("Choose what to show")}
+                    title={text("Choose what to show")}
+                  />
+                }
+              >
+                <SlidersHorizontalIcon />
+              </MenuTrigger>
+              <MenuPopup
+                anchor={
+                  menu && menu !== "trigger"
+                    ? { getBoundingClientRect: () => new DOMRect(menu.x, menu.y, 0, 0) }
+                    : undefined
+                }
+                align={menu === "trigger" ? "end" : "start"}
+              >
+                {menuItems}
+              </MenuPopup>
+            </Menu>
+          ) : null}
           <Button
             variant="ghost"
             size="icon-xs"
@@ -164,9 +218,11 @@ export function ThreadDetailsCard({
             size="icon-xs"
             aria-label={text("Close details panel")}
             onClick={() => {
-              preferences.setOpen(false);
-              useRightPanelStore.getState().setThreadPanelOpen(threadRef, "inline", false);
-              useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", false);
+              if (preferences.pinned) preferences.setOpen(false);
+              const store = useRightPanelStore.getState();
+              store.setThreadPanelOpen(threadRef, "inline", false);
+              store.setThreadPanelOpen(threadRef, "popover", false);
+              getToggle?.()?.focus({ preventScroll: true });
             }}
           >
             <XIcon />
@@ -196,7 +252,7 @@ export function ThreadDetailsCard({
         useRightPanelStore.getState().setThreadPanelOpen(threadRef, "popover", open);
       }}
     >
-      {placement && (preferences.pinned ? preferences.open : inlineOpen) ? (
+      {placement && showInline ? (
         <aside
           {...detailsArea}
           data-workspace-focus-key={`details:${threadRef.environmentId}:${threadRef.threadId}`}
@@ -219,15 +275,22 @@ export function ThreadDetailsCard({
               role="separator"
               aria-label={text("Resize details panel")}
               aria-orientation="vertical"
-              aria-valuenow={preferences.width}
-              aria-valuemin={280}
-              aria-valuemax={640}
+              aria-valuenow={placement.width}
+              aria-valuemin={THREAD_DETAILS_CARD_WIDTH}
+              aria-valuemax={placement.maxWidth}
               tabIndex={0}
               className="absolute -left-1 bottom-0 top-0 z-10 w-2 cursor-ew-resize touch-none"
               onKeyDown={(event) => {
                 if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
                   event.preventDefault();
-                  preferences.setWidth(preferences.width + (event.key === "ArrowLeft" ? 20 : -20));
+                  const width = Math.max(
+                    THREAD_DETAILS_CARD_WIDTH,
+                    Math.min(
+                      placement.maxWidth,
+                      placement.width + (event.key === "ArrowLeft" ? 20 : -20),
+                    ),
+                  );
+                  if (width !== placement.width) preferences.setWidth(width);
                 }
               }}
               onPointerDown={(event) => {
@@ -237,20 +300,22 @@ export function ThreadDetailsCard({
               }}
               onPointerMove={(event) => {
                 if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-                const panel = event.currentTarget.parentElement!;
-                const width = Math.max(
-                  280,
-                  Math.min(640, panel.getBoundingClientRect().right - event.clientX),
+                const right = event.currentTarget.parentElement!.getBoundingClientRect().right;
+                resizeDetailsCard?.(
+                  Math.max(
+                    THREAD_DETAILS_CARD_WIDTH,
+                    Math.min(placement.maxWidth, right - event.clientX),
+                  ),
                 );
-                panel.style.width = `${width}px`;
               }}
               onPointerUp={(event) => {
                 if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-                preferences.setWidth(
-                  event.currentTarget.parentElement!.getBoundingClientRect().width,
-                );
+                if (placement.width !== Math.min(preferences.width, placement.maxWidth)) {
+                  preferences.setWidth(placement.width);
+                }
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }}
+              onLostPointerCapture={() => resizeDetailsCard?.(null)}
             />
           ) : null}
           {card}
@@ -267,11 +332,12 @@ export function ThreadDetailsCard({
           requestWorkspaceFocus({ area: "details" });
           return false;
         }}
+        finalFocus={(interaction) => (interaction === "keyboard" ? (getToggle?.() ?? true) : true)}
         anchor={anchor}
         align="end"
         // Account for the find panel's 8px card padding.
         alignOffset={THREAD_DETAILS_CARD_GAP - 8}
-        collisionAvoidance={{ side: "shift", align: "shift", fallbackAxisSide: "none" }}
+        collisionAvoidance={{ side: "none", align: "shift", fallbackAxisSide: "none" }}
         side="bottom"
         sideOffset={topInset}
         variant="panel"

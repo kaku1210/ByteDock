@@ -12,9 +12,11 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "automations", label: "Automations", defaultVisible: true },
   { id: "lineage", label: "Lineage", defaultVisible: true },
   { id: "sideChats", label: "Side chats", defaultVisible: true },
+  { id: "note", label: "Thread note", defaultVisible: true },
   { id: "sessionUsage", label: "Thread usage", defaultVisible: true },
   { id: "usage", label: "Usage limits", defaultVisible: false },
   { id: "context", label: "Context window", defaultVisible: false },
+  { id: "tasks", label: "Task list", defaultVisible: true },
 ] as const;
 
 export type ThreadDetailsItemId = (typeof THREAD_DETAILS_ITEMS)[number]["id"];

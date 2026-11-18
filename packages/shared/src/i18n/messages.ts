@@ -1,5 +1,5 @@
 import type { UiLanguage } from "../uiLanguage.ts";
-import { COMPOSER_SHORTCUT_HINTS, DEFAULT_COMPOSER_PLACEHOLDER } from "../composerPlaceholder.ts";
+import { DEFAULT_COMPOSER_PLACEHOLDER } from "../composerPlaceholder.ts";
 import { threadMessages } from "./threadMessages.ts";
 import { settingsDetailMessages } from "./settingsDetailMessages.ts";
 import { settingsText } from "./settingsCopy.ts";
@@ -242,8 +242,7 @@ const messages = {
     DEFAULT_COMPOSER_PLACEHOLDER,
     `输入你的任务。${chineseComposerShortcutHints}`,
   ],
-  "composer.shortcutHints": [COMPOSER_SHORTCUT_HINTS, chineseComposerShortcutHints],
-  "composer.acceptSuggestion": ["Tab or click to fill the draft", "按 Tab 或点击填入草稿"],
+  "composer.acceptSuggestion": ["Use suggestion", "采用建议"],
   "composer.suggestionPreference": ["Suggestion preference", "建议倾向"],
   "composer.generateWithPreference": ["Generate with current preference", "按当前倾向生成建议"],
   "composer.suggestionPreferenceHelp": [
@@ -342,7 +341,7 @@ const messages = {
   ],
   "composer.contextTotalProcessed": ["Total processed", "累计处理量"],
   "composer.contextCost": ["Cost", "费用"],
-  "composer.contextCompact": ["Compact context", "压缩上下文"],
+  "composer.contextCompact": ["Compact now", "立即压缩"],
   "composer.contextAutoCompact": [
     "Context compacts automatically when needed.",
     "需要时会自动压缩上下文。",

@@ -352,7 +352,8 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Thread details",
     to: "/settings/appearance",
     searchTerms: [
-      "customize show hide panel card environment editor scripts branch pull request git changes servers automations lineage usage limits 5 hour weekly quota tokens context window",
+      "customize show hide panel card environment editor scripts branch pull request git changes servers automations lineage note notes 便签 usage limits 5 hour weekly quota tokens context window",
+      "side chats thread usage task list 分支会话 会话用量 任务列表",
     ],
   },
   {

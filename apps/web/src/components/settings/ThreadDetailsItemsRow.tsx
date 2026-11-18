@@ -47,10 +47,10 @@ export function ThreadDetailsItemsRow() {
               />
             }
           >
-            {enabled}
-            {uiText(" of ")}
-            {THREAD_DETAILS_ITEMS.length}
-            {uiText(" on")}
+            {uiText("{value0} of {value1} on", {
+              value0: enabled,
+              value1: THREAD_DETAILS_ITEMS.length,
+            })}
             <ChevronDownIcon aria-hidden />
           </MenuTrigger>
           <MenuPopup align="end">

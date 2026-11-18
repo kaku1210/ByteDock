@@ -5,7 +5,7 @@ import {
   Maximize2Icon,
   Minimize2Icon,
 } from "lucide-react";
-import { memo, type ReactNode, useLayoutEffect, useRef } from "react";
+import { memo, type ReactNode, type Ref, useLayoutEffect, useRef } from "react";
 
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
@@ -33,6 +33,7 @@ export interface PanelLayoutControlsProps {
   threadPanelOpen: boolean;
   threadPanelPresentation: ThreadPanelPresentation;
   threadPanelPopoverHandle?: ReturnType<typeof PopoverCreateHandle>;
+  threadPanelToggleRef?: Ref<HTMLButtonElement>;
   threadPanelShortcutLabel: string | null;
   rightPanelAvailable: boolean;
   rightPanelOpen: boolean;
@@ -54,6 +55,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   threadPanelOpen,
   threadPanelPresentation,
   threadPanelPopoverHandle,
+  threadPanelToggleRef,
   threadPanelShortcutLabel,
   rightPanelAvailable,
   rightPanelOpen,
@@ -66,6 +68,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   const { t } = useUiLanguage();
   const threadPanelToggle = (
     <Toggle
+      ref={threadPanelToggleRef}
       className="relative shrink-0 [-webkit-app-region:no-drag]"
       pressed={threadPanelOpen}
       onPressedChange={threadPanelPresentation === "popover" ? undefined : onToggleThreadPanel}
