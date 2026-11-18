@@ -22,7 +22,7 @@ were affected.
 
 Use **Add task manually** to name your own task and select its source message in the conversation. You can search loaded messages and preview a location before saving. Optionally select an execution message: clicks then alternate between the two locations. Use **Load earlier tasks** to make older messages available. Manual tasks can be edited or deleted; they are saved in the current client and do not sync to other devices.
 
-On web and desktop, **Task list** appears alongside **Thread details** in the same panel. Each section can be collapsed independently, and the toolbar button shows or hides both together. Browse the
+On web and desktop, **Task list** appears alongside **Thread details** in the same panel. Open **Choose what to show** to hide or show the list. Each section can be collapsed independently, and the toolbar button shows or hides the panel. Browse the
 agent's structured plan. Click a step to reveal its source in the conversation; click it again
 to jump to activity near its execution, when available. The list stays open as you navigate.
 Older plans are collapsed; **Load earlier tasks** brings in more conversation history.
@@ -30,6 +30,12 @@ Older plans are collapsed; **Load earlier tasks** brings in more conversation hi
 Execution locations are approximate and available only when the recorded plan identifies a
 single running step. Tasks without enough execution history keep their source link and explain
 why an execution jump is unavailable.
+
+## Thread note
+
+On web and desktop, open **Thread details** and select **Thread note** to jot down a reminder
+for that conversation. Notes save automatically in the current client. Use **Choose what to
+show** to hide or show the note.
 
 ## Hide tool calls
 

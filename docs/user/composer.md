@@ -198,8 +198,8 @@ a provider, model, and reasoning effort, then enable automatic suggestions. Open
 a conversation with a completed reply and an empty composer can make one model request
 using an excerpt of that turn. Devices connected to the same environment share the pending
 request and its result; completed results are cached for ten minutes. Reopening the turn
-fetches the host's current result. Press **Tab** or click a suggestion to fill the draft,
-then review it and send it when ready.
+fetches the host's current result. Click the suggestion text to type your own message.
+Press **Tab** or click **Use suggestion** to fill the draft with the full suggestion.
 
 The next-prompt control stays visible before the model picker. It dims while a reply is
 running or the draft is busy, spins during generation, and shows a check when a suggestion
@@ -386,8 +386,9 @@ Earlier messages and diffs stay in the thread. Dismiss the notice above the
 composer to keep the current session instead.
 
 On web and desktop, turn on **Context window** in **Settings → Appearance →
-Thread details** to see context usage in the thread details card. It appears
-once the provider reports usage.
+Thread details**. Click the **Context** row in the card to see token counts and
+the model's limit. In an idle conversation with a provider that supports manual
+compaction, choose **Compact now** to run it immediately and keep your draft.
 
 Claude instances can also compact idle threads for you. See
 [compact long conversations](./providers-claude.md#compact-long-conversations).

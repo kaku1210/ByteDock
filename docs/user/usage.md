@@ -233,9 +233,9 @@ anything. The command is offered only for providers that appear under **Usage �
 To keep them in view on web and desktop, turn on **Usage limits** in **Settings → Appearance → Thread details**, or right-click the thread details card.
 The bottom of the thread details card then shows how much is left in each limit window of the
 current provider account. Some windows, such as a weekly Opus limit, count only one model. Hover a
-row to see when it resets and your pace. The composer always shows the thread's
-context use against the model's limit. Hover the ring for full token counts and the provider's
-automatic compaction threshold, when reported.
+row to see when it resets and your pace. Enable **Context window** in the same menu
+and click the **Context** row for full token counts and the provider's automatic
+compaction threshold, when reported.
 
 OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
 the environment. T3 cannot report limits for external OpenCode servers because their credentials
