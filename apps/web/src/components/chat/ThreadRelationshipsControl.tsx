@@ -68,6 +68,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import {
+  readThreadProjection,
   useProjects,
   useQuietThreadProjection,
   useQuietThreadShell,
@@ -738,15 +739,31 @@ export function ThreadRelationshipsPanel(props: {
     }
     const reportKind = activeChildRun !== null ? ("interim" as const) : ("final" as const);
     const targetRun = activeChildRun ?? latestCompletedChildRun;
-    const latestAssistant = projection?.messages.findLast(
+    const fullProjection = readThreadProjection(ref)?.projection ?? null;
+    const latestAssistantMessage = (fullProjection?.messages ?? projection?.messages)?.findLast(
       (msg) =>
         msg.role === "assistant" &&
         (targetRun === null || msg.runId === targetRun.id) &&
         msg.text.trim().length > 0,
     );
+    const latestAssistantTurnItem =
+      latestAssistantMessage !== undefined
+        ? undefined
+        : fullProjection?.turnItems.findLast(
+            (item) =>
+              item.type === "assistant_message" &&
+              (targetRun === null || item.runId === targetRun.id) &&
+              typeof item.text === "string" &&
+              item.text.trim().length > 0,
+          );
+    const latestAssistantText =
+      latestAssistantMessage?.text.trim() ??
+      (latestAssistantTurnItem?.type === "assistant_message"
+        ? latestAssistantTurnItem.text.trim()
+        : undefined);
     const childLabel = currentThread?.title?.trim() || props.threadId;
     const body =
-      latestAssistant?.text.trim() ??
+      latestAssistantText ??
       (reportKind === "interim"
         ? `Subtask "${childLabel}" is currently in progress (${activeChildRun?.status ?? "running"}).`
         : `Subtask "${childLabel}" finished (${latestCompletedChildRun?.status ?? "completed"}).`);

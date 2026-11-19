@@ -49,7 +49,8 @@ export default function SideChatPane(props: {
     [parentRef, threadId],
   );
   const shell = useQuietThreadShell(threadRef);
-  const rootThreadId = shell?.lineage.parentThreadId ?? parentRef.threadId;
+  const rootThreadId =
+    shell?.lineage.rootThreadId ?? shell?.lineage.parentThreadId ?? parentRef.threadId;
   const rootShell = useQuietThreadShell(scopeThreadRef(parentRef.environmentId, rootThreadId));
   const temporary = shell?.lineage.temporary === true;
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);

@@ -302,7 +302,7 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useSideChat } from "./chat/useSideChat";
-import { canSplitSubtaskFromThread, useSubtask } from "./chat/useSubtask";
+import { useCanSplitSubtaskFromThread, useSubtask } from "./chat/useSubtask";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
 import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
@@ -2880,6 +2880,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.worktreePath ?? null,
     serverProjection?.runs ?? [],
   );
+  const canSplitSubtask = useCanSplitSubtaskFromThread(activeThreadRef);
   const subtasksOffered =
     !embedded &&
     canOperateThread &&
@@ -2888,11 +2889,16 @@ export default function ChatView(props: ChatViewProps) {
     delegatedFrom === null &&
     serverConfig?.environment.capabilities.subtasks === true &&
     !subtaskWorktreePending &&
-    canSplitSubtaskFromThread(activeThreadRef);
+    canSplitSubtask;
   const subtask = useSubtask({
     threadRef: subtasksOffered ? activeThreadRef : null,
     resolveRunIdForMessage: (messageId) =>
       serverProjection?.messages.find((candidate) => candidate.id === messageId)?.runId ??
+      serverProjection?.turnItems.find(
+        (item) =>
+          item.type === "assistant_message" &&
+          (item.messageId === messageId || String(item.id) === String(messageId)),
+      )?.runId ??
       undefined,
     readSettings: () => ({
       runtimeMode,

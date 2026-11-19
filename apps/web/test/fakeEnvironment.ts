@@ -70,7 +70,12 @@ const descriptor = {
   // A matching version, since a mismatch adds an update banner a typical user never sees.
   serverVersion: APP_VERSION,
   orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-  capabilities: { repositoryIdentity: true, sideChats: true, temporarySideChats: true },
+  capabilities: {
+    repositoryIdentity: true,
+    sideChats: true,
+    temporarySideChats: true,
+    subtasks: true,
+  },
 };
 const auth = {
   policy: "loopback-browser",
@@ -224,6 +229,10 @@ function run(
 export interface FakeThread {
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
+  /** Makes this a persistent subtask of that thread. */
+  readonly subtaskOf?: ThreadId;
+  /** Explicit task-tree root when deeper than one hop (e.g. L2 -> L1 -> L0). */
+  readonly rootThreadId?: ThreadId;
   readonly temporary?: boolean;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
   readonly olderSettled?: true;
@@ -236,6 +245,7 @@ export interface FakeThread {
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
   readonly runtimeRequests?: OrchestrationV2ThreadProjection["runtimeRequests"];
+  readonly contextTransfers?: OrchestrationV2ThreadProjection["contextTransfers"];
 }
 
 /** A thread of `turns` user prompts, each answered in markdown with a list and inline code. */
@@ -309,6 +319,8 @@ export function threadWithQuestion(name: string, question: string): FakeThread {
 function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const latest = thread.runs.at(-1);
   const modelSelection = thread.modelSelection ?? MODEL;
+  const parentThreadId = thread.sideChatOf ?? thread.subtaskOf ?? null;
+  const rootThreadId = thread.rootThreadId ?? parentThreadId ?? thread.id;
   return {
     id: thread.id,
     projectId: PROJECT_ID,
@@ -321,9 +333,9 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     worktreePath: null,
     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
     lineage: {
-      rootThreadId: thread.sideChatOf ?? thread.id,
-      parentThreadId: thread.sideChatOf ?? null,
-      relationshipToParent: null,
+      rootThreadId,
+      parentThreadId,
+      relationshipToParent: thread.subtaskOf ? "subtask" : thread.sideChatOf ? "fork" : null,
       ...(thread.sideChatOf ? { sideChat: true } : {}),
       ...(thread.temporary ? { temporary: true } : {}),
     },
@@ -399,7 +411,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
     checkpointScopes: [],
     checkpoints: [],
     contextHandoffs: [],
-    contextTransfers: [],
+    contextTransfers: [...(thread.contextTransfers ?? [])],
     visibleTurnItems,
     updatedAt: AT,
   };
@@ -504,8 +516,13 @@ const handlers: Record<string, (input: never) => unknown> = {
       },
     );
   },
+  [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input: { readonly threadId: ThreadId }) => {
+    const thread = threads.find((candidate) => candidate.id === input.threadId);
+    return thread ? Effect.succeed(projectionOf(thread)) : Effect.never;
+  },
   [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: (input: { readonly threadId: ThreadId }) => {
-    const rootOf = (thread: FakeThread) => thread.sideChatOf ?? thread.id;
+    const rootOf = (thread: FakeThread) =>
+      thread.rootThreadId ?? thread.sideChatOf ?? thread.subtaskOf ?? thread.id;
     const requested = threads.find((candidate) => candidate.id === input.threadId);
     return Effect.succeed({
       snapshotSequence: sequence,
@@ -610,6 +627,21 @@ export function installFakeEnvironment(
     })),
   ];
   holdCommand = options?.holdCommand ?? (() => false);
+  if (shellSubscriber !== null) {
+    sequence += 1;
+    Effect.runSync(
+      Queue.offer(shellSubscriber, {
+        kind: "snapshot",
+        snapshot: {
+          schemaVersion: 1,
+          snapshotSequence: sequence,
+          projects,
+          threads: threads.filter((candidate) => !candidate.olderSettled).map(shellOf),
+          archivedThreads: [],
+        },
+      }),
+    );
+  }
   const suggestPrompt = options?.suggestPrompt;
   if (suggestPrompt) {
     baseServerConfig = {

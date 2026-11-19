@@ -944,6 +944,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     markThreadUnread,
     archiveThread,
     deleteThread,
+    confirmAndDeleteThread,
   } = useThreadActions();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -2878,19 +2879,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "delete": {
-            if (confirmThreadDelete) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  [
-                    t("thread.actions.confirmDelete", { title: thread.title }),
-                    t("thread.actions.deleteEffect"),
-                  ].join("\n"),
-                  { variant: "destructive" },
-                ),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            const result = await deleteThread(threadRef);
+            const result = await confirmAndDeleteThread(threadRef, thread.title);
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               const error = squashAtomCommandFailure(result);
               toastManager.add(

@@ -203,6 +203,34 @@ export async function navigateAfterThreadDeletion(navigate: () => Promise<void>)
   }
 }
 
+function collectTaskDescendants(target: ScopedThreadRef) {
+  const shells = readThreadShells().filter(
+    (shell) => shell.environmentId === target.environmentId && shell.deletedAt === null,
+  );
+  const byParent = new Map<ThreadId, Array<(typeof shells)[number]>>();
+  for (const shell of shells) {
+    const parentId = shell.lineage.parentThreadId;
+    if (parentId === null) continue;
+    if (shell.lineage.sideChat !== true && !isTaskChildLineage(shell.lineage)) continue;
+    const list = byParent.get(parentId) ?? [];
+    list.push(shell);
+    byParent.set(parentId, list);
+  }
+  const descendants: Array<(typeof shells)[number]> = [];
+  const seen = new Set<ThreadId>([target.threadId]);
+  const queue: Array<ThreadId> = [target.threadId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const child of byParent.get(current) ?? []) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      descendants.push(child);
+      queue.push(child.id);
+    }
+  }
+  return descendants;
+}
+
 function useMarkThreadUnread() {
   const markThreadUnreadMutation = useAtomCommand(threadEnvironment.markUnread, {
     reportFailure: false,
@@ -503,12 +531,11 @@ export function useThreadActions() {
             }),
           )
         : undefined;
-    // Deleting a thread also deletes its side chats, which share its worktree.
+    const cascadeDescendants = collectTaskDescendants(threadRef);
+    // Deleting a thread also deletes its task-tree descendants and side chats, which share its worktree.
     const removedIds = new Set<ThreadId>(deletedIds);
-    for (const entry of threads) {
-      if (entry.lineage.sideChat === true && entry.lineage.parentThreadId === threadRef.threadId) {
-        removedIds.add(entry.id);
-      }
+    for (const descendant of cascadeDescendants) {
+      removedIds.add(descendant.id);
     }
     const survivingThreads = threads.filter(
       (entry) => entry.id === threadRef.threadId || !removedIds.has(entry.id),
@@ -584,7 +611,7 @@ export function useThreadActions() {
       });
     }
 
-    const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
+    const deletedThreadIds = new Set<ThreadId>(removedIds);
     const currentRouteThreadRef = getCurrentRouteThreadRef();
     const shouldNavigateToFallback =
       currentRouteThreadRef?.threadId === threadRef.threadId &&
@@ -614,14 +641,13 @@ export function useThreadActions() {
     refreshArchivedThreadsForEnvironment(threadRef.environmentId);
     clearThreadLocalData(threadRef);
     forgetTemporaryChat(threadRef);
-    // The server deletes the thread's side chats with it.
-    for (const entry of threads) {
-      if (entry.lineage.sideChat !== true || entry.lineage.parentThreadId !== threadRef.threadId) {
-        continue;
-      }
-      const sideChatRef = scopeThreadRef(threadRef.environmentId, entry.id);
-      clearThreadLocalData(sideChatRef);
-      forgetTemporaryChat(sideChatRef);
+    // The server deletes the thread's task-tree descendants and side chats with it.
+    for (const descendant of cascadeDescendants) {
+      const descendantRef = scopeThreadRef(threadRef.environmentId, descendant.id);
+      clearThreadLocalData(descendantRef);
+      forgetTemporaryChat(descendantRef);
+      clearTerminalUiState(descendantRef);
+      clearDeletedThreadPanelState(descendantRef);
     }
     clearProjectDraftThreadById(
       scopeProjectRef(threadRef.environmentId, thread.projectId),
@@ -985,34 +1011,6 @@ export function useThreadActions() {
       },
       (result) => result._tag === "Success",
     );
-
-  const collectTaskDescendants = (target: ScopedThreadRef) => {
-    const shells = readThreadShells().filter(
-      (shell) => shell.environmentId === target.environmentId && shell.deletedAt === null,
-    );
-    const byParent = new Map<ThreadId, Array<(typeof shells)[number]>>();
-    for (const shell of shells) {
-      const parentId = shell.lineage.parentThreadId;
-      if (parentId === null) continue;
-      if (shell.lineage.sideChat !== true && !isTaskChildLineage(shell.lineage)) continue;
-      const list = byParent.get(parentId) ?? [];
-      list.push(shell);
-      byParent.set(parentId, list);
-    }
-    const descendants: Array<(typeof shells)[number]> = [];
-    const seen = new Set<ThreadId>([target.threadId]);
-    const queue: Array<ThreadId> = [target.threadId];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      for (const child of byParent.get(current) ?? []) {
-        if (seen.has(child.id)) continue;
-        seen.add(child.id);
-        descendants.push(child);
-        queue.push(child.id);
-      }
-    }
-    return descendants;
-  };
 
   const confirmAndDeleteThread = async (target: ScopedThreadRef, knownTitle?: string) => {
     const permissionFailure = threadOperationFailure(target);

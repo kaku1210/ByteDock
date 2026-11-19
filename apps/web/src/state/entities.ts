@@ -336,6 +336,11 @@ export function readThreadTurnItems(ref: ScopedThreadRef) {
   );
 }
 
+/** Full thread projection read once on demand (e.g. for actions needing assistant message text). */
+export function readThreadProjection(ref: ScopedThreadRef): EnvironmentThread | null {
+  return appAtomRegistry.get(environmentThreadDetails.threadAtom(ref));
+}
+
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
@@ -418,11 +423,37 @@ export function selectThreadRelationshipShells(
       named.add(transfer.targetThreadId);
     }
   }
-  const current = threads.find((thread) => thread.id === threadId);
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const current = byId.get(threadId);
   const currentParentId = current === undefined ? null : shellParentThreadId(current);
   if (currentParentId !== null) named.add(currentParentId);
+
+  // Walk task-tree ancestors so L1/L2 subtasks resolve L0 and its root-scoped side chats.
+  let ancestorId: ThreadId | null =
+    projection?.thread.lineage.parentThreadId ?? current?.lineage.parentThreadId ?? null;
+  let rootThreadId: ThreadId =
+    projection?.thread.lineage.rootThreadId ?? current?.lineage.rootThreadId ?? threadId;
+  const seenAncestors = new Set<ThreadId>([threadId]);
+  while (ancestorId !== null && !seenAncestors.has(ancestorId)) {
+    seenAncestors.add(ancestorId);
+    named.add(ancestorId);
+    const ancestor = byId.get(ancestorId);
+    if (ancestor === undefined) break;
+    rootThreadId = ancestor.lineage.rootThreadId;
+    ancestorId = shellParentThreadId(ancestor);
+  }
+  named.add(rootThreadId);
+
+  const includeRootSideChats =
+    (projection?.thread.lineage.sideChat ?? current?.lineage.sideChat) !== true;
   return threads.filter(
-    (thread) => named.has(thread.id) || shellParentThreadId(thread) === threadId,
+    (thread) =>
+      named.has(thread.id) ||
+      shellParentThreadId(thread) === threadId ||
+      (includeRootSideChats &&
+        thread.lineage.sideChat === true &&
+        (shellParentThreadId(thread) === rootThreadId ||
+          thread.lineage.rootThreadId === rootThreadId)),
   );
 }
 

@@ -23,37 +23,38 @@ import { newThreadId, randomUUID } from "~/lib/utils";
 import { formatAssistantCitationForComposer } from "../../composer-logic";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { readThreadShell, waitForThreadShell } from "../../state/entities";
+import { readThreadShell, useQuietThreadShell, waitForThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 
-function readTaskTreeDepth(threadRef: ScopedThreadRef | null): number {
-  if (threadRef === null) return 0;
-  let depth = 0;
-  const seen = new Set<ThreadId>([threadRef.threadId]);
-  let current = readThreadShell(threadRef);
-  while (
-    current !== null &&
-    isTaskChildLineage(current.lineage) &&
-    current.lineage.parentThreadId !== null &&
-    depth <= MAX_TASK_TREE_DEPTH
-  ) {
-    depth += 1;
-    const parentId = current.lineage.parentThreadId;
-    if (seen.has(parentId)) break;
-    seen.add(parentId);
-    current = readThreadShell(scopeThreadRef(threadRef.environmentId, parentId));
+/** Reactive task-tree depth guard for UI affordances (blocks L2+ and side chats). */
+export function useCanSplitSubtaskFromThread(threadRef: ScopedThreadRef | null): boolean {
+  const shell = useQuietThreadShell(threadRef);
+  const parentRef =
+    threadRef !== null &&
+    shell !== null &&
+    isTaskChildLineage(shell.lineage) &&
+    shell.lineage.parentThreadId !== null
+      ? scopeThreadRef(threadRef.environmentId, shell.lineage.parentThreadId)
+      : null;
+  const parentShell = useQuietThreadShell(parentRef);
+  if (threadRef === null || shell === null || shell.lineage.sideChat === true) return false;
+  if (!isTaskChildLineage(shell.lineage) || shell.lineage.parentThreadId === null) {
+    return true;
   }
-  return depth;
-}
-
-export function canSplitSubtaskFromThread(threadRef: ScopedThreadRef | null): boolean {
-  if (threadRef === null) return false;
-  const shell = readThreadShell(threadRef);
-  if (shell === null || shell.lineage.sideChat === true) return false;
-  return readTaskTreeDepth(threadRef) < MAX_TASK_TREE_DEPTH;
+  if (shell.lineage.rootThreadId !== shell.lineage.parentThreadId) {
+    return false;
+  }
+  if (
+    parentShell !== null &&
+    isTaskChildLineage(parentShell.lineage) &&
+    parentShell.lineage.parentThreadId !== null
+  ) {
+    return false;
+  }
+  return MAX_TASK_TREE_DEPTH > 1;
 }
 
 interface PendingSplitIntent {
