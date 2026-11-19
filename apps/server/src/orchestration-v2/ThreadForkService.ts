@@ -8,6 +8,7 @@ import {
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurnTokenUsage,
   OrchestrationV2Run,
+  OrchestrationV2SubtaskSourceAnchor,
   OrchestrationV2ThreadProjection,
   ThreadId,
 } from "@t3tools/contracts";
@@ -51,7 +52,7 @@ export function forkableSourceRunStatusError(
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
-    /** Null only for a side chat whose parent has no stable run yet. */
+    /** Null only for a side chat or subtask whose parent has no stable run yet. */
     readonly sourceRun: OrchestrationV2Run | null;
     readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
     readonly sourceTokenUsage?: OrchestrationV2ProviderTurnTokenUsage | undefined;
@@ -61,6 +62,8 @@ export interface ThreadForkServiceV2Shape {
     readonly title?: string;
     readonly sideChat?: boolean;
     readonly temporary?: boolean;
+    readonly subtask?: boolean;
+    readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
@@ -78,11 +81,32 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
     plan: Effect.fn("ThreadForkService.plan")(function* (input) {
       const { sourceRun } = input;
       const sourceLineage = input.sourceProjection.thread.lineage;
+      if (input.subtask && input.sideChat) {
+        return yield* new ThreadForkPlanError({
+          sourceThreadId: input.sourceProjection.thread.id,
+          targetThreadId: input.targetThreadId,
+          cause: "A thread cannot be both a side chat and a subtask.",
+        });
+      }
+      if (input.subtask && input.temporary) {
+        return yield* new ThreadForkPlanError({
+          sourceThreadId: input.sourceProjection.thread.id,
+          targetThreadId: input.targetThreadId,
+          cause: "Subtasks cannot be temporary.",
+        });
+      }
       if (input.temporary && !input.sideChat) {
         return yield* new ThreadForkPlanError({
           sourceThreadId: input.sourceProjection.thread.id,
           targetThreadId: input.targetThreadId,
           cause: "Only side chats can be temporary.",
+        });
+      }
+      if (input.subtask && sourceLineage.sideChat) {
+        return yield* new ThreadForkPlanError({
+          sourceThreadId: input.sourceProjection.thread.id,
+          targetThreadId: input.targetThreadId,
+          cause: "A side chat cannot start a subtask.",
         });
       }
       // A task a linked environment delegated here is a subagent of a remote thread.
@@ -100,7 +124,11 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
             : "A subagent cannot start a side chat.",
         });
       }
-      if (sourceRun !== null && !isForkableSourceRunStatus(sourceRun.status)) {
+      if (
+        sourceRun !== null &&
+        !isForkableSourceRunStatus(sourceRun.status) &&
+        !(input.subtask && (sourceRun.status === "running" || sourceRun.status === "starting"))
+      ) {
         return yield* new ThreadForkPlanError({
           sourceThreadId: input.sourceProjection.thread.id,
           targetThreadId: input.targetThreadId,
@@ -108,7 +136,35 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         });
       }
       // The remote parent delegated the source thread, not its forks.
-      const { delegatedFrom: _delegatedFrom, ...inherited } = input.sourceProjection.thread;
+      const {
+        delegatedFrom: _delegatedFrom,
+        sourceAnchor: _sourceAnchor,
+        ...inherited
+      } = input.sourceProjection.thread;
+      const resolvedSourceAnchor: OrchestrationV2SubtaskSourceAnchor | undefined = input.subtask
+        ? {
+            sourceThreadId: input.sourceAnchor?.sourceThreadId ?? input.sourceProjection.thread.id,
+            ...(input.sourceAnchor?.sourceRunId !== undefined
+              ? { sourceRunId: input.sourceAnchor.sourceRunId }
+              : sourceRun !== null
+                ? { sourceRunId: sourceRun.id }
+                : {}),
+            ...(input.sourceAnchor?.sourceMessageId !== undefined
+              ? { sourceMessageId: input.sourceAnchor.sourceMessageId }
+              : {}),
+            ...(input.sourceAnchor?.sourceTurnItemId !== undefined
+              ? { sourceTurnItemId: input.sourceAnchor.sourceTurnItemId }
+              : {}),
+            ...(input.sourceAnchor?.sourceOrdinal !== undefined
+              ? { sourceOrdinal: input.sourceAnchor.sourceOrdinal }
+              : sourceRun !== null
+                ? { sourceOrdinal: sourceRun.ordinal }
+                : {}),
+            ...(input.sourceAnchor?.excerpt !== undefined
+              ? { excerpt: input.sourceAnchor.excerpt }
+              : {}),
+          }
+        : undefined;
       const targetThread: OrchestrationV2AppThread = {
         ...inherited,
         // PR context follows the conversation; watching remains the source thread's responsibility.
@@ -118,19 +174,22 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         createdBy: input.createdBy,
         creationSource: input.creationSource,
         id: input.targetThreadId,
-        title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+        title:
+          input.title ??
+          (input.subtask ? "New subtask" : `${input.sourceProjection.thread.title} fork`),
         // The source's title job completes only on the source thread.
         titleRegeneration: null,
         activeProviderThreadId: null,
         lineage: {
           parentThreadId: input.sourceProjection.thread.id,
-          relationshipToParent: "fork",
+          relationshipToParent: input.subtask ? "subtask" : "fork",
           rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           ...(input.sideChat ? { sideChat: true } : {}),
           ...(input.temporary ? { temporary: true } : {}),
         },
+        ...(resolvedSourceAnchor === undefined ? {} : { sourceAnchor: resolvedSourceAnchor }),
         forkedFrom:
-          sourceRun === null
+          input.subtask || sourceRun === null
             ? null
             : { type: "run", threadId: input.sourceProjection.thread.id, runId: sourceRun.id },
         createdAt: input.createdAt,
@@ -161,8 +220,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         basePoint: null,
         sourceProviderInstanceId:
           sourceRun?.providerInstanceId ?? input.sourceProjection.thread.providerInstanceId,
-        // Only native forks retain this context; portable handoffs rebuild it.
+        // Only native forks retain this context; portable handoffs and subtasks rebuild it.
         sourceTokenUsage:
+          !input.subtask &&
           (sourceRun?.status === "completed" || sourceRun?.status === "waiting") &&
           input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
             ? input.sourceTokenUsage
@@ -173,7 +233,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         resolution: null,
         createdBy: input.createdBy,
         error:
-          input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
+          input.subtask || input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
             ? null
             : "Source provider thread does not expose a strong native thread ref.",
         createdAt: input.createdAt,

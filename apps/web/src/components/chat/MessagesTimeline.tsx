@@ -236,6 +236,7 @@ interface MessagesTimelineProps {
   ) => boolean;
   onReplyToResponse?: TimelineRowSharedState["onReplyToResponse"];
   onSlidCiteAssistantText?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
+  onSplitSubtaskAssistantText?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
   isWorking: boolean;
   runlessWorkActive?: boolean;
   activeTurnStartedAt?: string | null;
@@ -372,6 +373,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
   onSlidCiteAssistantText,
+  onSplitSubtaskAssistantText,
   onReplyToResponse,
   isWorking,
   runlessWorkActive = false,
@@ -1497,6 +1499,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 threadRef={citationThreadRef}
                 onCite={onCiteAssistantText}
                 onSlidCite={onSlidCiteAssistantText}
+                onSplitSubtask={onSplitSubtaskAssistantText}
               />
             ) : null}
             <LegendList<MessagesTimelineRow>

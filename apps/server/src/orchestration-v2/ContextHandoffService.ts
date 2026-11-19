@@ -1,6 +1,7 @@
 import {
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
+  type OrchestrationV2SubtaskSourceAnchor,
   type OrchestrationV2TurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
@@ -90,6 +91,22 @@ export interface ContextHandoffServiceV2Shape {
   readonly prepareSideChatContext: (input: {
     readonly threadId: ThreadId;
     readonly parentThreadId: ThreadId;
+    readonly targetRunId: RunId;
+    readonly transferId: NonNullable<OrchestrationV2ContextHandoff["transferId"]>;
+    readonly toProviderThreadId: ProviderThreadId;
+    readonly fromProviderInstanceId: ProviderInstanceId;
+    readonly toProviderInstanceId: ProviderInstanceId;
+    readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+    readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    readonly createdAt: DateTime.Utc;
+  }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
+  /** Budgeted structured skeleton from parent cutoff, lazily prepended on subtask's first turn. */
+  readonly prepareSubtaskContext: (input: {
+    readonly threadId: ThreadId;
+    readonly parentThreadId: ThreadId;
+    readonly parentTitle: string;
+    readonly parentGoal?: string | null | undefined;
+    readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
     readonly targetRunId: RunId;
     readonly transferId: NonNullable<OrchestrationV2ContextHandoff["transferId"]>;
     readonly toProviderThreadId: ProviderThreadId;
@@ -282,9 +299,69 @@ export function makeSideChatContext(input: {
   ].join("\n");
 }
 
-/** Side chat context is prepended to the provider prompt, never replayed as budgeted history. */
+/** Side chat and subtask inline contexts are prepended verbatim, never replayed as history. */
 export const isSideChatContextHandoff = (handoff: OrchestrationV2ContextHandoff): boolean =>
   handoff.strategy === "manual_context" && handoff.transferId != null;
+
+const SUBTASK_CONTEXT_MAX_CHARS = 8_000;
+
+/** Budgeted structured skeleton from the parent cutoff, never framed as a read-only side chat. */
+function makeSubtaskContext(input: {
+  readonly parentThreadId: ThreadId;
+  readonly parentTitle: string;
+  readonly parentGoal?: string | null | undefined;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
+  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+  readonly digest: ReadonlyArray<string | OrchestrationV2TurnItem>;
+}): string {
+  const framing = `You are working in a dedicated subtask branched from parent thread ${input.parentThreadId}. Proceed with the user's instructions for this subtask; coordinate carefully if the parent shares this workspace.`;
+  const cutoffParts = [
+    input.sourceAnchor?.sourceRunId ? `run=${input.sourceAnchor.sourceRunId}` : null,
+    input.sourceAnchor?.sourceOrdinal !== undefined
+      ? `ordinal=${input.sourceAnchor.sourceOrdinal}`
+      : input.coveredRunOrdinals.to > 0
+        ? `runs=${input.coveredRunOrdinals.from}-${input.coveredRunOrdinals.to}`
+        : null,
+    input.sourceAnchor?.sourceMessageId ? `message=${input.sourceAnchor.sourceMessageId}` : null,
+  ].filter((part): part is string => part !== null);
+  const metadataLines = [
+    `Parent thread: ${compactText(input.parentTitle, 140)} (${input.parentThreadId})`,
+    ...(cutoffParts.length > 0 ? [`Source cutoff: ${cutoffParts.join(", ")}`] : []),
+    ...(input.parentGoal && input.parentGoal.trim().length > 0
+      ? [`Parent goal: ${compactText(input.parentGoal, 320)}`]
+      : []),
+    ...(input.sourceAnchor?.excerpt
+      ? [`Selected excerpt: ${compactText(input.sourceAnchor.excerpt, 600)}`]
+      : []),
+  ];
+  const header = "Parent context up to source cutoff:";
+  const truncated = "- Earlier items truncated.";
+  const footer = `Use t3_thread_read({ threadId: "${input.parentThreadId}", view: "activity" }) to inspect full parent history or later updates.`;
+  const kept: Array<string> = [];
+  let omitted = false;
+  let remaining =
+    SUBTASK_CONTEXT_MAX_CHARS -
+    [framing, "", ...metadataLines, "", header, truncated, "", footer].join("\n").length;
+  for (let index = input.digest.length - 1; index >= 0; index--) {
+    const item = input.digest[index]!;
+    const line = typeof item === "string" ? item : summarizeDeltaItem(item);
+    if (line === null) continue;
+    if (line.length + 1 > remaining) {
+      omitted = true;
+      break;
+    }
+    kept.unshift(line);
+    remaining -= line.length + 1;
+  }
+  return [
+    framing,
+    "",
+    ...metadataLines,
+    ...(kept.length === 0 ? [] : ["", header, ...(omitted ? [truncated] : []), ...kept]),
+    "",
+    footer,
+  ].join("\n");
+}
 
 function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>): string {
   const sections = items.flatMap((item) => {
@@ -609,11 +686,58 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       } satisfies OrchestrationV2ContextHandoff;
     });
 
+    const prepareSubtaskContext = Effect.fn("orchestrationV2.contextHandoff.prepareSubtaskContext")(
+      function* (input: Parameters<ContextHandoffServiceV2Shape["prepareSubtaskContext"]>[0]) {
+        const handoffId = yield* idAllocator.allocate
+          .contextHandoff({
+            threadId: input.threadId,
+            fromProviderInstanceId: input.fromProviderInstanceId,
+            toProviderInstanceId: input.toProviderInstanceId,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ContextHandoffPrepareError({
+                  threadId: input.threadId,
+                  targetRunId: input.targetRunId,
+                  fromProviderThreadIds: [],
+                  toProviderThreadId: input.toProviderThreadId,
+                  cause,
+                }),
+            ),
+          );
+        return {
+          id: handoffId,
+          transferId: input.transferId,
+          threadId: input.threadId,
+          targetRunId: input.targetRunId,
+          fromProviderThreadIds: [],
+          toProviderThreadId: input.toProviderThreadId,
+          coveredRunOrdinals: input.coveredRunOrdinals,
+          strategy: "manual_context",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: makeSubtaskContext({
+            parentThreadId: input.parentThreadId,
+            parentTitle: input.parentTitle,
+            parentGoal: input.parentGoal,
+            sourceAnchor: input.sourceAnchor,
+            coveredRunOrdinals: input.coveredRunOrdinals,
+            digest: input.parentItems,
+          }),
+          createdByProviderInstanceId: null,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        } satisfies OrchestrationV2ContextHandoff;
+      },
+    );
+
     return ContextHandoffServiceV2.of({
       prepareLegacyImport,
       prepareForkDelta,
       prepareProviderHandoff,
       prepareSideChatContext,
+      prepareSubtaskContext,
     });
   },
 );

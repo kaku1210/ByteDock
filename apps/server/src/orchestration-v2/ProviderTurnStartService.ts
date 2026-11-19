@@ -463,19 +463,20 @@ export const layer: Layer.Layer<
                         (isCompactionCommandMessage(message) || parseGoalCommand(message) !== null),
                     ))),
             )));
-      const isSideChatHandoff = (handoff: OrchestrationV2ContextHandoff) =>
-        projection.thread.lineage.sideChat === true &&
+      const isInlineManualContextHandoff = (handoff: OrchestrationV2ContextHandoff) =>
+        (projection.thread.lineage.sideChat === true ||
+          projection.thread.lineage.relationshipToParent === "subtask") &&
         ContextHandoffService.isSideChatContextHandoff(handoff);
       const handoffs = projection.contextHandoffs.filter(
         (handoff) =>
-          !isSideChatHandoff(handoff) &&
+          !isInlineManualContextHandoff(handoff) &&
           (handoff.transferId == null || !subagentResultTransfers.has(handoff.transferId)) &&
           isPendingForRun(handoff),
       );
       // Carried forward until a provider turn accepts it, also after a provider switch.
       const sideChatHandoff = projection.contextHandoffs.find(
         (handoff) =>
-          isSideChatHandoff(handoff) &&
+          isInlineManualContextHandoff(handoff) &&
           handoff.delivery === undefined &&
           isPendingForRun(handoff, true),
       );

@@ -3538,6 +3538,8 @@ export const OrchestrationV2Command = Schema.Union([
     title: Schema.optional(TrimmedNonEmptyString),
     sideChat: Schema.optional(Schema.Boolean),
     temporary: Schema.optional(Schema.Boolean),
+    subtask: Schema.optional(Schema.Boolean),
+    sourceAnchor: Schema.optional(OrchestrationV2SubtaskSourceAnchor),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

@@ -13,6 +13,7 @@ import {
   type NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2SubtaskSourceAnchor,
   type PlanId,
   type ProjectId,
   type ProjectIconOverride,
@@ -244,6 +245,14 @@ export interface ForkSideChatInput extends CommandMetadata {
   readonly targetThreadId: ThreadId;
   readonly title?: string;
   readonly temporary?: boolean;
+}
+
+export interface CreateSubtaskInput extends CommandMetadata {
+  readonly sourceThreadId: ThreadId;
+  readonly targetThreadId: ThreadId;
+  readonly runId?: RunId;
+  readonly title?: string;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor;
 }
 
 export interface MergeThreadBackInput extends CommandMetadata {
@@ -1097,6 +1106,25 @@ export const forkSideChat = Effect.fn("EnvironmentCommands.forkSideChat")(functi
     sourcePoint: { type: "latest_stable" },
     sideChat: true,
     ...(input.temporary ? { temporary: true } : {}),
+    ...(input.title === undefined ? {} : { title: input.title }),
+  });
+});
+
+/** Creates a persistent subtask anchored at a parent run or latest stable cutoff without starting a run. */
+export const createSubtask = Effect.fn("EnvironmentCommands.createSubtask")(function* (
+  input: CreateSubtaskInput,
+) {
+  return yield* dispatch({
+    type: "thread.fork",
+    commandId: yield* allocateCommandId(input),
+    createdBy: "user",
+    creationSource: input.creationSource ?? "web",
+    sourceThreadId: input.sourceThreadId,
+    targetThreadId: input.targetThreadId,
+    sourcePoint:
+      input.runId === undefined ? { type: "latest_stable" } : { type: "run", runId: input.runId },
+    subtask: true,
+    ...(input.sourceAnchor === undefined ? {} : { sourceAnchor: input.sourceAnchor }),
     ...(input.title === undefined ? {} : { title: input.title }),
   });
 });

@@ -300,6 +300,7 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useSideChat } from "./chat/useSideChat";
+import { canSplitSubtaskFromThread, useSubtask } from "./chat/useSubtask";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
 import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
@@ -2849,6 +2850,32 @@ export default function ChatView(props: ChatViewProps) {
       if (activeThread) setThreadError(activeThread.id, message);
     },
   });
+  const subtaskWorktreePending = orchestrationV2WorktreePending(
+    activeThread?.worktreePath ?? null,
+    serverProjection?.runs ?? [],
+  );
+  const subtasksOffered =
+    !embedded &&
+    canOperateThread &&
+    isServerThread &&
+    activeThread?.lineage.sideChat !== true &&
+    delegatedFrom === null &&
+    serverConfig?.environment.capabilities.subtasks === true &&
+    !subtaskWorktreePending &&
+    canSplitSubtaskFromThread(activeThreadRef);
+  const subtask = useSubtask({
+    threadRef: subtasksOffered ? activeThreadRef : null,
+    resolveRunIdForMessage: (messageId) =>
+      serverProjection?.messages.find((candidate) => candidate.id === messageId)?.runId ??
+      undefined,
+    readSettings: () => ({
+      runtimeMode,
+      modelSelection: composerRef.current?.getSendContext().selectedModelSelection,
+    }),
+    onError: (message) => {
+      if (activeThread) setThreadError(activeThread.id, message);
+    },
+  });
   // A maximized panel covers the terminal drawer the command runs in.
   const runSideChatShellCommandStable = useStableCallback((command: string) => {
     if (activeThreadRef) useRightPanelStore.getState().setMaximized(activeThreadRef, false);
@@ -3491,6 +3518,9 @@ export default function ChatView(props: ChatViewProps) {
                     sideChat.available && temporarySideChatDisabledReason === null
                       ? sideChat.cite
                       : undefined
+                  }
+                  onSplitSubtaskAssistantText={
+                    subtask.available ? subtask.splitFromCitation : undefined
                   }
                   onReplyToResponse={replyToResponseStable}
                   {...(activeProject

@@ -4,7 +4,7 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { PanelRightIcon, QuoteIcon } from "lucide-react";
+import { GitBranchPlusIcon, PanelRightIcon, QuoteIcon } from "lucide-react";
 import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -25,11 +25,13 @@ export function AssistantSelectionToolbar({
   threadRef,
   onCite,
   onSlidCite,
+  onSplitSubtask,
 }: {
   viewport: HTMLElement | null;
   threadRef: ScopedThreadRef;
   onCite: (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean;
   onSlidCite?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
+  onSplitSubtask?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
 }) {
   const [selection, setSelection] = useState<{
     citation: AssistantCitation;
@@ -203,6 +205,17 @@ export function AssistantSelectionToolbar({
       })
       .finally(() => setIsCiting(false));
   };
+  const splitSubtask = async () => {
+    if (tooLong || isCiting || !onSplitSubtask) return;
+    setIsCiting(true);
+    await onSplitSubtask(selection.citation)
+      .then((created) => {
+        if (!created) return;
+        window.getSelection()?.removeAllRanges();
+        dismiss();
+      })
+      .finally(() => setIsCiting(false));
+  };
   return createPortal(
     <div
       ref={toolbarRef}
@@ -241,6 +254,19 @@ export function AssistantSelectionToolbar({
         >
           <PanelRightIcon aria-hidden="true" className="size-3.5" />
           Slid Cite
+        </Button>
+      )}
+      {onSplitSubtask && (
+        <Button
+          type="button"
+          size="xs"
+          variant="glass"
+          disabled={tooLong || isCiting}
+          aria-label="Split selection into subtask"
+          onClick={splitSubtask}
+        >
+          <GitBranchPlusIcon aria-hidden="true" className="size-3.5" />
+          Split subtask
         </Button>
       )}
     </div>,

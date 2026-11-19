@@ -738,6 +738,7 @@ function hasTitleSetBeforeFirstMessage(
     thread.lineage.sideChat !== true &&
     title.length > 0 &&
     title !== "New thread" &&
+    title !== "New subtask" &&
     !isPlaceholderThreadTitle(title) &&
     title !== titleSeed?.trim()
   );
@@ -5678,22 +5679,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     // Only side chat forks lock the source; validate the modes copied here, not an earlier read.
     yield* refuseAboveDispatchModeLimit(command, command.sourceThreadId, sourceProjection.thread);
-    if (command.sideChat === true && sourceProjection.thread.deletedAt !== null) {
+    if (
+      (command.sideChat === true || command.subtask === true) &&
+      sourceProjection.thread.deletedAt !== null
+    ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
         cause: `Thread ${command.sourceThreadId} was deleted.`,
       });
     }
+    if (command.subtask === true) {
+      yield* validateTaskChildPlacement({
+        parentThreadId: command.sourceThreadId,
+        loadThread: findThread,
+      }).pipe(
+        Effect.catchTags({
+          TaskTreeDepthError: (error) =>
+            Effect.fail(
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: error.message,
+              }),
+            ),
+        }),
+      );
+    }
     // The fork would copy no worktree path and run in the project checkout.
     if (
-      command.sideChat === true &&
+      (command.sideChat === true || command.subtask === true) &&
       orchestrationV2WorktreePending(sourceProjection.thread.worktreePath, sourceProjection.runs)
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Thread ${command.sourceThreadId} has no worktree yet. Start the side chat once its worktree is set up.`,
+        cause: `Thread ${command.sourceThreadId} has no worktree yet. Start the ${command.subtask === true ? "subtask" : "side chat"} once its worktree is set up.`,
       });
     }
     if ((yield* findThread(command.targetThreadId)) !== null) {
@@ -5705,10 +5726,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const sourceRun = runForSourcePoint(sourceProjection, command.sourcePoint);
 
-    // A side chat may open during the parent's first turn; it starts from a digest instead.
+    // A side chat or subtask may open during the parent's first turn; it starts from a digest instead.
     if (
       sourceRun === null &&
-      !(command.sideChat === true && command.sourcePoint.type === "latest_stable")
+      !(
+        (command.sideChat === true || command.subtask === true) &&
+        command.sourcePoint.type === "latest_stable"
+      )
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -5716,7 +5740,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `No stable source run was found for fork source ${command.sourcePoint.type}.`,
       });
     }
-    if (sourceRun !== null && !isForkableSourceRunStatus(sourceRun.status)) {
+    if (
+      sourceRun !== null &&
+      !isForkableSourceRunStatus(sourceRun.status) &&
+      !(
+        command.subtask === true &&
+        (sourceRun.status === "running" || sourceRun.status === "starting")
+      )
+    ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
@@ -5752,6 +5783,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.sideChat ? { sideChat: true } : {}),
         ...(command.temporary ? { temporary: true } : {}),
+        ...(command.subtask ? { subtask: true } : {}),
+        ...(command.sourceAnchor === undefined ? {} : { sourceAnchor: command.sourceAnchor }),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,
@@ -8375,11 +8408,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           undefined);
     const sideChatFork =
       pendingForkTransfer !== undefined && projection.thread.lineage.sideChat === true;
+    const subtaskFork =
+      pendingForkTransfer !== undefined &&
+      projection.thread.lineage.relationshipToParent === "subtask";
     // Opened during the parent's first turn: the digest is the whole context.
     const sideChatWithoutSource =
       sideChatFork && pendingForkTransfer.sourcePoint.runId === undefined;
     if (pendingForkTransfer !== undefined) {
-      if (!sideChatWithoutSource && (sourceRun === null || sourceProviderThread === undefined)) {
+      if (
+        !sideChatWithoutSource &&
+        !subtaskFork &&
+        (sourceRun === null || sourceProviderThread === undefined)
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -8451,7 +8491,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (candidate) => sourceRun === null || candidate.ordinal > sourceRun.ordinal,
           );
     const forkExecution =
-      pendingForkTransfer === undefined || sourceRun === null
+      pendingForkTransfer === undefined || sourceRun === null || subtaskFork
         ? null
         : yield* mapDispatchError(command)(
             commandPolicy.decideForkExecution({
@@ -8597,6 +8637,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, sideChatParentItems),
               parentItems: sideChatParentItems,
+              createdAt: now,
+            })
+            .pipe(mapDispatchError(command));
+    // Subtask first-turn skeleton is anchored strictly at the original fork cutoff so later
+    // parent messages do not drift into the injected context.
+    const subtaskParentItems =
+      !subtaskFork || pendingForkTransfer === undefined || sourceProjection === null
+        ? []
+        : sourceRun !== null
+          ? yield* readForkHistoryItems(projectionStore, sourceProjection, sourceRun).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorProjectionError({ threadId: sourceProjection.thread.id, cause }),
+              ),
+            )
+          : yield* Effect.gen(function* () {
+              const cutoffMs = DateTime.toEpochMillis(pendingForkTransfer.createdAt);
+              const preCutoffRunIds = [
+                ...sourceProjection.runs
+                  .filter(
+                    (candidate) =>
+                      candidate.status !== "queued" &&
+                      DateTime.toEpochMillis(candidate.createdAt) <= cutoffMs,
+                  )
+                  .map((candidate) => candidate.id),
+                ...(sourceProjection.thread.historyOrigin === "v1_import" ? [null] : []),
+              ];
+              return [
+                ...(yield* readInheritedItems(sourceProjection.thread)),
+                ...(preCutoffRunIds.length === 0
+                  ? []
+                  : visibleConversationItems(
+                      sourceProjection,
+                      yield* readHandoffItems(sourceProjection.thread.id, preCutoffRunIds),
+                    )),
+              ];
+            });
+    const subtaskContextHandoff =
+      !subtaskFork || pendingForkTransfer === undefined || sourceProjection === null
+        ? null
+        : yield* contextHandoffService
+            .prepareSubtaskContext({
+              threadId: command.threadId,
+              parentThreadId: sourceProjection.thread.id,
+              parentTitle: sourceProjection.thread.title,
+              parentGoal: sourceProjection.thread.goal,
+              sourceAnchor: projection.thread.sourceAnchor,
+              targetRunId: runId,
+              transferId: pendingForkTransfer.id,
+              toProviderThreadId: ensuredProviderThread.id,
+              fromProviderInstanceId:
+                pendingForkTransfer.sourceProviderInstanceId ?? modelSelection.instanceId,
+              toProviderInstanceId: modelSelection.instanceId,
+              coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, subtaskParentItems),
+              parentItems: subtaskParentItems,
               createdAt: now,
             })
             .pipe(mapDispatchError(command));
@@ -9049,7 +9144,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerThreadRef: providerThread.nativeThreadRef,
           };
     const portableForkContext =
-      portableForkHandoff ?? (sideChatWithoutSource ? sideChatContextHandoff : null);
+      portableForkHandoff ??
+      (sideChatWithoutSource ? sideChatContextHandoff : null) ??
+      subtaskContextHandoff;
     const portableForkResolution: OrchestrationV2ContextTransferResolution | null =
       pendingForkTransfer === undefined || portableForkContext === null
         ? null
@@ -9126,6 +9223,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: modelSelection.instanceId,
         occurredAt: now,
         payload: sideChatContextHandoff,
+      });
+    }
+    if (subtaskContextHandoff !== null) {
+      yield* emitEvent({
+        type: "context-handoff.updated",
+        threadId: command.threadId,
+        runId,
+        providerInstanceId: modelSelection.instanceId,
+        occurredAt: now,
+        payload: subtaskContextHandoff,
       });
     }
     if (legacyImportRecoveryHandoff !== null) {
@@ -15672,12 +15779,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
-    // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
-    // fork or command never interleave. A fork from a side chat or onto an existing thread would
-    // invert that order; dispatch rejects both, so they skip the source lock.
+    // A parent's lock comes before its side chats' and subtasks' locks, so a delete cascade
+    // and a fork or command never interleave. A fork from a side chat or onto an existing thread
+    // would invert that order; dispatch rejects both, so they skip the source lock.
     if (
       command.type === "thread.fork" &&
-      command.sideChat === true &&
+      (command.sideChat === true || command.subtask === true) &&
       command.sourceThreadId !== command.targetThreadId
     ) {
       const source = yield* findThread(command.sourceThreadId);

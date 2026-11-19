@@ -301,3 +301,53 @@ it.effect("inherited history stops at a missing fork ancestor", () =>
     assert.deepEqual(items, []);
   }),
 );
+
+it.effect("builds a budgeted subtask skeleton without side chat framing", () =>
+  Effect.gen(function* () {
+    const parentThreadId = ThreadId.make("thread:subtask-parent");
+    const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const parentItems = Array.from({ length: 50 }, (_, index) =>
+      importedItem({
+        role: index % 2 === 0 ? "user" : "assistant",
+        id: `subtask-parent-${index}`,
+        text: `entry-${index} ${"y".repeat(220)}`,
+        ordinal: index,
+      }),
+    );
+    const handoff = yield* service.prepareSubtaskContext({
+      parentThreadId,
+      parentTitle: "Main refactor thread",
+      parentGoal: "Ship unified subtask orchestration",
+      sourceAnchor: {
+        sourceThreadId: parentThreadId,
+        sourceRunId: RunId.make("run:cutoff-1"),
+        sourceOrdinal: 1,
+        excerpt: "Refactor storage migration for parentThreadId",
+      },
+      threadId: ThreadId.make("thread:subtask-child"),
+      targetRunId: RunId.make("run:subtask-first"),
+      transferId: ContextTransferId.make("transfer:subtask-fork"),
+      toProviderThreadId: ProviderThreadId.make("provider-thread:subtask"),
+      fromProviderInstanceId: ProviderInstanceId.make("codex"),
+      toProviderInstanceId: ProviderInstanceId.make("codex"),
+      coveredRunOrdinals: { from: 1, to: 1 },
+      parentItems,
+      createdAt: DateTime.makeUnsafe(0),
+    });
+
+    assert.equal(handoff.strategy, "manual_context");
+    assert.isUndefined(handoff.history);
+    assert.isAtMost(handoff.summaryText.length, 8_000);
+    assert.include(handoff.summaryText, "dedicated subtask branched from parent thread");
+    assert.notInclude(handoff.summaryText, "do not continue or redo the main thread's task");
+    assert.include(handoff.summaryText, "Parent goal: Ship unified subtask orchestration");
+    assert.include(
+      handoff.summaryText,
+      "Selected excerpt: Refactor storage migration for parentThreadId",
+    );
+    assert.include(handoff.summaryText, "Source cutoff: run=run:cutoff-1, ordinal=1");
+    assert.include(handoff.summaryText, "- Earlier items truncated.");
+    assert.include(handoff.summaryText, "entry-49");
+    assert.include(handoff.summaryText, `t3_thread_read({ threadId: "${parentThreadId}"`);
+  }).pipe(Effect.provide(layerTest)),
+);
