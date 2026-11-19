@@ -112,6 +112,7 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as WorktreeApprovalService from "../orchestration-v2/WorktreeApprovalService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
@@ -1241,6 +1242,9 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const worktreeApprovals = yield* Effect.serviceOption(
+    WorktreeApprovalService.WorktreeApprovalService,
+  );
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2838,6 +2842,13 @@ const make = Effect.gen(function* () {
       const stopChild = Effect.gen(function* () {
         const commandId = stableCommandId({ scope, requestKey: key, operation: "cancel-task" });
         const reason = agentStopReason(input.reason);
+        if (Option.isSome(worktreeApprovals)) {
+          yield* worktreeApprovals.value.cancelByScope({
+            parentTaskId: input.taskId,
+            childThreadId,
+            reason,
+          });
+        }
         const command = {
           type: "thread.stop" as const,
           commandId,

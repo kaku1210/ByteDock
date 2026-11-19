@@ -121,6 +121,13 @@ import {
   OrchestrationGetTurnDiffError,
 } from "./checkpointDiff.ts";
 import {
+  WorktreeApprovalError,
+  WorktreeApprovalResolveInput,
+  WorktreeApprovalResolveResult,
+  WorktreeApprovalStreamEvent,
+  WorktreeApprovalSubscribeInput,
+} from "./worktreeApproval.ts";
+import {
   WorktreeSetupCancelInput,
   WorktreeSetupCancelResult,
   WorktreeSetupStreamEvent,
@@ -626,6 +633,8 @@ export const WS_METHODS = {
   vcsRefreshBranch: "vcs.refreshBranch",
   subscribeWorktreeSetup: "subscribeWorktreeSetup",
   worktreeSetupCancel: "worktreeSetup.cancel",
+  subscribeWorktreeApprovals: "subscribeWorktreeApprovals",
+  worktreeApprovalResolve: "worktreeApproval.resolve",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
@@ -1612,6 +1621,19 @@ const WsWorktreeSetupCancelRpc = Rpc.make(WS_METHODS.worktreeSetupCancel, {
   error: EnvironmentAuthorizationError,
 });
 
+const WsSubscribeWorktreeApprovalsRpc = Rpc.make(WS_METHODS.subscribeWorktreeApprovals, {
+  payload: WorktreeApprovalSubscribeInput,
+  success: WorktreeApprovalStreamEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsWorktreeApprovalResolveRpc = Rpc.make(WS_METHODS.worktreeApprovalResolve, {
+  payload: WorktreeApprovalResolveInput,
+  success: WorktreeApprovalResolveResult,
+  error: Schema.Union([WorktreeApprovalError, EnvironmentAuthorizationError]),
+});
+
 const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
   payload: GitRunStackedActionInput,
   success: GitActionProgressEvent,
@@ -2309,6 +2331,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsRefreshBranchRpc,
   WsSubscribeWorktreeSetupRpc,
   WsWorktreeSetupCancelRpc,
+  WsSubscribeWorktreeApprovalsRpc,
+  WsWorktreeApprovalResolveRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

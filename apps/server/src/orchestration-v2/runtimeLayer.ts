@@ -56,6 +56,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
+import * as WorktreeApprovalService from "./WorktreeApprovalService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -281,6 +282,7 @@ export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
+const layerWorktreeApprovalProvided = WorktreeApprovalService.layer;
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -289,6 +291,7 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
       layerThreadManagementProvided,
       layerCommandReceiptStoreProvided,
       layerEventSink,
+      layerWorktreeApprovalProvided,
       IdAllocator.layer,
     ).pipe(Layer.provideMerge(layerProjectService)),
   ),
@@ -404,6 +407,7 @@ export const layerProduction = Layer.mergeAll(
   ),
   layer,
   layerManagedProjectFoldersProvided,
+  layerWorktreeApprovalProvided,
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerScratchThreadPromotionProvided,

@@ -364,6 +364,15 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:cancel-worktree-setup",
       tag: WS_METHODS.worktreeSetupCancel,
     }),
+    worktreeApprovals: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:vcs:worktree-approvals",
+      tag: WS_METHODS.subscribeWorktreeApprovals,
+      idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
+    }),
+    resolveWorktreeApproval: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:resolve-worktree-approval",
+      tag: WS_METHODS.worktreeApprovalResolve,
+    }),
     removeWorktree: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:remove-worktree",
       tag: WS_METHODS.vcsRemoveWorktree,

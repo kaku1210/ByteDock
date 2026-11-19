@@ -121,6 +121,7 @@ import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as WorktreeApprovalService from "./orchestration-v2/WorktreeApprovalService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1504,6 +1505,7 @@ export const layerWsRpc = (
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const worktreeApprovals = yield* WorktreeApprovalService.WorktreeApprovalService;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -3118,6 +3120,26 @@ export const layerWsRpc = (
           worktreeSetupTracker
             .cancel(input.threadId)
             .pipe(Effect.map((cancelled) => ({ cancelled }))),
+        [WS_METHODS.subscribeWorktreeApprovals]: (input) =>
+          worktreeApprovals.streamForThread(input.threadId),
+        [WS_METHODS.worktreeApprovalResolve]: (input) =>
+          Effect.annotateCurrentSpan({
+            "worktree_approval.request_id": input.requestId,
+            "worktree_approval.decision": input.decision,
+          }).pipe(
+            Effect.andThen(worktreeApprovals.resolveByHuman(input)),
+            Effect.tap((result) =>
+              result.request.status === "approved" && result.request.childRunId !== null
+                ? threadLaunch
+                    .prepareRun({
+                      commandId: result.request.commandId,
+                      threadId: result.request.childThreadId,
+                      runId: result.request.childRunId,
+                    })
+                    .pipe(Effect.ignore)
+                : Effect.void,
+            ),
+          ),
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           vcsStatusBroadcaster.refreshStatus(input.cwd, { localOnly: input.localOnly ?? false }),
         [WS_METHODS.vcsPull]: (input) =>

@@ -1,6 +1,7 @@
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as WorktreeApproval from "./WorktreeApprovalService.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
@@ -254,6 +255,7 @@ function makeHarness(options: HarnessOptions = {}) {
         layerThreadManagement,
         layerReceipts,
         layerOrchestrator,
+        WorktreeApproval.layer.pipe(Layer.provide(layerDatabase)),
         IdAllocator.layer,
         options.getLaunchSettings === undefined
           ? Layer.empty
