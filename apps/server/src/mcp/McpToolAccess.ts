@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  isTaskChildLineage,
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -197,18 +198,36 @@ export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.E
 export const writesThreads = <P, A, E, R>(
   threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
   handle: (params: P) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly allowDirectChildReportInbox?: (params: P) => boolean;
+  },
 ) =>
   declare(
     (params: P) =>
       Effect.gen(function* () {
         const caller = yield* writingCaller;
+        const allowChildInbox = options?.allowDirectChildReportInbox?.(params) === true;
+        const callerThread =
+          allowChildInbox && caller.scope.thread !== undefined
+            ? yield* caller.threads
+                .getThreadShell(caller.scope.thread.threadId)
+                .pipe(Effect.mapError(unavailable))
+            : null;
         for (const threadId of threads(params)) {
           if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
           const target = yield* caller.threads
             .getThreadShell(threadId)
             .pipe(Effect.mapError(unavailable));
           if (target !== null && target.deletedAt === null) {
-            yield* assertTargetWithinLimits(caller.limits, target);
+            const isDirectChildReportingToParent =
+              allowChildInbox &&
+              callerThread !== null &&
+              callerThread.deletedAt === null &&
+              callerThread.lineage.parentThreadId === target.id &&
+              isTaskChildLineage(callerThread.lineage);
+            if (!isDirectChildReportingToParent) {
+              yield* assertTargetWithinLimits(caller.limits, target);
+            }
             yield* assertSameLink(caller, target);
           }
         }

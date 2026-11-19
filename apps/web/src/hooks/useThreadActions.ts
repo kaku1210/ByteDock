@@ -12,6 +12,7 @@ import {
   AuthSourceControlWriteScope,
   EnvironmentAuthorizationError,
   EnvironmentId,
+  isTaskChildLineage,
   type ScopedThreadRef,
   ThreadId,
   sessionGrantsScope,
@@ -985,22 +986,72 @@ export function useThreadActions() {
       (result) => result._tag === "Success",
     );
 
+  const collectTaskDescendants = (target: ScopedThreadRef) => {
+    const shells = readThreadShells().filter(
+      (shell) => shell.environmentId === target.environmentId && shell.deletedAt === null,
+    );
+    const byParent = new Map<ThreadId, Array<(typeof shells)[number]>>();
+    for (const shell of shells) {
+      const parentId = shell.lineage.parentThreadId;
+      if (parentId === null) continue;
+      if (shell.lineage.sideChat !== true && !isTaskChildLineage(shell.lineage)) continue;
+      const list = byParent.get(parentId) ?? [];
+      list.push(shell);
+      byParent.set(parentId, list);
+    }
+    const descendants: Array<(typeof shells)[number]> = [];
+    const seen = new Set<ThreadId>([target.threadId]);
+    const queue: Array<ThreadId> = [target.threadId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const child of byParent.get(current) ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        descendants.push(child);
+        queue.push(child.id);
+      }
+    }
+    return descendants;
+  };
+
   const confirmAndDeleteThread = async (target: ScopedThreadRef, knownTitle?: string) => {
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
     const localApi = readLocalApi();
     const resolved = resolveThreadTarget(target);
+    const descendants = collectTaskDescendants(target);
 
-    if (confirmThreadDelete && localApi) {
+    if ((confirmThreadDelete || descendants.length > 0) && localApi) {
       const title = resolved?.thread.title ?? knownTitle ?? "this thread";
+      const subtaskDescendants = descendants.filter((child) => child.lineage.sideChat !== true);
+      const sideChatDescendants = descendants.filter((child) => child.lineage.sideChat === true);
+      const lines = [
+        `Delete thread "${title}"?`,
+        "This permanently clears conversation history for this thread.",
+      ];
+      if (descendants.length > 0) {
+        const parts: Array<string> = [];
+        if (subtaskDescendants.length > 0) {
+          parts.push(
+            `${subtaskDescendants.length} ${subtaskDescendants.length === 1 ? "subtask" : "subtasks"}`,
+          );
+        }
+        if (sideChatDescendants.length > 0) {
+          parts.push(
+            `${sideChatDescendants.length} ${sideChatDescendants.length === 1 ? "side chat" : "side chats"}`,
+          );
+        }
+        const previewTitles = descendants
+          .slice(0, 4)
+          .map((child) => `• ${child.title || "Untitled thread"}`)
+          .join("\n");
+        const overflow = descendants.length > 4 ? `\n• …and ${descendants.length - 4} more` : "";
+        lines.push(
+          `This will also delete ${parts.join(" and ")} and cancel any pending bring-back items:\n${previewTitles}${overflow}`,
+        );
+      }
       const confirmationResult = await settlePromise(() =>
-        localApi.dialogs.confirm(
-          [
-            `Delete thread "${title}"?`,
-            "This permanently clears conversation history for this thread.",
-          ].join("\n"),
-          { variant: "destructive" },
-        ),
+        localApi.dialogs.confirm(lines.join("\n"), { variant: "destructive" }),
       );
       if (confirmationResult._tag === "Failure") {
         return confirmationResult;

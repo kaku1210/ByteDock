@@ -358,6 +358,10 @@ export const OrchestratorMcpThreadListInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   projectId: OrchestratorMcpProjectTarget,
   allProjects: Schema.optional(Schema.Boolean),
+  /** Limit to direct task children (`scope: "children"`) instead of all project threads. */
+  scope: Schema.optional(Schema.Literals(["project", "children"])),
+  /** Parent thread whose direct children should be listed; defaults to the calling thread when `scope: "children"`. */
+  parentThreadId: Schema.optional(ThreadId),
   statuses: Schema.optional(
     Schema.Array(OrchestratorMcpThreadStatus).check(Schema.isMaxLength(10)),
   ),
@@ -420,6 +424,8 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent", "subtask"])),
+  /** True when a persistent subtask draft has not yet received its initial send. */
+  awaitingInitialSend: Schema.optional(Schema.Boolean),
   /** The linked environment's thread that delegated this one; absent otherwise. */
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   itemCount: NonNegativeInt,
@@ -479,6 +485,8 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent", "subtask"])),
+  /** True when a persistent subtask draft has not yet received its initial send. */
+  awaitingInitialSend: Schema.optional(Schema.Boolean),
   /** The linked environment's thread that delegated this one; absent otherwise. */
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   runCount: NonNegativeInt,
@@ -554,6 +562,7 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
         "When a child thread reports back to its parent, mark as `interim` (progress update without settling delegation) or `final` (deduplicated final conclusion).",
     }),
   ),
+  causationChain: Schema.optional(Schema.Array(ThreadId)),
   freshContext: Schema.optional(
     Schema.Boolean.annotate({
       description:

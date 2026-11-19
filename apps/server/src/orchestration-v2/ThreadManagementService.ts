@@ -156,6 +156,7 @@ export interface ThreadManagementSendInput {
   readonly senderThreadId?: ThreadId;
   readonly linkedSender?: OrchestrationV2LinkedSender;
   readonly childReport?: OrchestrationV2ChildReport;
+  readonly causationChain?: ReadonlyArray<ThreadId>;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -460,6 +461,7 @@ export interface ThreadManagementServiceShape {
   /** Omit `projectId` to list every project's threads. Side chats are never listed. */
   readonly listProjectThreads: (input: {
     readonly projectId?: ProjectId | undefined;
+    readonly parentThreadId?: ThreadId | undefined;
     readonly includeSubagents: boolean;
   }) => Effect.Effect<ReadonlyArray<ActiveThreadListEntry>, ThreadManagementError>;
   readonly sendToThread: (
@@ -844,29 +846,45 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const listProjectThreads: ThreadManagementServiceShape["listProjectThreads"] = (input) =>
-    orchestrator.listActiveThreads(input.projectId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ThreadManagementProjectThreadsListError({
-            projectId: input.projectId,
-            cause,
-          }),
-      ),
-      Effect.map((threads) =>
-        threads
-          .filter((thread) =>
-            input.includeSubagents
-              ? thread.lineage.sideChat !== true
-              : isListedThreadLineage(thread.lineage) && !isDelegatedAppThread(thread),
-          )
-          .toSorted(
-            (left, right) =>
-              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
-              right.id.localeCompare(left.id),
-          ),
-      ),
-    );
+  const listProjectThreads: ThreadManagementServiceShape["listProjectThreads"] = Effect.fn(
+    "ThreadManagementService.listProjectThreads",
+  )(function* (input) {
+    const mapListError = (cause: Orchestrator.OrchestratorV2Error) =>
+      new ThreadManagementProjectThreadsListError({
+        projectId: input.projectId,
+        cause,
+      });
+    const directChildIds =
+      input.parentThreadId === undefined
+        ? null
+        : new Set(
+            yield* orchestrator
+              .listDirectChildThreadIds(input.parentThreadId)
+              .pipe(Effect.mapError(mapListError)),
+          );
+    if (directChildIds !== null && directChildIds.size === 0) {
+      return [];
+    }
+    const threads = yield* orchestrator
+      .listActiveThreads(input.projectId)
+      .pipe(Effect.mapError(mapListError));
+    return threads
+      .filter((thread) => {
+        if (directChildIds !== null) {
+          if (!directChildIds.has(thread.id)) return false;
+          if (thread.lineage.sideChat === true) return false;
+          return input.includeSubagents || thread.lineage.relationshipToParent !== "subagent";
+        }
+        return input.includeSubagents
+          ? thread.lineage.sideChat !== true
+          : isListedThreadLineage(thread.lineage) && !isDelegatedAppThread(thread);
+      })
+      .toSorted(
+        (left, right) =>
+          DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt) ||
+          right.id.localeCompare(left.id),
+      );
+  });
 
   const sendToThread: ThreadManagementServiceShape["sendToThread"] = Effect.fn(
     "ThreadManagementService.sendToThread",
@@ -935,6 +953,7 @@ const make = Effect.gen(function* () {
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
       ...(input.childReport === undefined ? {} : { childReport: input.childReport }),
+      ...(input.causationChain === undefined ? {} : { causationChain: input.causationChain }),
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),

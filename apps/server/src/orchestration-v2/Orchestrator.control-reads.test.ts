@@ -1596,12 +1596,13 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       type: "message.dispatch",
       commandId: CommandId.make("question-followup"),
       threadId: task.childThreadId!,
+      senderThreadId: parentThreadId,
       messageId: MessageId.make("message:question-followup"),
       text: "Check the sources again",
       attachments: [],
       dispatchMode: { type: "start_immediately" },
-      createdBy: "user",
-      creationSource: "web",
+      createdBy: "agent",
+      creationSource: "mcp",
     });
     const followup = (yield* projections.getThreadRecords(task.childThreadId!, ["runs"])).runs.find(
       (run) => run.userMessageId === "message:question-followup",
@@ -1800,12 +1801,13 @@ it.effect.each([false, true])(
         type: "message.dispatch",
         commandId: CommandId.make("stale-question-followup"),
         threadId: task.childThreadId!,
+        senderThreadId: parentThreadId,
         messageId: MessageId.make("message:stale-question-followup"),
         text: "Capture another proof",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
-        createdBy: "user",
-        creationSource: "web",
+        createdBy: "agent",
+        creationSource: "mcp",
       });
       const followup = (yield* projections.getThreadRecords(task.childThreadId!, [
         "runs",

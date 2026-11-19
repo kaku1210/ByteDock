@@ -62,6 +62,7 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  isTaskChildLineage,
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
@@ -96,6 +97,7 @@ import {
 import {
   DispatchModeLimit,
   type DispatchModeRefusal,
+  exceededDispatchModeLimit,
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import type {
   ProjectionRecordField,
@@ -930,6 +932,9 @@ function listItemFromShell(
     ...threadBackgroundWork(shell),
     parentThreadId: shell.lineage.parentThreadId,
     relationshipToParent: shell.lineage.relationshipToParent,
+    ...(shell.lineage.relationshipToParent === "subtask" && shell.latestRunId === null
+      ? { awaitingInitialSend: true }
+      : {}),
     ...(shell.delegatedFrom == null ? {} : { delegatedFrom: shell.delegatedFrom }),
     itemCount: shell.visibleItemCount,
     createdAt: DateTime.formatIso(shell.createdAt),
@@ -982,6 +987,9 @@ function threadDetail(
     worktreePath: projection.thread.worktreePath,
     parentThreadId: projection.thread.lineage.parentThreadId,
     relationshipToParent: projection.thread.lineage.relationshipToParent,
+    ...(projection.thread.lineage.relationshipToParent === "subtask" && latest === undefined
+      ? { awaitingInitialSend: true }
+      : {}),
     ...(projection.thread.delegatedFrom == null
       ? {}
       : { delegatedFrom: projection.thread.delegatedFrom }),
@@ -3159,21 +3167,42 @@ const make = Effect.gen(function* () {
     ),
     listThreads: Effect.fn("OrchestratorMcpService.listThreads")(function* (scope, input) {
       const { parent } = yield* loadCaller(scope, []);
-      const projectId = input.allProjects
-        ? null
-        : yield* resolveProjectTarget(
-            parent,
-            input.projectId,
-            "Pass projectId, or allProjects: true for every project. This MCP client is not running inside a T3 thread.",
-          );
-      if (!input.allProjects && input.projectId !== undefined) {
-        yield* requireProject(input.projectId);
-      }
+      const listScope =
+        input.scope ?? (input.parentThreadId !== undefined ? "children" : "project");
       const listFailure = (error: unknown) =>
         failure("orchestration_error", `Unable to list threads: ${errorMessage(error)}`);
+      let projectId: ProjectId | null;
+      let parentThreadId: ThreadId | undefined;
+      if (listScope === "children") {
+        if (input.parentThreadId !== undefined) {
+          const { target } = yield* loadReadableThread(scope, input.parentThreadId);
+          projectId = target.thread.projectId;
+          parentThreadId = target.thread.id;
+        } else if (parent !== undefined) {
+          projectId = parent.thread.projectId;
+          parentThreadId = parent.thread.id;
+        } else {
+          return yield* failure(
+            "invalid_request",
+            "Pass parentThreadId when listing children outside a T3 thread.",
+          );
+        }
+      } else {
+        projectId = input.allProjects
+          ? null
+          : yield* resolveProjectTarget(
+              parent,
+              input.projectId,
+              "Pass projectId, or allProjects: true for every project. This MCP client is not running inside a T3 thread.",
+            );
+        if (!input.allProjects && input.projectId !== undefined) {
+          yield* requireProject(input.projectId);
+        }
+      }
       const projectThreads = yield* threadManagement
         .listProjectThreads({
           projectId: projectId ?? undefined,
+          ...(parentThreadId === undefined ? {} : { parentThreadId }),
           includeSubagents: input.includeSubagents !== false,
         })
         .pipe(Effect.mapError(listFailure));
@@ -3362,26 +3391,61 @@ const make = Effect.gen(function* () {
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId, ["runs"]);
       yield* assertLiveCallerForOtherThread(scope, parent, target);
-      yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
-      yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
+      const isDirectTaskChildToParent =
+        parent !== undefined &&
+        parent.thread.id !== input.threadId &&
+        parent.thread.lineage.parentThreadId === input.threadId &&
+        isTaskChildLineage(parent.thread.lineage);
       const isReportingToParent =
         parent !== undefined &&
         parent.thread.id !== input.threadId &&
         (parent.thread.lineage.parentThreadId === input.threadId || input.reportKind !== undefined);
-      const mode = input.mode ?? (isReportingToParent ? "queue" : "auto");
-      const callerRunId =
+      const targetExceedsCallerLimits =
+        exceededDispatchModeLimit(limits, target.thread) !== undefined;
+      const holdParentQueueForPrivilege =
+        targetExceedsCallerLimits &&
+        isDirectTaskChildToParent &&
+        (input.mode === undefined || input.mode === "queue");
+      if (!holdParentQueueForPrivilege) {
+        yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
+        yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
+      }
+
+      const mode = holdParentQueueForPrivilege
+        ? "queue"
+        : (input.mode ?? (isReportingToParent ? "queue" : "auto"));
+      const callerRecords =
         parent === undefined
           ? undefined
-          : (yield* threadManagement
-              .getThreadRecords(parent.thread.id, ["runs"])
-              .pipe(Effect.mapError(threadManagementFailure))).runs.toSorted(
-              (left, right) => right.ordinal - left.ordinal,
-            )[0]?.id;
+          : yield* threadManagement
+              .getThreadRecords(parent.thread.id, ["runs", "messages"])
+              .pipe(Effect.mapError(threadManagementFailure));
+      const callerLatestRun = callerRecords?.runs.toSorted(
+        (left, right) => right.ordinal - left.ordinal,
+      )[0];
+      const callerRunId = callerLatestRun?.id;
+      const callerIncomingChain =
+        callerLatestRun === undefined
+          ? undefined
+          : callerRecords?.messages.find((message) => message.id === callerLatestRun.userMessageId)
+              ?.causationChain;
+      const causationChain: ReadonlyArray<ThreadId> | undefined =
+        input.causationChain !== undefined
+          ? input.causationChain
+          : parent === undefined || parent.thread.id === input.threadId
+            ? undefined
+            : callerIncomingChain !== undefined && callerIncomingChain.length > 0
+              ? isReportingToParent &&
+                callerIncomingChain.length === 1 &&
+                callerIncomingChain[0] === input.threadId
+                ? [parent.thread.id]
+                : [...callerIncomingChain, parent.thread.id]
+              : [parent.thread.id];
       const reportKind =
         input.reportKind ??
-        (isReportingToParent
-          ? parent.thread.lineage.relationshipToParent === "subagent"
+        (isReportingToParent || holdParentQueueForPrivilege
+          ? parent?.thread.lineage.relationshipToParent === "subagent"
             ? "interim"
             : "final"
           : undefined);
@@ -3392,6 +3456,8 @@ const make = Effect.gen(function* () {
               ...(callerRunId === undefined ? {} : { childRunId: callerRunId }),
               reportKind,
               resultVersion: 0,
+              ...(holdParentQueueForPrivilege ? { holdParentQueue: true } : {}),
+              ...(causationChain === undefined ? {} : { causationChain }),
             }
           : undefined;
       const key = yield* requestKey(input.clientRequestId);
@@ -3415,6 +3481,7 @@ const make = Effect.gen(function* () {
             ? { linkedSender: scope.client.senderThread }
             : {}),
           ...(childReport === undefined ? {} : { childReport }),
+          ...(causationChain === undefined ? {} : { causationChain }),
           messageId,
           text: input.message,
           attachments: [],

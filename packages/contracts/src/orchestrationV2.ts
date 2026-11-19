@@ -275,6 +275,10 @@ export const OrchestrationV2ChildReport = Schema.Struct({
   childRunId: Schema.optional(RunId),
   reportKind: OrchestrationV2ChildReportKind,
   resultVersion: Schema.optional(NonNegativeInt),
+  /** True when a lower-privilege child queues into a higher-privilege parent inbox without auto-starting a turn. */
+  holdParentQueue: Schema.optional(Schema.Boolean),
+  /** Causal chain of thread IDs for cross-thread auto-wake loop prevention. */
+  causationChain: Schema.optional(Schema.Array(ThreadId)),
 });
 export type OrchestrationV2ChildReport = typeof OrchestrationV2ChildReport.Type;
 
@@ -1429,6 +1433,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   /** A scheduled delivery that named no model; it runs on the thread's selection at start. */
   followsThreadSelection: Schema.optional(Schema.Literal(true)),
   senderThreadId: Schema.optional(ThreadId),
+  causationChain: Schema.optional(Schema.Array(ThreadId)),
   linkedSender: Schema.optional(OrchestrationV2LinkedSender),
   idleCompaction: Schema.optional(OrchestrationV2IdleCompaction),
   /**
@@ -3420,6 +3425,7 @@ export const OrchestrationV2Command = Schema.Union([
       }),
     ),
     childReport: Schema.optional(OrchestrationV2ChildReport),
+    causationChain: Schema.optional(Schema.Array(ThreadId)),
     dispatchMode: Schema.Union([
       Schema.Struct({
         type: Schema.Literal("defer_start"),

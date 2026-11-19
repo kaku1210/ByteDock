@@ -19,7 +19,9 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   readonly projection: Pick<
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "attempts" | "nodes" | "runtimeRequests" | "subagents" | "providerSessions"
-  >;
+  > & {
+    readonly contextTransfers?: OrchestrationV2ThreadProjection["contextTransfers"];
+  };
   readonly attachmentIds: ReadonlyArray<string>;
   readonly now: DateTime.Utc;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
@@ -123,6 +125,28 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
         status: "cancelled",
         responseCapability: { type: "not_resumable", reason: "The thread was deleted." },
         resolvedAt: now,
+      },
+    });
+  }
+  for (const transfer of projection.contextTransfers ?? []) {
+    if (
+      transfer.type !== "merge_back" ||
+      transfer.targetThreadId !== command.threadId ||
+      (transfer.status !== "pending" && transfer.status !== "bound")
+    ) {
+      continue;
+    }
+    yield* emitEvent({
+      type: "context-transfer.updated",
+      threadId: command.threadId,
+      providerInstanceId:
+        transfer.targetProviderInstanceId ?? projection.thread.modelSelection.instanceId,
+      occurredAt: now,
+      payload: {
+        ...transfer,
+        status: "superseded",
+        error: "Thread was deleted.",
+        updatedAt: now,
       },
     });
   }
