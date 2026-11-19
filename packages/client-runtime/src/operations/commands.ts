@@ -4,6 +4,7 @@ import {
   CommandId,
   CheckpointId,
   CheckpointScopeId,
+  type ContextTransferId,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointUnavailableError,
   WS_METHODS,
@@ -260,6 +261,10 @@ export interface MergeThreadBackInput extends CommandMetadata {
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly runId: RunId;
+}
+
+export interface RevokeMergeBackInput extends ThreadCommandInput {
+  readonly transferId: ContextTransferId;
 }
 
 export interface ReportSubtaskToParentInput extends CommandMetadata {
@@ -1153,6 +1158,19 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
     sourcePoint: { type: "run", runId: input.runId },
   });
 });
+
+export const revokeThreadMergeBack = Effect.fn("EnvironmentCommands.revokeThreadMergeBack")(
+  function* (input: RevokeMergeBackInput) {
+    return yield* dispatch({
+      type: "thread.merge_back.revoke",
+      commandId: yield* allocateCommandId(input),
+      createdBy: "user",
+      creationSource: input.creationSource ?? "web",
+      threadId: input.threadId,
+      transferId: input.transferId,
+    });
+  },
+);
 
 export const reportSubtaskToParent = Effect.fn("EnvironmentCommands.reportSubtaskToParent")(
   function* (input: ReportSubtaskToParentInput) {

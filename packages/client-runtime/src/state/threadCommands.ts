@@ -37,6 +37,7 @@ import {
   forkThreadFromRun,
   markThreadUnread,
   mergeThreadBack,
+  revokeThreadMergeBack,
   reportSubtaskToParent,
   promoteQueuedRun,
   resumeThreadQueue,
@@ -385,6 +386,12 @@ export function createThreadEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) =>
           JSON.stringify([environmentId, input.sourceThreadId, input.targetThreadId]),
       },
+    }),
+    revokeMergeBack: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:revoke-merge-back",
+      execute: revokeThreadMergeBack,
+      scheduler,
+      concurrency,
     }),
     reportToParent: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:report-to-parent",

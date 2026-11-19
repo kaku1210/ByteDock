@@ -5,6 +5,7 @@ import {
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2ContextTransfer,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -321,6 +322,7 @@ export const layer: Layer.Layer<
         readonly rootNode: OrchestrationV2ExecutionNode;
         readonly attempt: OrchestrationV2RunAttempt;
         readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+        readonly contextTransfers?: ReadonlyArray<OrchestrationV2ContextTransfer>;
         readonly signal: string;
         readonly status: "completed" | "failed";
         readonly now: DateTime.Utc;
@@ -338,6 +340,26 @@ export const layer: Layer.Layer<
         const { run, rootNode, attempt, turnItems, now, status } = input;
         const runId = run.id;
         const started = input.startedAt === undefined ? {} : { startedAt: input.startedAt };
+        const boundMergeBackRollbacks = (input.contextTransfers ?? [])
+          .filter(
+            (transfer) =>
+              transfer.type === "merge_back" &&
+              transfer.status === "bound" &&
+              transfer.targetThreadId === run.threadId &&
+              transfer.targetRunId === runId,
+          )
+          .map((transfer) => ({
+            type: "context-transfer.updated" as const,
+            payload: {
+              ...transfer,
+              status: "pending" as const,
+              targetRunId: null,
+              resolution: null,
+              error: null,
+              updatedAt: now,
+              consumedAt: null,
+            },
+          }));
         const item: OrchestrationV2TurnItem = {
           id: idAllocator.derive.runSignalTurnItem({ runId, signal: input.signal }),
           threadId: run.threadId,
@@ -360,6 +382,7 @@ export const layer: Layer.Layer<
         };
         const eventPayloads = [
           { type: "turn-item.updated", payload: item },
+          ...boundMergeBackRollbacks,
           { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
           {
             type: "run-attempt.updated",
@@ -447,7 +470,8 @@ export const layer: Layer.Layer<
       const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
         handoff.status === "ready" &&
         (handoff.targetRunId === run.id ||
-          ((anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
+          (handoff.strategy !== "fork_delta_summary" &&
+            (anyProviderThread || handoff.toProviderThreadId === run.providerThreadId) &&
             projection.runs.some(
               (source) =>
                 source.id === handoff.targetRunId &&
@@ -523,6 +547,7 @@ export const layer: Layer.Layer<
             rootNode,
             attempt,
             turnItems: projection.turnItems,
+            contextTransfers: projection.contextTransfers,
             signal: failed.signal,
             status: "failed",
             now: yield* DateTime.now,
@@ -601,6 +626,7 @@ export const layer: Layer.Layer<
             rootNode,
             attempt,
             turnItems: projection.turnItems,
+            contextTransfers: projection.contextTransfers,
             signal: isEmptyCompaction ? "empty-compaction" : "provider-sign-out",
             status,
             now,
@@ -1707,6 +1733,51 @@ export const layer: Layer.Layer<
           ],
         });
       });
+      const boundMergeBackTransfers = projection.contextTransfers.filter(
+        (transfer) =>
+          transfer.type === "merge_back" &&
+          transfer.status === "bound" &&
+          transfer.targetThreadId === projection.thread.id &&
+          transfer.targetRunId === run.id,
+      );
+      const persistBoundMergeBackStatus = Effect.fn(
+        "ProviderTurnStartService.persistBoundMergeBackStatus",
+      )(function* (nextStatus: "pending" | "consumed") {
+        if (boundMergeBackTransfers.length === 0) return;
+        const updatedAt = yield* DateTime.now;
+        const events = yield* Effect.forEach(boundMergeBackTransfers, (transfer) =>
+          Effect.gen(function* () {
+            return {
+              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              type: "context-transfer.updated" as const,
+              threadId: projection.thread.id,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: updatedAt,
+              payload:
+                nextStatus === "consumed"
+                  ? {
+                      ...transfer,
+                      status: "consumed" as const,
+                      updatedAt,
+                      consumedAt: updatedAt,
+                    }
+                  : {
+                      ...transfer,
+                      status: "pending" as const,
+                      targetRunId: null,
+                      resolution: null,
+                      error: null,
+                      updatedAt,
+                      consumedAt: null,
+                    },
+            } satisfies OrchestrationV2DomainEvent;
+          }),
+        );
+        yield* eventSink.write({
+          events,
+        });
+      });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
@@ -1726,7 +1797,16 @@ export const layer: Layer.Layer<
                 }),
             persist: persistHandoff,
           });
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          if (!(yield* isCurrentAttemptInStatus("running"))) {
+            yield* persistBoundMergeBackStatus("pending").pipe(
+              Effect.catchCause(() =>
+                Effect.logWarning("Failed to roll back bound merge-back transfers", {
+                  runId: run.id,
+                }),
+              ),
+            );
+            return;
+          }
           const start = compact ? session.compactThread! : session.startTurn;
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
@@ -1755,17 +1835,27 @@ export const layer: Layer.Layer<
                     : { inlineContextLength: text.length - userText.length }),
                 });
           yield* operation.pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
+            // Clear pending handoff markers for refused prompts so the next turn retains the native session,
+            // and roll bound merge-back transfers back to pending on any pre-acceptance startTurn failure.
             Effect.tapError((error) =>
-              refusedBeforePrompt(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
-                : Effect.void,
+              Effect.all([
+                refusedBeforePrompt(error)
+                  ? delivery.unsent.pipe(
+                      Effect.catchCause(() =>
+                        Effect.logWarning("Failed to restore unsent context handoffs", {
+                          runId: run.id,
+                        }),
+                      ),
+                    )
+                  : Effect.void,
+                persistBoundMergeBackStatus("pending").pipe(
+                  Effect.catchCause(() =>
+                    Effect.logWarning("Failed to roll back bound merge-back transfers", {
+                      runId: run.id,
+                    }),
+                  ),
+                ),
+              ]),
             ),
           );
           // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
@@ -1773,6 +1863,7 @@ export const layer: Layer.Layer<
           yield* Effect.forEach(
             [
               delivery.delivered,
+              persistBoundMergeBackStatus("consumed"),
               ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
                 ? []
                 : [
@@ -1811,6 +1902,7 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
+        boundMergeBackTransfers.length === 0 &&
         restartNote === "" &&
         !noteContinuation
           ? session
@@ -1965,6 +2057,7 @@ export const layer: Layer.Layer<
             rootNode,
             attempt,
             turnItems: projection.turnItems,
+            contextTransfers: projection.contextTransfers,
             signal: "provider-turn-start-failure",
             status: "failed",
             now: yield* DateTime.now,

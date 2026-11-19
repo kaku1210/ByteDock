@@ -691,6 +691,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
       return command.parentThreadId;
     case "secret_request.record":
     case "link_request.record":
+    case "thread.merge_back.revoke":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -1188,7 +1189,9 @@ function withoutSection({ section: _, ...stamp }: MonitorPullRequestStamp) {
 }
 
 function queuedRunCancellationEvents(
-  projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts">,
+  projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts"> & {
+    readonly contextTransfers?: ReadonlyArray<OrchestrationV2ContextTransfer>;
+  },
   run: OrchestrationV2Run,
   now: DateTime.Utc,
 ): ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">> {
@@ -1226,6 +1229,31 @@ function queuedRunCancellationEvents(
       occurredAt: now,
       payload: { ...rootNode, status: "cancelled", completedAt: now },
     });
+  }
+  for (const transfer of projection.contextTransfers ?? []) {
+    if (
+      transfer.type === "merge_back" &&
+      transfer.targetThreadId === run.threadId &&
+      transfer.targetRunId === run.id &&
+      transfer.status === "bound"
+    ) {
+      events.push({
+        type: "context-transfer.updated",
+        threadId: run.threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...transfer,
+          targetRunId: null,
+          status: "pending",
+          resolution: null,
+          error: null,
+          updatedAt: now,
+          consumedAt: null,
+        },
+      });
+    }
   }
   return events;
 }
@@ -1333,17 +1361,32 @@ function pendingMergeBackTransfersForThread(
   );
 }
 
-function latestContextTransfer(
+function deduplicatePendingMergeBackTransfers(
   transfers: ReadonlyArray<OrchestrationV2ContextTransfer>,
-): OrchestrationV2ContextTransfer | undefined {
-  return transfers.reduce<OrchestrationV2ContextTransfer | undefined>((latest, transfer) => {
-    if (latest === undefined) {
-      return transfer;
+): {
+  readonly active: ReadonlyArray<OrchestrationV2ContextTransfer>;
+  readonly superseded: ReadonlyArray<OrchestrationV2ContextTransfer>;
+} {
+  const latestBySource = new Map<ThreadId, OrchestrationV2ContextTransfer>();
+  const superseded: Array<OrchestrationV2ContextTransfer> = [];
+  for (const transfer of transfers) {
+    const existing = latestBySource.get(transfer.sourceThreadId);
+    if (existing === undefined) {
+      latestBySource.set(transfer.sourceThreadId, transfer);
+      continue;
     }
-    return DateTime.toEpochMillis(transfer.updatedAt) >= DateTime.toEpochMillis(latest.updatedAt)
-      ? transfer
-      : latest;
-  }, undefined);
+    if (DateTime.toEpochMillis(transfer.updatedAt) >= DateTime.toEpochMillis(existing.updatedAt)) {
+      superseded.push(existing);
+      latestBySource.set(transfer.sourceThreadId, transfer);
+    } else {
+      superseded.push(transfer);
+    }
+  }
+  const active = Array.from(latestBySource.values()).toSorted(
+    (left, right) =>
+      DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt),
+  );
+  return { active, superseded };
 }
 
 export function shouldPrepareLegacyImportHandoff(input: {
@@ -1771,8 +1814,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           omitSettledSubagents: true,
           // No command reads a settled task's node or its child's provider thread.
           omitSettledSubagentRecords: true,
-          // Commands act on pending forks and merge-backs only; consumed ones stay unread.
-          contextTransferStatuses: ["pending"],
+          // Commands act on pending and bound forks/merge-backs; consumed ones stay unread.
+          contextTransferStatuses: ["pending", "bound"],
           ...(recent === undefined ? {} : { sinceLastCompaction: recent }),
         },
       )
@@ -2185,7 +2228,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     function* (input: {
       readonly command: OrchestrationV2ServerCommand;
       readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
-      readonly projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts">;
+      readonly projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts"> & {
+        readonly contextTransfers?: ReadonlyArray<OrchestrationV2ContextTransfer>;
+      };
       readonly run: OrchestrationV2Run;
       readonly now: DateTime.Utc;
     }) {
@@ -2203,7 +2248,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     const projection = yield* projectionStore.getThreadRecords(
       threadId,
-      ["runs", "nodes", "attempts", "providerThreads", "turnItems", "messages"],
+      ["runs", "nodes", "attempts", "providerThreads", "turnItems", "messages", "contextTransfers"],
       { turnItemTypes: ["user_message"], messageRoles: ["user"] },
     );
     const queuedRun =
@@ -2241,6 +2286,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       code: handoffUnsupported ? "context_handoff_unsupported" : "queued_start_failed",
       class: handoffUnsupported ? "validation_error" : "unknown",
     });
+    const boundMergeBackRollbacks = projection.contextTransfers
+      .filter(
+        (transfer) =>
+          transfer.type === "merge_back" &&
+          transfer.targetThreadId === threadId &&
+          transfer.targetRunId === queuedRun.id &&
+          transfer.status === "bound",
+      )
+      .map((transfer) => ({
+        type: "context-transfer.updated" as const,
+        threadId,
+        runId: queuedRun.id,
+        providerInstanceId: queuedRun.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...transfer,
+          targetRunId: null,
+          status: "pending" as const,
+          resolution: null,
+          error: null,
+          updatedAt: now,
+          consumedAt: null,
+        },
+      }));
     yield* writeSystemEvents([
       ...retainedUserItems.map((item) => ({
         type: "turn-item.updated" as const,
@@ -2310,6 +2379,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               },
             },
           ]),
+      ...boundMergeBackRollbacks,
       {
         type: "run.updated",
         threadId,
@@ -2320,6 +2390,206 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: { ...queuedRun, status: "failed", queuePosition: null, completedAt: now },
       },
     ]);
+  });
+
+  const prepareMergeBackHandoffForTransfers = Effect.fn(
+    "Orchestrator.prepareMergeBackHandoffForTransfers",
+  )(function* (input: {
+    readonly commandId: CommandId;
+    readonly commandType: OrchestrationV2ServerCommand["type"];
+    readonly targetThreadId: ThreadId;
+    readonly targetRunId: RunId;
+    readonly targetProviderThreadId: OrchestrationV2ProviderThread["id"];
+    readonly targetModelSelection: OrchestrationV2Run["modelSelection"];
+    readonly targetCapabilities: Parameters<
+      typeof commandPolicy.ensureContextHandoff
+    >[0]["capabilities"];
+    readonly transfers: ReadonlyArray<OrchestrationV2ContextTransfer>;
+    readonly now: DateTime.Utc;
+  }) {
+    if (input.transfers.length === 0) {
+      return null;
+    }
+    yield* commandPolicy
+      .ensureContextHandoff({
+        commandId: input.commandId,
+        threadId: input.targetThreadId,
+        providerInstanceId: input.targetModelSelection.instanceId,
+        capabilities: input.targetCapabilities,
+        strategy: "fork_delta_context",
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: input.commandId,
+              commandType: input.commandType,
+              cause,
+            }),
+        ),
+      );
+
+    // Load all previously consumed merge-backs on target so incremental merges skip already-delivered runs.
+    const { contextTransfers: storedTargetTransfers } = yield* projectionStore
+      .getThreadRecords(input.targetThreadId, ["contextTransfers"])
+      .pipe(
+        Effect.catchTags({
+          ProjectionStoreThreadNotFoundError: () => Effect.succeed({ contextTransfers: [] }),
+        }),
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: input.targetThreadId, cause }),
+        ),
+      );
+    const consumedMergeBacksBySource = new Map<ThreadId, Set<RunId>>();
+    for (const transfer of storedTargetTransfers) {
+      if (
+        transfer.type === "merge_back" &&
+        transfer.targetThreadId === input.targetThreadId &&
+        transfer.status === "consumed" &&
+        transfer.sourcePoint.runId !== undefined
+      ) {
+        const set = consumedMergeBacksBySource.get(transfer.sourceThreadId) ?? new Set<RunId>();
+        set.add(transfer.sourcePoint.runId);
+        consumedMergeBacksBySource.set(transfer.sourceThreadId, set);
+      }
+    }
+
+    const resolvedSources: Array<{
+      readonly transfer: OrchestrationV2ContextTransfer;
+      readonly sourceTitle: string;
+      readonly sourceRun: OrchestrationV2Run;
+      readonly sourceProviderThreadId: OrchestrationV2ProviderThread["id"];
+      readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+      readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    }> = [];
+
+    for (const transfer of input.transfers) {
+      const sourceProjection = yield* projectionStore
+        .getThreadRecords(transfer.sourceThreadId, [
+          "runs",
+          "attempts",
+          "providerThreads",
+          "providerTurns",
+        ])
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProjectionError({ threadId: transfer.sourceThreadId, cause }),
+          ),
+        );
+      const sourceRun =
+        transfer.sourcePoint.runId === undefined
+          ? null
+          : (sourceProjection.runs.find(
+              (candidate) => candidate.id === transfer.sourcePoint.runId,
+            ) ?? null);
+      if (sourceRun === null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: input.commandType,
+          cause: `Pending merge-back transfer ${transfer.id} has no resolvable source run.`,
+        });
+      }
+      const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+      if (sourceProviderThread === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: input.commandType,
+          cause: `Pending merge-back transfer ${transfer.id} has no resolvable source provider thread.`,
+        });
+      }
+      const previouslyConsumedRunIds = consumedMergeBacksBySource.get(transfer.sourceThreadId);
+      const maxConsumedOrdinal =
+        previouslyConsumedRunIds === undefined
+          ? 0
+          : Math.max(
+              0,
+              ...sourceProjection.runs
+                .filter((candidate) => previouslyConsumedRunIds.has(candidate.id))
+                .map((candidate) => candidate.ordinal),
+            );
+      const incrementalRuns = sourceProjection.runs.filter(
+        (candidate) =>
+          candidate.ordinal > maxConsumedOrdinal && candidate.ordinal <= sourceRun.ordinal,
+      );
+      const selectedRuns = incrementalRuns.length > 0 ? incrementalRuns : [sourceRun];
+      const deltaItems = visibleConversationItems(
+        sourceProjection,
+        yield* readHandoffItems(
+          sourceProjection.thread.id,
+          selectedRuns.map((candidate) => candidate.id),
+        ),
+      );
+      resolvedSources.push({
+        transfer,
+        sourceTitle: sourceProjection.thread.title,
+        sourceRun,
+        sourceProviderThreadId: sourceProviderThread.id,
+        coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, deltaItems),
+        deltaItems,
+      });
+    }
+
+    const handoff =
+      resolvedSources.length === 1
+        ? yield* contextHandoffService
+            .prepareForkDelta({
+              sourceThreadId: resolvedSources[0]!.transfer.sourceThreadId,
+              targetThreadId: input.targetThreadId,
+              targetRunId: input.targetRunId,
+              transferId: resolvedSources[0]!.transfer.id,
+              fromProviderThreadIds: [resolvedSources[0]!.sourceProviderThreadId],
+              toProviderThreadId: input.targetProviderThreadId,
+              fromProviderInstanceId: resolvedSources[0]!.sourceRun.providerInstanceId,
+              toProviderInstanceId: input.targetModelSelection.instanceId,
+              coveredRunOrdinals: resolvedSources[0]!.coveredRunOrdinals,
+              deltaItems: resolvedSources[0]!.deltaItems,
+              createdAt: input.now,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.commandId,
+                    commandType: input.commandType,
+                    cause,
+                  }),
+              ),
+            )
+        : yield* contextHandoffService
+            .prepareMultiMergeBack({
+              targetThreadId: input.targetThreadId,
+              targetRunId: input.targetRunId,
+              transferId: resolvedSources.at(-1)!.transfer.id,
+              fromProviderThreadIds: Array.from(
+                new Set(resolvedSources.map((source) => source.sourceProviderThreadId)),
+              ),
+              toProviderThreadId: input.targetProviderThreadId,
+              fromProviderInstanceId: resolvedSources[0]!.sourceRun.providerInstanceId,
+              toProviderInstanceId: input.targetModelSelection.instanceId,
+              sources: resolvedSources.map((source) => ({
+                sourceThreadId: source.transfer.sourceThreadId,
+                sourceTitle: source.sourceTitle,
+                coveredRunOrdinals: source.coveredRunOrdinals,
+                deltaItems: source.deltaItems,
+              })),
+              createdAt: input.now,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.commandId,
+                    commandType: input.commandType,
+                    cause,
+                  }),
+              ),
+            );
+
+    return {
+      handoff,
+      sourceRuns: resolvedSources.map((source) => source.sourceRun),
+    };
   });
 
   const isStaleQuestionWake = Effect.fn("Orchestrator.isStaleQuestionWake")(function* (
@@ -2888,7 +3158,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ),
               )
           : null;
-      const activeHandoff = handoff ?? legacyImportRecoveryHandoff;
+      const boundMergeBackTransfers = projection.contextTransfers.filter(
+        (transfer) =>
+          transfer.type === "merge_back" &&
+          transfer.status === "bound" &&
+          transfer.targetThreadId === threadId &&
+          transfer.targetRunId === queuedRun.id,
+      );
+      const mergeBackPreparation =
+        boundMergeBackTransfers.length === 0
+          ? null
+          : yield* prepareMergeBackHandoffForTransfers({
+              commandId,
+              commandType: "message.dispatch",
+              targetThreadId: threadId,
+              targetRunId: queuedRun.id,
+              targetProviderThreadId: queuedProviderThread.id,
+              targetModelSelection: queuedRun.modelSelection,
+              targetCapabilities,
+              transfers: boundMergeBackTransfers,
+              now,
+            });
+      const mergeBackHandoff = mergeBackPreparation?.handoff ?? null;
+      const mergeBackSourceRuns = mergeBackPreparation?.sourceRuns ?? [];
+      const activeHandoff = handoff ?? mergeBackHandoff ?? legacyImportRecoveryHandoff;
       const checkpointScope =
         storedCheckpointScope ??
         (yield* runtimePolicy
@@ -2943,7 +3236,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         firstRunOrdinal: queuedProviderThread.firstRunOrdinal ?? ordinal,
         lastRunOrdinal: ordinal,
         handoffIds: appendContextHandoffId(
-          appendContextHandoffId(queuedProviderThread.handoffIds, handoff?.id ?? null),
+          appendContextHandoffId(
+            appendContextHandoffId(queuedProviderThread.handoffIds, handoff?.id ?? null),
+            mergeBackHandoff?.id ?? null,
+          ),
           legacyImportRecoveryHandoff?.id ?? null,
         ),
         updatedAt: now,
@@ -3026,6 +3322,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedAt: now,
         ...(activeHandoff === null ? modelSwitchSince(projection, queuedRun.modelSelection) : {}),
       };
+      const handoffSourceRuns =
+        handoff !== null
+          ? coveredRuns
+          : mergeBackHandoff !== null
+            ? mergeBackSourceRuns
+            : coveredRuns;
       const handoffTurnItem: OrchestrationV2TurnItem | null =
         activeHandoff === null
           ? null
@@ -3043,7 +3345,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               parentItemId: null,
               ordinal: ordinal * 100 - 1,
               status: "completed",
-              title: handoff === null ? "Imported context" : "Provider handoff",
+              title:
+                handoff !== null
+                  ? "Provider handoff"
+                  : mergeBackHandoff !== null
+                    ? "Merge-back context"
+                    : "Imported context",
               startedAt: now,
               completedAt: now,
               updatedAt: now,
@@ -3052,12 +3359,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               fromProviderThreadIds: activeHandoff.fromProviderThreadIds,
               toProviderThreadId: activeHandoff.toProviderThreadId,
               fromProviderInstanceIds: Array.from(
-                new Set(coveredRuns.map((run) => run.providerInstanceId)),
+                new Set(handoffSourceRuns.map((run) => run.providerInstanceId)),
               ),
               toProviderInstanceId: queuedRun.providerInstanceId,
               fromModelSelections: Array.from(
                 new Map(
-                  coveredRuns.map((run) => [
+                  handoffSourceRuns.map((run) => [
                     `${run.modelSelection.instanceId}\0${run.modelSelection.model}`,
                     run.modelSelection,
                   ]),
@@ -3189,6 +3496,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   occurredAt: now,
                   payload: legacyImportRecoveryHandoff,
                 },
+              ]),
+          ...(mergeBackHandoff === null
+            ? []
+            : [
+                {
+                  type: "context-handoff.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: mergeBackHandoff,
+                },
+                ...boundMergeBackTransfers.map((transfer) => ({
+                  type: "context-transfer.updated" as const,
+                  threadId,
+                  runId: queuedRun.id,
+                  providerInstanceId: queuedRun.providerInstanceId,
+                  occurredAt: now,
+                  payload: {
+                    ...transfer,
+                    targetProviderInstanceId: queuedRun.providerInstanceId,
+                    targetRunId: queuedRun.id,
+                    status: "bound" as const,
+                    resolution: {
+                      strategy: "fork_delta_context" as const,
+                      contextHandoffId: mergeBackHandoff.id,
+                    },
+                    error: null,
+                    updatedAt: now,
+                    consumedAt: null,
+                  },
+                })),
               ]),
           ...(handoffTurnItem === null
             ? []
@@ -5858,38 +6197,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
+    const allowedMergeBackRelationships = new Set(["fork", "subtask", "subagent"]);
     if (
-      sourceProjection.thread.lineage.relationshipToParent !== "fork" ||
+      sourceProjection.thread.lineage.relationshipToParent === null ||
+      !allowedMergeBackRelationships.has(sourceProjection.thread.lineage.relationshipToParent) ||
       sourceProjection.thread.lineage.parentThreadId !== command.targetThreadId
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Thread ${command.sourceThreadId} is not a fork of ${command.targetThreadId}.`,
-      });
-    }
-    // Queued runs cannot consume merge-back context. Refuse under the target's
-    // command lock before a pending transfer can block its ordinary messages.
-    if (targetProjection.runs.some((run) => isActiveRun(run) || run.status === "queued")) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause:
-          "Finish or stop the target thread's active work and clear its queue before merging back.",
-      });
-    }
-    const otherPendingMergeBack = targetProjection.contextTransfers.some(
-      (transfer) =>
-        transfer.type === "merge_back" &&
-        transfer.status === "pending" &&
-        transfer.targetThreadId === command.targetThreadId &&
-        transfer.sourceThreadId !== command.sourceThreadId,
-    );
-    if (otherPendingMergeBack) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Thread ${command.targetThreadId} already has pending context from another side chat or fork. Send a message there first.`,
+        cause: `Thread ${command.sourceThreadId} is not a child fork, subtask, or subagent of ${command.targetThreadId}.`,
       });
     }
 
@@ -5915,24 +6232,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         transfer.sourceThreadId === command.targetThreadId &&
         transfer.targetThreadId === command.sourceThreadId,
     );
-    if (forkTransfer === undefined) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `No fork transfer exists between ${command.targetThreadId} and ${command.sourceThreadId}.`,
-      });
-    }
 
     const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
-    const transferId = yield* mapDispatchError(command)(
-      idAllocator.allocate.contextTransfer({
-        sourceThreadId: command.sourceThreadId,
-        targetThreadId: command.targetThreadId,
-        type: "merge_back",
-      }),
-    );
     const pendingMergeBackTransfersForPair = targetProjection.contextTransfers.filter(
       (transfer) =>
         transfer.type === "merge_back" &&
@@ -5940,13 +6243,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         transfer.sourceThreadId === command.sourceThreadId &&
         transfer.targetThreadId === command.targetThreadId,
     );
+    const identicalPendingTransfer = pendingMergeBackTransfersForPair.findLast(
+      (transfer) => transfer.sourcePoint.runId === sourceRun.id,
+    );
+    if (identicalPendingTransfer !== undefined) {
+      for (const pendingTransfer of pendingMergeBackTransfersForPair) {
+        if (pendingTransfer.id === identicalPendingTransfer.id) continue;
+        yield* emitEvent({
+          type: "context-transfer.updated",
+          threadId: command.targetThreadId,
+          providerInstanceId: sourceRun.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...pendingTransfer,
+            status: "superseded",
+            error: `Superseded by merge-back transfer ${identicalPendingTransfer.id}.`,
+            updatedAt: now,
+          },
+        });
+      }
+      yield* emitEvent({
+        type: "context-transfer.updated",
+        threadId: command.targetThreadId,
+        providerInstanceId: sourceRun.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...identicalPendingTransfer,
+          updatedAt: now,
+        },
+      });
+      return;
+    }
+
+    const transferId = yield* mapDispatchError(command)(
+      idAllocator.allocate.contextTransfer({
+        sourceThreadId: command.sourceThreadId,
+        targetThreadId: command.targetThreadId,
+        type: "merge_back",
+      }),
+    );
     const transfer: OrchestrationV2ContextTransfer = {
       id: transferId,
       type: "merge_back",
       sourceThreadId: command.sourceThreadId,
       targetThreadId: command.targetThreadId,
       sourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
-      basePoint: forkTransfer.sourcePoint,
+      basePoint: forkTransfer?.sourcePoint ?? null,
       sourceProviderInstanceId: sourceRun.providerInstanceId,
       targetProviderInstanceId: targetProjection.thread.modelSelection.instanceId,
       targetRunId: null,
@@ -5982,6 +6324,68 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       payload: transfer,
     });
   });
+
+  const dispatchThreadMergeBackRevoke = Effect.fn("orchestrationV2.dispatch.threadMergeBackRevoke")(
+    function* (
+      command: Extract<OrchestrationV2Command, { readonly type: "thread.merge_back.revoke" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      yield* Effect.annotateCurrentSpan({
+        "orchestration_v2.command_id": command.commandId,
+        "orchestration_v2.command_type": command.type,
+        "orchestration_v2.thread_id": command.threadId,
+        "orchestration_v2.transfer_id": command.transferId,
+      });
+
+      const targetProjection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["contextTransfers"])
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProjectionError({
+                threadId: command.threadId,
+                cause,
+              }),
+          ),
+        );
+      const transfer = targetProjection.contextTransfers.find(
+        (candidate) =>
+          candidate.id === command.transferId &&
+          candidate.type === "merge_back" &&
+          candidate.targetThreadId === command.threadId,
+      );
+      if (transfer === undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Merge-back transfer ${command.transferId} does not exist on thread ${command.threadId}.`,
+        });
+      }
+      if (transfer.status !== "pending") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Merge-back transfer ${command.transferId} is ${transfer.status} and cannot be revoked.`,
+        });
+      }
+
+      const now = command.createdAt ?? (yield* DateTime.now);
+      const emitEvent = emit(events, command);
+      yield* emitEvent({
+        type: "context-transfer.updated",
+        threadId: command.threadId,
+        providerInstanceId:
+          transfer.targetProviderInstanceId ?? targetProjection.thread.modelSelection.instanceId,
+        occurredAt: now,
+        payload: {
+          ...transfer,
+          status: "superseded",
+          error: "Revoked by user.",
+          updatedAt: now,
+        },
+      });
+    },
+  );
 
   const ensureSteeringMessage = Effect.fn("Orchestrator.ensureSteeringMessage")(function* (
     command: Extract<
@@ -7646,6 +8050,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.createdBy === "user" &&
       (command.creationSource === "web" || command.creationSource === "mobile") &&
       command.scheduledTaskId === undefined;
+    const canBindMergeBacks =
+      sentByUserFromClient &&
+      startsOrQueuesRun &&
+      steerWhenReadyRunId === undefined &&
+      delegatedCompletion === undefined &&
+      notification === undefined &&
+      command.restartContinuationOfRunId === undefined &&
+      command.manualContinuationOfRunId === undefined &&
+      command.usageLimitContinuationOfRunId === undefined &&
+      !isCompactionCommandMessage({
+        role: "user",
+        text: command.text,
+        attachments: command.attachments,
+      }) &&
+      parseGoalCommand(command) === null;
+    const { active: eligibleMergeBackTransfers, superseded: supersededMergeBackTransfers } =
+      canBindMergeBacks
+        ? deduplicatePendingMergeBackTransfers(pendingMergeBackTransfers)
+        : {
+            active: [] as ReadonlyArray<OrchestrationV2ContextTransfer>,
+            superseded: [] as ReadonlyArray<OrchestrationV2ContextTransfer>,
+          };
     const heldRunsToRelease =
       sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
         ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
@@ -7665,11 +8091,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (shouldQueue) {
-      if (pendingMergeBackTransfers.length > 0) {
+      if (freshContext && eligibleMergeBackTransfers.length > 0) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Thread ${command.threadId} has a pending merge-back transfer; queued merge-back consumption is not implemented yet.`,
+          cause: "A fresh session can't start while a fork or merge is still being applied.",
         });
       }
       const queueProviderThread =
@@ -7945,6 +8371,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       yield* completeSourcePlan(now);
       yield* recordChildReportTransfer(runId, now);
+      for (const supersededTransfer of supersededMergeBackTransfers) {
+        yield* emitEvent({
+          type: "context-transfer.updated",
+          threadId: command.threadId,
+          runId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...supersededTransfer,
+            status: "superseded",
+            error: "Superseded by a newer merge-back transfer from the same source thread.",
+            updatedAt: now,
+          },
+        });
+      }
+      for (const transfer of eligibleMergeBackTransfers) {
+        yield* emitEvent({
+          type: "context-transfer.updated",
+          threadId: command.threadId,
+          runId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...transfer,
+            targetProviderInstanceId: modelSelection.instanceId,
+            targetRunId: runId,
+            status: "bound",
+            resolution: null,
+            error: null,
+            updatedAt: now,
+            consumedAt: null,
+          },
+        });
+      }
       yield* emitEvent({
         type: "run-attempt.created",
         threadId: command.threadId,
@@ -8023,20 +8483,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
     const pendingForkTransfer = pendingForkTransferForThread(projection);
-    const pendingMergeBackSourceThreadIds = new Set(
-      pendingMergeBackTransfers.map((transfer) => transfer.sourceThreadId),
-    );
-    if (pendingMergeBackSourceThreadIds.size > 1) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Thread ${command.threadId} has pending merge-back transfers from multiple forks.`,
-      });
-    }
-    const pendingMergeBackTransfer = latestContextTransfer(pendingMergeBackTransfers);
-    const supersededMergeBackTransfers = pendingMergeBackTransfers.filter(
-      (transfer) => transfer.id !== pendingMergeBackTransfer?.id,
-    );
     const now = yield* DateTime.now;
     if (
       !modelSelectionsEqual(projection.thread.modelSelection, modelSelection) ||
@@ -8063,7 +8509,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (
       freshContext &&
-      (pendingForkTransfer !== undefined || pendingMergeBackTransfer !== undefined)
+      (pendingForkTransfer !== undefined || eligibleMergeBackTransfers.length > 0)
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -8134,7 +8580,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     if (
       pendingForkTransfer === undefined &&
-      pendingMergeBackTransfer === undefined &&
+      eligibleMergeBackTransfers.length === 0 &&
       (!isProviderSwitch || freshContext)
     ) {
       const reusableProviderThread = freshContext ? undefined : activeProviderThread;
@@ -8848,7 +9294,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             })
             .pipe(mapDispatchError(command));
     const requiresFullProviderSwitchContext =
-      isProviderSwitch && pendingMergeBackTransfer !== undefined;
+      isProviderSwitch && eligibleMergeBackTransfers.length > 0;
     const targetLastCompletedRun =
       targetProviderThread === undefined
         ? undefined
@@ -8979,106 +9425,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const attemptId = idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 });
     const rootNodeId = idAllocator.derive.rootNode({ runId });
     const emitEvent = emit(events, command);
-    const mergeBackSourceProjection =
-      pendingMergeBackTransfer === undefined
+    const mergeBackPreparation =
+      eligibleMergeBackTransfers.length === 0
         ? null
-        : yield* projectionStore
-            .getThreadRecords(pendingMergeBackTransfer.sourceThreadId, [
-              "runs",
-              "attempts",
-              "providerThreads",
-              "providerTurns",
-            ])
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorProjectionError({
-                    threadId: pendingMergeBackTransfer.sourceThreadId,
-                    cause,
-                  }),
-              ),
-            );
-    const mergeBackSourceRun =
-      pendingMergeBackTransfer?.sourcePoint.runId === undefined ||
-      mergeBackSourceProjection === null
-        ? null
-        : (mergeBackSourceProjection.runs.find(
-            (candidate) => candidate.id === pendingMergeBackTransfer.sourcePoint.runId,
-          ) ?? null);
-    if (pendingMergeBackTransfer !== undefined && mergeBackSourceRun === null) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Pending merge-back transfer ${pendingMergeBackTransfer.id} has no resolvable source run.`,
-      });
-    }
-    const mergeBackSourceProviderThread =
-      mergeBackSourceProjection === null || mergeBackSourceRun === null
-        ? undefined
-        : providerThreadForRun(mergeBackSourceProjection, mergeBackSourceRun);
-    if (pendingMergeBackTransfer !== undefined && mergeBackSourceProviderThread === undefined) {
-      return yield* new OrchestratorDispatchError({
-        commandId: command.commandId,
-        commandType: command.type,
-        cause: `Pending merge-back transfer ${pendingMergeBackTransfer.id} has no resolvable source provider thread.`,
-      });
-    }
-    if (pendingMergeBackTransfer !== undefined) {
-      yield* mapDispatchError(command)(
-        commandPolicy.ensureContextHandoff({
-          commandId: command.commandId,
-          threadId: command.threadId,
-          providerInstanceId: modelSelection.instanceId,
-          capabilities,
-          strategy: "fork_delta_context",
-        }),
-      );
-    }
-    const mergeBackDeltaItems =
-      mergeBackSourceProjection === null || mergeBackSourceRun === null
-        ? []
-        : visibleConversationItems(
-            mergeBackSourceProjection,
-            yield* readHandoffItems(
-              mergeBackSourceProjection.thread.id,
-              mergeBackSourceProjection.runs
-                .filter((run) => run.ordinal <= mergeBackSourceRun.ordinal)
-                .map((run) => run.id),
-            ),
-          );
-    const mergeBackHandoff =
-      pendingMergeBackTransfer === undefined ||
-      mergeBackSourceProjection === null ||
-      mergeBackSourceRun === null ||
-      mergeBackSourceProviderThread === undefined
-        ? null
-        : yield* contextHandoffService
-            .prepareForkDelta({
-              sourceThreadId: pendingMergeBackTransfer.sourceThreadId,
-              targetThreadId: command.threadId,
-              targetRunId: runId,
-              transferId: pendingMergeBackTransfer.id,
-              fromProviderThreadIds: [mergeBackSourceProviderThread.id],
-              toProviderThreadId: providerThread.id,
-              fromProviderInstanceId: mergeBackSourceRun.providerInstanceId,
-              toProviderInstanceId: modelSelection.instanceId,
-              coveredRunOrdinals: visibleDeltaRunOrdinals(
-                mergeBackSourceProjection,
-                mergeBackDeltaItems,
-              ),
-              deltaItems: mergeBackDeltaItems,
-              createdAt: now,
-            })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorDispatchError({
-                    commandId: command.commandId,
-                    commandType: command.type,
-                    cause,
-                  }),
-              ),
-            );
+        : yield* prepareMergeBackHandoffForTransfers({
+            commandId: command.commandId,
+            commandType: command.type,
+            targetThreadId: command.threadId,
+            targetRunId: runId,
+            targetProviderThreadId: providerThread.id,
+            targetModelSelection: modelSelection,
+            targetCapabilities: capabilities,
+            transfers: eligibleMergeBackTransfers,
+            now,
+          });
+    const mergeBackHandoff = mergeBackPreparation?.handoff ?? null;
+    const mergeBackSourceRuns = mergeBackPreparation?.sourceRuns ?? [];
     const checkpointScope = yield* checkpointService
       .prepareRootRunScope({
         threadId: command.threadId,
@@ -9237,9 +9599,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? []
           : [sourceRun]
         : providerSwitchHandoff === null
-          ? mergeBackSourceRun === null
-            ? []
-            : [mergeBackSourceRun]
+          ? mergeBackSourceRuns
           : providerSwitchCoveredRuns;
     const handoffFromModelSelections = Array.from(
       new Map(
@@ -9307,7 +9667,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             contextHandoffId: portableForkContext.id,
           };
     const mergeBackResolution: OrchestrationV2ContextTransferResolution | null =
-      pendingMergeBackTransfer === undefined || mergeBackHandoff === null
+      eligibleMergeBackTransfers.length === 0 || mergeBackHandoff === null
         ? null
         : {
             strategy: "fork_delta_context",
@@ -9466,32 +9826,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: {
           ...supersededTransfer,
           status: "superseded",
-          error:
-            pendingMergeBackTransfer === undefined
-              ? "Superseded while consuming merge-back transfer."
-              : `Superseded by merge-back transfer ${pendingMergeBackTransfer.id}.`,
+          error: "Superseded by a newer merge-back transfer from the same source thread.",
           updatedAt: now,
         },
       });
     }
-    if (pendingMergeBackTransfer !== undefined && mergeBackResolution !== null) {
-      yield* emitEvent({
-        type: "context-transfer.updated",
-        threadId: command.threadId,
-        runId,
-        providerInstanceId: modelSelection.instanceId,
-        occurredAt: now,
-        payload: {
-          ...pendingMergeBackTransfer,
-          targetProviderInstanceId: modelSelection.instanceId,
-          targetRunId: runId,
-          status: "consumed",
-          resolution: mergeBackResolution,
-          error: null,
-          updatedAt: now,
-          consumedAt: now,
-        },
-      });
+    if (mergeBackResolution !== null) {
+      for (const transfer of eligibleMergeBackTransfers) {
+        yield* emitEvent({
+          type: "context-transfer.updated",
+          threadId: command.threadId,
+          runId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...transfer,
+            targetProviderInstanceId: modelSelection.instanceId,
+            targetRunId: runId,
+            status: "bound",
+            resolution: mergeBackResolution,
+            error: null,
+            updatedAt: now,
+            consumedAt: null,
+          },
+        });
+      }
     }
     yield* emitEvent({
       type: "run.created",
@@ -11903,7 +12262,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
-      ["runs", "messages", "nodes", "attempts", "subagents", "turnItems"],
+      ["runs", "messages", "nodes", "attempts", "subagents", "turnItems", "contextTransfers"],
       // Cancelling reads the queued run's own message and root node, never a settled leaf.
       {
         turnItemTypes: [],
@@ -15676,6 +16035,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.merge_back":
         yield* dispatchThreadMergeBack(command, events);
+        break;
+      case "thread.merge_back.revoke":
+        yield* dispatchThreadMergeBackRevoke(command, events);
         break;
       case "delegated_task.request":
         yield* dispatchDelegatedTaskRequest(command, events, effects);

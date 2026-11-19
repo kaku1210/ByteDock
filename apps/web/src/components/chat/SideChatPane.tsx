@@ -1,6 +1,5 @@
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   isAtomCommandInterrupted,
@@ -51,7 +50,6 @@ export default function SideChatPane(props: {
   );
   const shell = useQuietThreadShell(threadRef);
   const temporary = shell?.lineage.temporary === true;
-  const parent = useQuietThreadShell(parentRef);
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);
   useOpenThreadFamily(threadRef, snapshotLoaded && shell === null);
   const projection = useQuietThreadProjection(shell === null ? null : threadRef)?.projection;
@@ -62,16 +60,13 @@ export default function SideChatPane(props: {
   const [bringingBack, setBringingBack] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const mergeRun = projection ? resolveLatestMergeBackRun(projection) : null;
-  // A pending merge-back would fail the main thread's queued message, so the server refuses it.
   const bringBackBlockedReason = !canOperate
     ? "This connection cannot change threads."
     : temporary
       ? "Temporary side chats cannot be brought back to the main thread."
-      : threadRuntimeIsActive(parent?.runtime)
-        ? "Available when the main thread is idle."
-        : mergeRun === null
-          ? "Available after a finished reply."
-          : null;
+      : mergeRun === null
+        ? "Available after a finished reply."
+        : null;
 
   const bringBack = async () => {
     if (bringBackBlockedReason !== null || mergeRun === null || bringingBack) return;

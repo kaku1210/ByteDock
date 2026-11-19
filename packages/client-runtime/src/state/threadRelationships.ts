@@ -34,17 +34,40 @@ export interface ThreadRelationshipWalkRow {
   readonly edge: ThreadRelationshipEdge;
 }
 
+const MERGE_BACK_RELATIONSHIPS = new Set(["fork", "subtask", "subagent"]);
+
 export function resolveMergeBackTargetThreadId(
   projection: Pick<ThreadStructure, "thread"> | null,
 ): ThreadId | null {
+  if (projection === null) return null;
+  const relationship = projection.thread.lineage.relationshipToParent;
   if (
-    projection?.thread.lineage.relationshipToParent !== "fork" ||
+    relationship == null ||
+    !MERGE_BACK_RELATIONSHIPS.has(relationship) ||
     projection.thread.lineage.temporary === true
   )
     return null;
   return projection.thread.forkedFrom?.type === "run"
     ? projection.thread.forkedFrom.threadId
     : projection.thread.lineage.parentThreadId;
+}
+
+export function pendingMergeBackTransfersForThread(
+  projection: Pick<ThreadStructure, "thread" | "contextTransfers"> | null,
+): ReadonlyArray<ThreadStructure["contextTransfers"][number]> {
+  if (projection === null) return [];
+  const latestBySource = new Map<ThreadId, ThreadStructure["contextTransfers"][number]>();
+  for (const transfer of projection.contextTransfers) {
+    if (
+      transfer.type !== "merge_back" ||
+      transfer.status !== "pending" ||
+      transfer.targetThreadId !== projection.thread.id
+    ) {
+      continue;
+    }
+    latestBySource.set(transfer.sourceThreadId, transfer);
+  }
+  return Array.from(latestBySource.values());
 }
 
 function edgeKey(edge: ThreadRelationshipEdge): string {

@@ -48,10 +48,12 @@ import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { pendingMergeBackTransfersForThread } from "@t3tools/client-runtime/state/thread-relationships";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { freshSessionBannerItem } from "./chat/ComposerFreshSession";
+import { pendingMergeBacksBannerItem } from "./chat/ComposerPendingMergeBacks";
 import { armFreshSession, disarmFreshSession, useFreshSessionArmed } from "./chat/freshSessionArms";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
@@ -485,6 +487,9 @@ export default function ChatView(props: ChatViewProps) {
   });
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
+  });
+  const revokeMergeBack = useOrchestrationCommand(threadEnvironment.revokeMergeBack, {
+    reportFailure: true,
   });
   const loadEarlierThreadHistory = useAtomCommand(threadEnvironment.loadEarlierHistory, {
     label: "load earlier thread history",
@@ -2686,6 +2691,26 @@ export default function ChatView(props: ChatViewProps) {
       freshSessionAvailable && freshSessionArmed && activePendingApproval === null
         ? [freshSessionBannerItem(() => disarmFreshSession(routeThreadKey))]
         : [];
+    const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(serverProjection);
+    const pendingMergeBackItems =
+      pendingMergeBackTransfers.length > 0 && activePendingApproval === null
+        ? [
+            pendingMergeBacksBannerItem({
+              environmentId,
+              transfers: pendingMergeBackTransfers,
+              disabled: !canOperateThread,
+              onRevoke: (transferId) => {
+                void revokeMergeBack({
+                  environmentId,
+                  input: {
+                    threadId,
+                    transferId,
+                  },
+                });
+              },
+            }),
+          ]
+        : [];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
@@ -2695,6 +2720,7 @@ export default function ChatView(props: ChatViewProps) {
         ...usageLimitsItems,
         ...projectCloneItems,
         ...freshSessionItems,
+        ...pendingMergeBackItems,
         ...systemComposerBannerItems,
       ];
     }
@@ -2706,6 +2732,7 @@ export default function ChatView(props: ChatViewProps) {
       ...usageLimitsItems,
       ...projectCloneItems,
       ...freshSessionItems,
+      ...pendingMergeBackItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem({
         mismatchKey: activeBranchMismatchKey,

@@ -116,6 +116,23 @@ export interface ContextHandoffServiceV2Shape {
     readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
+  /** Aggregated multi-source merge-back handoff with shared budget and per-source guaranteed floor. */
+  readonly prepareMultiMergeBack: (input: {
+    readonly targetThreadId: ThreadId;
+    readonly targetRunId: RunId;
+    readonly transferId: NonNullable<OrchestrationV2ContextHandoff["transferId"]>;
+    readonly fromProviderThreadIds: ReadonlyArray<ProviderThreadId>;
+    readonly toProviderThreadId: ProviderThreadId;
+    readonly fromProviderInstanceId: ProviderInstanceId;
+    readonly toProviderInstanceId: ProviderInstanceId;
+    readonly sources: ReadonlyArray<{
+      readonly sourceThreadId: ThreadId;
+      readonly sourceTitle: string;
+      readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+      readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    }>;
+    readonly createdAt: DateTime.Utc;
+  }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
 }
 
 export class ContextHandoffServiceV2 extends Context.Service<
@@ -260,6 +277,103 @@ function makeForkDeltaSummary(input: {
     "",
     "Fork delta:",
     ...(itemLines.length === 0 ? ["- No user-visible delta items."] : itemLines),
+  ].join("\n");
+}
+
+const MULTI_MERGE_BACK_MAX_CHARS = 12_000;
+
+function makeMultiMergeBackSummary(input: {
+  readonly targetThreadId: ThreadId;
+  readonly sources: ReadonlyArray<{
+    readonly sourceThreadId: ThreadId;
+    readonly sourceTitle: string;
+    readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+    readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  }>;
+}): string {
+  const header = `Merged context from ${input.sources.length} child threads into ${input.targetThreadId}:`;
+  const omittedMarker = "- Earlier items omitted due to shared merge-back budget.";
+  const sections = input.sources.map((source) => {
+    const allLines = source.deltaItems.flatMap((item) => {
+      const line = summarizeDeltaItem(item);
+      return line === null ? [] : [line];
+    });
+    const lastAssistant = source.deltaItems.findLast((item) => item.type === "assistant_message");
+    const floorLine =
+      lastAssistant?.type === "assistant_message"
+        ? `- Conclusion: ${compactText(lastAssistant.text, 320)}`
+        : (allLines.at(-1) ?? "- No user-visible delta items.");
+    const extraLines =
+      lastAssistant?.type === "assistant_message"
+        ? allLines.filter((line) => line !== `- Assistant: ${compactText(lastAssistant.text)}`)
+        : allLines.slice(0, -1);
+    const titleLine = `### ${compactText(source.sourceTitle, 120)} (${source.sourceThreadId}, runs ${source.coveredRunOrdinals.from}-${source.coveredRunOrdinals.to})`;
+    const backRefLine = `Full history: t3_thread_read({ threadId: "${source.sourceThreadId}", view: "activity" })`;
+    return {
+      titleLine,
+      floorLine,
+      backRefLine,
+      extraLines,
+      keptExtras: [] as Array<string>,
+      omitted: false,
+    };
+  });
+
+  // Reserve guaranteed floor (header + each source's title, conclusion floor, back-ref, and omission slack).
+  const fixedChars =
+    header.length +
+    sections.reduce(
+      (sum, section) =>
+        sum +
+        2 +
+        section.titleLine.length +
+        1 +
+        section.floorLine.length +
+        1 +
+        section.backRefLine.length +
+        1 +
+        omittedMarker.length,
+      0,
+    );
+  let remaining = Math.max(0, MULTI_MERGE_BACK_MAX_CHARS - fixedChars);
+
+  // Distribute remaining shared budget fairly across sources (round-robin, newest lines first).
+  const cursors = sections.map((section) => section.extraLines.length - 1);
+  let progressed = true;
+  while (progressed && remaining > 0) {
+    progressed = false;
+    for (let index = 0; index < sections.length; index++) {
+      const section = sections[index]!;
+      const cursor = cursors[index]!;
+      if (cursor < 0) continue;
+      const line = section.extraLines[cursor]!;
+      cursors[index] = cursor - 1;
+      if (line.length + 1 <= remaining) {
+        section.keptExtras.unshift(line);
+        remaining -= line.length + 1;
+        progressed = true;
+      } else {
+        section.omitted = true;
+        cursors[index] = -1;
+      }
+    }
+  }
+  for (let index = 0; index < sections.length; index++) {
+    if (cursors[index]! >= 0) {
+      sections[index]!.omitted = true;
+    }
+  }
+
+  return [
+    header,
+    ...sections.flatMap((section) => [
+      "",
+      section.titleLine,
+      ...(section.omitted ? [omittedMarker] : []),
+      ...section.keptExtras,
+      section.floorLine,
+      section.backRefLine,
+    ]),
   ].join("\n");
 }
 
@@ -732,12 +846,60 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       },
     );
 
+    const prepareMultiMergeBack = Effect.fn("orchestrationV2.contextHandoff.prepareMultiMergeBack")(
+      function* (input: Parameters<ContextHandoffServiceV2Shape["prepareMultiMergeBack"]>[0]) {
+        const handoffId = yield* idAllocator.allocate
+          .contextHandoff({
+            threadId: input.targetThreadId,
+            fromProviderInstanceId: input.fromProviderInstanceId,
+            toProviderInstanceId: input.toProviderInstanceId,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ContextHandoffPrepareError({
+                  threadId: input.targetThreadId,
+                  targetRunId: input.targetRunId,
+                  fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
+                  toProviderThreadId: input.toProviderThreadId,
+                  cause,
+                }),
+            ),
+          );
+        const minFrom = Math.min(...input.sources.map((source) => source.coveredRunOrdinals.from));
+        const maxTo = Math.max(...input.sources.map((source) => source.coveredRunOrdinals.to));
+        return {
+          id: handoffId,
+          transferId: input.transferId,
+          threadId: input.targetThreadId,
+          targetRunId: input.targetRunId,
+          fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
+          toProviderThreadId: input.toProviderThreadId,
+          coveredRunOrdinals: {
+            from: Number.isFinite(minFrom) ? minFrom : 1,
+            to: Number.isFinite(maxTo) ? maxTo : 1,
+          },
+          strategy: "fork_delta_summary",
+          status: "ready",
+          summaryMessageId: null,
+          summaryText: makeMultiMergeBackSummary({
+            targetThreadId: input.targetThreadId,
+            sources: input.sources,
+          }),
+          createdByProviderInstanceId: null,
+          createdAt: input.createdAt,
+          updatedAt: input.createdAt,
+        } satisfies OrchestrationV2ContextHandoff;
+      },
+    );
+
     return ContextHandoffServiceV2.of({
       prepareLegacyImport,
       prepareForkDelta,
       prepareProviderHandoff,
       prepareSideChatContext,
       prepareSubtaskContext,
+      prepareMultiMergeBack,
     });
   },
 );

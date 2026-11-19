@@ -293,6 +293,7 @@ export const OrchestrationV2ContextTransfer = Schema.Struct({
   resultVersion: Schema.optional(NonNegativeInt),
   status: Schema.Literals([
     "pending",
+    "bound",
     "resolved_native",
     "resolved_portable",
     "failed",
@@ -3563,6 +3564,14 @@ export const OrchestrationV2Command = Schema.Union([
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+    createdAt: Schema.optional(Schema.DateTimeUtc),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.merge_back.revoke"),
+    ...OrchestrationV2CreationFields,
+    commandId: CommandId,
+    threadId: ThreadId,
+    transferId: ContextTransferId,
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

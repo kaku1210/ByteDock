@@ -87,9 +87,7 @@ describe("thread relationships", () => {
           }),
         }),
       ]);
-      expect(resolveMergeBackTargetThreadId(projection)).toBe(
-        relationshipToParent === "fork" ? parent : null,
-      );
+      expect(resolveMergeBackTargetThreadId(projection)).toBe(parent);
     },
   );
 
@@ -294,7 +292,34 @@ describe("thread relationships", () => {
           lineage: {
             rootThreadId: source,
             parentThreadId: fallbackParent,
+            relationshipToParent: "subtask",
+          },
+        },
+      } as never),
+    ).toBe(fallbackParent);
+    expect(
+      resolveMergeBackTargetThreadId({
+        thread: {
+          id: fork,
+          forkedFrom: null,
+          lineage: {
+            rootThreadId: source,
+            parentThreadId: fallbackParent,
             relationshipToParent: "subagent",
+          },
+        },
+      } as never),
+    ).toBe(fallbackParent);
+    expect(
+      resolveMergeBackTargetThreadId({
+        thread: {
+          id: fork,
+          forkedFrom: null,
+          lineage: {
+            rootThreadId: source,
+            parentThreadId: fallbackParent,
+            relationshipToParent: "fork",
+            temporary: true,
           },
         },
       } as never),
