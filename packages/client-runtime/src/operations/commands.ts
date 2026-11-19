@@ -11,6 +11,7 @@ import {
   MessageId,
   type ModelSelection,
   type NodeId,
+  type OrchestrationV2ChildReportKind,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
   type OrchestrationV2SubtaskSourceAnchor,
@@ -259,6 +260,16 @@ export interface MergeThreadBackInput extends CommandMetadata {
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly runId: RunId;
+}
+
+export interface ReportSubtaskToParentInput extends CommandMetadata {
+  readonly childThreadId: ThreadId;
+  readonly parentThreadId: ThreadId;
+  readonly childRunId?: RunId;
+  readonly reportKind: OrchestrationV2ChildReportKind;
+  readonly resultVersion?: number;
+  readonly text: string;
+  readonly messageId?: MessageId;
 }
 
 export interface ResumeThreadQueueInput extends ThreadCommandInput {
@@ -1142,6 +1153,33 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
     sourcePoint: { type: "run", runId: input.runId },
   });
 });
+
+export const reportSubtaskToParent = Effect.fn("EnvironmentCommands.reportSubtaskToParent")(
+  function* (input: ReportSubtaskToParentInput) {
+    const commandId = yield* allocateCommandId(input);
+    return yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId,
+        createdBy: "user",
+        creationSource: input.creationSource ?? "web",
+        threadId: input.parentThreadId,
+        senderThreadId: input.childThreadId,
+        childReport: {
+          childThreadId: input.childThreadId,
+          ...(input.childRunId === undefined ? {} : { childRunId: input.childRunId }),
+          reportKind: input.reportKind,
+          ...(input.resultVersion === undefined ? {} : { resultVersion: input.resultVersion }),
+        },
+        messageId: input.messageId ?? MessageId.make(commandId),
+        text: input.text,
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+      },
+      true,
+    );
+  },
+);
 
 export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueue")(function* (
   input: ResumeThreadQueueInput,

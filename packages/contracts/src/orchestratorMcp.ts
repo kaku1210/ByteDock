@@ -548,6 +548,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
   mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
+  reportKind: Schema.optional(
+    Schema.Literals(["interim", "final"]).annotate({
+      description:
+        "When a child thread reports back to its parent, mark as `interim` (progress update without settling delegation) or `final` (deduplicated final conclusion).",
+    }),
+  ),
   freshContext: Schema.optional(
     Schema.Boolean.annotate({
       description:
@@ -566,6 +572,8 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
   taskId: Schema.optional(NodeId),
   status: OrchestrationV2RunStatus,
   delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  parentQueueHeld: Schema.optional(Schema.Boolean),
+  deduplicated: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 

@@ -32,8 +32,10 @@ import {
   resolveLatestMergeBackRun,
 } from "@t3tools/client-runtime/state/thread-workflows";
 import {
+  CommandId,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
+  isTaskChildLineage,
   NodeId,
   type EnvironmentId,
   type OrchestrationV2DelegatedFrom,
@@ -56,6 +58,7 @@ import {
   MessagesSquareIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  SendIcon,
   SquareIcon,
   UnplugIcon,
 } from "lucide-react";
@@ -470,21 +473,24 @@ export function ThreadRelationshipsPanel(props: {
     ? (relationshipShells.find((thread) => thread.id === parentThreadId) ??
       archivedShells?.find((thread) => thread.id === parentThreadId))
     : undefined;
+  const isTaskChild = currentThread !== undefined && isTaskChildLineage(currentThread.lineage);
   const parentRef =
-    parentShell && isProviderNativeSubagentThread(parentShell)
+    parentShell && (isProviderNativeSubagentThread(parentShell) || isTaskChild)
       ? scopeThreadRef(props.environmentId, parentShell.id)
       : null;
   const parentProjection = useQuietThreadProjection(parentRef)?.projection;
   const navigate = useNavigate();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
+  const reportToParent = useAtomCommand(threadEnvironment.reportToParent);
   const stopSession = useAtomCommand(threadEnvironment.stopSession);
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn);
   const stopWorkflowCommand = useAtomCommand(orchestrationEnvironment.stopWorkflow);
   const canOperateWorkflow = useAtomValue(
     orchestrationEnvironment.stopWorkflow.permissionAtom(props.environmentId),
   );
-  const [busyAction, setBusyAction] = useState<"merge" | "detach" | null>(null);
+  const [busyAction, setBusyAction] = useState<"merge" | "detach" | "report" | null>(null);
   const mergeErrorToastId = useRef<string | null>(null);
+  const reportErrorToastId = useRef<string | null>(null);
   const detachErrorToastId = useRef<string | null>(null);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
   // Derive graphs after hooks to preserve their compiler cache.
@@ -680,6 +686,88 @@ export function ThreadRelationshipsPanel(props: {
       return;
     }
     openThread(mergeTargetThreadId);
+  };
+
+  const activeChildRun =
+    projection?.runs.findLast(
+      (run) =>
+        run.status === "preparing" ||
+        run.status === "starting" ||
+        run.status === "running" ||
+        run.status === "waiting",
+    ) ?? null;
+  const latestCompletedChildRun =
+    projection?.runs.findLast(
+      (run) =>
+        run.status === "completed" || run.status === "failed" || run.status === "interrupted",
+    ) ?? null;
+  const parentHasHeldQueue =
+    parentProjection?.runs.some((run) => run.status === "queued" && run.queueHeld === true) ??
+    false;
+  const canReportToParent =
+    isTaskChild &&
+    parentThreadId != null &&
+    (activeChildRun !== null || latestCompletedChildRun !== null);
+
+  const sendReportToParent = async () => {
+    if (!canReportToParent || parentThreadId == null || busyAction !== null) return;
+    if (reportErrorToastId.current !== null) {
+      toastManager.close(reportErrorToastId.current);
+      reportErrorToastId.current = null;
+    }
+    const reportKind = activeChildRun !== null ? ("interim" as const) : ("final" as const);
+    const targetRun = activeChildRun ?? latestCompletedChildRun;
+    const latestAssistant = projection?.messages.findLast(
+      (msg) =>
+        msg.role === "assistant" &&
+        (targetRun === null || msg.runId === targetRun.id) &&
+        msg.text.trim().length > 0,
+    );
+    const childLabel = currentThread?.title?.trim() || props.threadId;
+    const body =
+      latestAssistant?.text.trim() ??
+      (reportKind === "interim"
+        ? `Subtask "${childLabel}" is currently in progress (${activeChildRun?.status ?? "running"}).`
+        : `Subtask "${childLabel}" finished (${latestCompletedChildRun?.status ?? "completed"}).`);
+    const summaryText =
+      reportKind === "interim"
+        ? `[阶段性进度] From subtask "${childLabel}" (${props.threadId}):\n${body}`
+        : `Result from subtask "${childLabel}" (${props.threadId}):\n${body}`;
+    setBusyAction("report");
+    const result = await reportToParent({
+      environmentId: props.environmentId,
+      input: {
+        ...(reportKind === "final" && targetRun !== null
+          ? {
+              commandId: CommandId.make(
+                `command:child-report:${props.threadId}:${targetRun.id}:final:0`,
+              ),
+            }
+          : {}),
+        childThreadId: props.threadId,
+        parentThreadId,
+        ...(targetRun === null ? {} : { childRunId: targetRun.id }),
+        reportKind,
+        resultVersion: 0,
+        text: summaryText,
+      },
+    });
+    setBusyAction(null);
+    if (result._tag === "Failure") {
+      reportErrorToastId.current = toastManager.add({
+        type: "error",
+        title: "Could not send report to parent",
+      });
+      return;
+    }
+    toastManager.add({
+      type: parentHasHeldQueue ? "warning" : "success",
+      title: parentHasHeldQueue
+        ? "Queued in parent (parent queue is paused; switch to parent to resume)"
+        : reportKind === "interim"
+          ? "Sent interim progress to parent queue"
+          : "Sent result to parent queue",
+    });
   };
 
   const detach = async () => {
@@ -897,9 +985,42 @@ export function ThreadRelationshipsPanel(props: {
         />
       );
     }
+    const isReportTarget = isTaskChild && isParent && threadId === parentThreadId;
+    const reportActionButton = isReportTarget ? (
+      <>
+        <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <ThreadDetailsControl
+                size="sm"
+                variant="ghost"
+                part="secondary"
+                aria-label={
+                  activeChildRun !== null
+                    ? `Send interim progress to ${threadTitle}`
+                    : `Send result to ${threadTitle}`
+                }
+                disabled={!canReportToParent || busyAction !== null}
+                onClick={() => void sendReportToParent()}
+              >
+                {busyAction === "report" ? <Spinner size="xs" /> : <SendIcon className="size-3" />}
+              </ThreadDetailsControl>
+            }
+          />
+          <TooltipPopup side="left">
+            {!canReportToParent
+              ? "Start or complete a run before reporting to parent"
+              : activeChildRun !== null
+                ? `Send [阶段性进度] update to ${threadTitle} queue without settling delegation`
+                : `Send result to ${threadTitle} queue`}
+          </TooltipPopup>
+        </Tooltip>
+      </>
+    ) : null;
     return (
       <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
-        {isMergeTarget ? (
+        {isMergeTarget || isReportTarget ? (
           <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
             <Tooltip>
               <TooltipTrigger
@@ -918,38 +1039,43 @@ export function ThreadRelationshipsPanel(props: {
               </TooltipTrigger>
               <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
             </Tooltip>
-            <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <ThreadDetailsControl
-                    size="sm"
-                    variant="ghost"
-                    part="secondary"
-                    aria-label={
-                      parentTitle
-                        ? `Merge back to ${parentTitle}`
-                        : "Merge back to source conversation"
+            {reportActionButton}
+            {isMergeTarget ? (
+              <>
+                <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <ThreadDetailsControl
+                        size="sm"
+                        variant="ghost"
+                        part="secondary"
+                        aria-label={
+                          parentTitle
+                            ? `Merge back to ${parentTitle}`
+                            : "Merge back to source conversation"
+                        }
+                        disabled={!canMerge || busyAction !== null}
+                        onClick={() => void merge()}
+                      >
+                        {busyAction === "merge" ? (
+                          <Spinner size="xs" />
+                        ) : (
+                          <PullRequestGlyph.merged className="size-3" />
+                        )}
+                      </ThreadDetailsControl>
                     }
-                    disabled={!canMerge || busyAction !== null}
-                    onClick={() => void merge()}
-                  >
-                    {busyAction === "merge" ? (
-                      <Spinner size="xs" />
-                    ) : (
-                      <PullRequestGlyph.merged className="size-3" />
-                    )}
-                  </ThreadDetailsControl>
-                }
-              />
-              <TooltipPopup side="left">
-                {latestMergeBackRun === null
-                  ? "Complete a run in this fork before merging it back"
-                  : parentTitle
-                    ? `Merge this conversation back into ${parentTitle}`
-                    : "Merge this conversation back into its source"}
-              </TooltipPopup>
-            </Tooltip>
+                  />
+                  <TooltipPopup side="left">
+                    {latestMergeBackRun === null
+                      ? "Complete a run in this fork before merging it back"
+                      : parentTitle
+                        ? `Merge this conversation back into ${parentTitle}`
+                        : "Merge this conversation back into its source"}
+                  </TooltipPopup>
+                </Tooltip>
+              </>
+            ) : null}
             <span className="shrink-0 border border-transparent ps-1 pe-2.5 text-2xs font-medium text-muted-foreground">
               {threadRelationshipStatusLabel(rowStatus)}
             </span>

@@ -3365,7 +3365,35 @@ const make = Effect.gen(function* () {
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
-      const mode = input.mode ?? "auto";
+      const isReportingToParent =
+        parent !== undefined &&
+        parent.thread.id !== input.threadId &&
+        (parent.thread.lineage.parentThreadId === input.threadId || input.reportKind !== undefined);
+      const mode = input.mode ?? (isReportingToParent ? "queue" : "auto");
+      const callerRunId =
+        parent === undefined
+          ? undefined
+          : (yield* threadManagement
+              .getThreadRecords(parent.thread.id, ["runs"])
+              .pipe(Effect.mapError(threadManagementFailure))).runs.toSorted(
+              (left, right) => right.ordinal - left.ordinal,
+            )[0]?.id;
+      const reportKind =
+        input.reportKind ??
+        (isReportingToParent
+          ? parent.thread.lineage.relationshipToParent === "subagent"
+            ? "interim"
+            : "final"
+          : undefined);
+      const childReport =
+        parent !== undefined && reportKind !== undefined
+          ? {
+              childThreadId: parent.thread.id,
+              ...(callerRunId === undefined ? {} : { childRunId: callerRunId }),
+              reportKind,
+              resultVersion: 0,
+            }
+          : undefined;
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
         scope,
@@ -3386,6 +3414,7 @@ const make = Effect.gen(function* () {
           ...(parent === undefined && scope.client?.senderThread !== undefined
             ? { linkedSender: scope.client.senderThread }
             : {}),
+          ...(childReport === undefined ? {} : { childReport }),
           messageId,
           text: input.message,
           attachments: [],
@@ -3407,11 +3436,13 @@ const make = Effect.gen(function* () {
       return {
         threadId: input.threadId,
         link: threadLinkFor(scope, input.threadId, target.thread.title),
-        messageId,
+        messageId: result.message.id,
         runId: result.run.id,
         ...(result.run.delegatedTaskId === undefined ? {} : { taskId: result.run.delegatedTaskId }),
         status: result.run.status,
         delivery: result.delivery,
+        ...(result.run.queueHeld === true ? { parentQueueHeld: true } : {}),
+        ...(result.deduplicated === true ? { deduplicated: true } : {}),
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {

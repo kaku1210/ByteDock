@@ -22,6 +22,7 @@ import {
   type OrchestrationV2ForceStopThreadResult,
   type ModelSelection,
   type OrchestrationV2Actor,
+  type OrchestrationV2ChildReport,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
   type OrchestrationV2ServerCommand,
@@ -153,6 +154,7 @@ export interface ThreadManagementSendInput {
   readonly scheduledTaskId?: ScheduledTaskId;
   readonly senderThreadId?: ThreadId;
   readonly linkedSender?: OrchestrationV2LinkedSender;
+  readonly childReport?: OrchestrationV2ChildReport;
   readonly text: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly modelSelection?: ModelSelection;
@@ -173,6 +175,7 @@ export interface ThreadManagementSendResult {
   readonly run: OrchestrationV2Run;
   readonly turnItem: Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> | null;
   readonly delivery: "started" | "queued" | "steered" | "restarted";
+  readonly deduplicated?: boolean;
 }
 
 export interface ThreadManagementWaitInput {
@@ -930,6 +933,7 @@ const make = Effect.gen(function* () {
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
       ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
+      ...(input.childReport === undefined ? {} : { childReport: input.childReport }),
       text: input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
@@ -939,26 +943,74 @@ const make = Effect.gen(function* () {
       createdBy: input.createdBy,
       creationSource: input.creationSource,
     });
-    const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
-      messageIds: [input.messageId],
-      turnItemTypes: ["user_message"],
-    });
-    const message = projection.messages.find((candidate) => candidate.id === input.messageId);
-    const run =
+    const projection = yield* getProjectThreadRecords(
+      input,
+      ["runs", "messages", "turnItems", "contextTransfers"],
+      {
+        messageIds: [input.messageId],
+        turnItemTypes: ["user_message"],
+      },
+    );
+    let message = projection.messages.find((candidate) => candidate.id === input.messageId);
+    let run =
       message?.runId === null || message?.runId === undefined
         ? undefined
-        : projection.runs.find((candidate) => candidate.id === message.runId);
-    const turnItem =
+        : projection.runs.find((candidate) => candidate.id === message?.runId);
+    let turnItem =
       projection.turnItems.find(
         (
           candidate,
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    let deduplicated = false;
+    if (
+      message === undefined &&
+      input.childReport?.reportKind === "final" &&
+      dispatched.storedEvents.length === 0
+    ) {
+      const report = input.childReport;
+      const version = report.resultVersion ?? 0;
+      const existingTransfer = projection.contextTransfers.find(
+        (transfer) =>
+          transfer.type === "subagent_result" &&
+          transfer.sourceThreadId === report.childThreadId &&
+          transfer.targetThreadId === input.threadId &&
+          (transfer.reportKind === undefined || transfer.reportKind === "final") &&
+          (report.childRunId === undefined
+            ? true
+            : transfer.sourcePoint.runId === report.childRunId) &&
+          (transfer.resultVersion ?? 0) === version,
+      );
+      if (existingTransfer !== undefined) {
+        const existingRun =
+          existingTransfer.targetRunId === null
+            ? projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]
+            : projection.runs.find((candidate) => candidate.id === existingTransfer.targetRunId);
+        if (existingRun !== undefined) {
+          const existingMessages = yield* getProjectThreadRecords(input, ["messages"], {
+            messageIds: [existingRun.userMessageId],
+          });
+          message = existingMessages.messages.find(
+            (candidate) => candidate.id === existingRun.userMessageId,
+          );
+          run = existingRun;
+          turnItem =
+            projection.turnItems.find(
+              (
+                candidate,
+              ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
+                candidate.type === "user_message" &&
+                candidate.messageId === existingRun.userMessageId,
+            ) ?? null;
+          deduplicated = true;
+        }
+      }
+    }
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (!deduplicated && turnItem === null && run.status !== "queued")
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
@@ -984,7 +1036,15 @@ const make = Effect.gen(function* () {
           : mode === "restart"
             ? "restarted"
             : "steered";
-    return { dispatch: dispatched, projection, message, run, turnItem, delivery };
+    return {
+      dispatch: dispatched,
+      projection,
+      message,
+      run,
+      turnItem,
+      delivery,
+      ...(deduplicated ? { deduplicated: true } : {}),
+    };
   });
 
   const waitForThread: ThreadManagementServiceShape["waitForThread"] = Effect.fn(

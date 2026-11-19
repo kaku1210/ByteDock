@@ -267,6 +267,17 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
 export type OrchestrationV2ProviderTurnTokenUsage =
   typeof OrchestrationV2ProviderTurnTokenUsage.Type;
 
+export const OrchestrationV2ChildReportKind = Schema.Literals(["interim", "final"]);
+export type OrchestrationV2ChildReportKind = typeof OrchestrationV2ChildReportKind.Type;
+
+export const OrchestrationV2ChildReport = Schema.Struct({
+  childThreadId: ThreadId,
+  childRunId: Schema.optional(RunId),
+  reportKind: OrchestrationV2ChildReportKind,
+  resultVersion: Schema.optional(NonNegativeInt),
+});
+export type OrchestrationV2ChildReport = typeof OrchestrationV2ChildReport.Type;
+
 export const OrchestrationV2ContextTransfer = Schema.Struct({
   id: ContextTransferId,
   type: OrchestrationV2ContextTransferType,
@@ -278,6 +289,8 @@ export const OrchestrationV2ContextTransfer = Schema.Struct({
   sourceTokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   targetProviderInstanceId: Schema.NullOr(ProviderInstanceId),
   targetRunId: Schema.NullOr(RunId),
+  reportKind: Schema.optional(OrchestrationV2ChildReportKind),
+  resultVersion: Schema.optional(NonNegativeInt),
   status: Schema.Literals([
     "pending",
     "resolved_native",
@@ -3405,6 +3418,7 @@ export const OrchestrationV2Command = Schema.Union([
         taskIds: Schema.Array(NodeId),
       }),
     ),
+    childReport: Schema.optional(OrchestrationV2ChildReport),
     dispatchMode: Schema.Union([
       Schema.Struct({
         type: Schema.Literal("defer_start"),

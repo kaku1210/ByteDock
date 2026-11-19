@@ -37,6 +37,7 @@ import {
   forkThreadFromRun,
   markThreadUnread,
   mergeThreadBack,
+  reportSubtaskToParent,
   promoteQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
@@ -383,6 +384,16 @@ export function createThreadEnvironmentAtoms<R, E>(
         mode: "serial",
         key: ({ environmentId, input }) =>
           JSON.stringify([environmentId, input.sourceThreadId, input.targetThreadId]),
+      },
+    }),
+    reportToParent: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:report-to-parent",
+      execute: reportSubtaskToParent,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.childThreadId, input.parentThreadId]),
       },
     }),
     resumeThreadQueue: createEnvironmentCommand(runtime, {
