@@ -36,10 +36,12 @@ import {
 import { readAntigravityClientTextFile } from "../../provider/acp/AntigravityClientFiles.ts";
 import { watchAntigravityPromptOutcome } from "../../provider/acp/AntigravityTurnOutcome.ts";
 import {
+  ANTIGRAVITY_MILESTONE_PROGRESS_INSTRUCTIONS,
   antigravityApprovalOptions,
   antigravitySubagentOutput,
   classifyAntigravitySubagentToolCall,
   extractAntigravityUserInputQuestion,
+  isAntigravitySendToUserPermissionRequest,
   makeAntigravityReadRepair,
   makeAntigravityUserInputResponse,
   normalizeAntigravityToolCall,
@@ -51,6 +53,7 @@ import {
   type AcpAdapterV2Flavor,
   type AcpAdapterV2RuntimeInput,
 } from "@t3tools/provider-acp/server/adapter";
+import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
 
 const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
 
@@ -93,6 +96,8 @@ export interface AntigravityAdapterV2Options {
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   /** The agent's GEMINI_HOME. Its session logs show turns that ended on an upstream error. */
   readonly profileDirectory?: string;
+  /** When not false, append concise send_to_user milestone progress guidance to the session prompt. */
+  readonly milestoneProgressUpdates?: boolean;
 }
 
 /**
@@ -136,6 +141,10 @@ export function makeAntigravityAcpAdapterFlavor(
   options: AntigravityAdapterV2Options & AntigravityFlavorServices,
 ): AcpAdapterV2Flavor {
   const { profileDirectory } = options;
+  const sessionSystemPromptAppend =
+    options.milestoneProgressUpdates === false
+      ? PULL_REQUEST_LINKING_INSTRUCTIONS
+      : `${PULL_REQUEST_LINKING_INSTRUCTIONS}\n\n${ANTIGRAVITY_MILESTONE_PROGRESS_INSTRUCTIONS}`;
   const antigravityClientFileRoots = (cwd: string | null) =>
     cwd === null ? [options.host.paths.attachmentsDir] : [cwd, options.host.paths.attachmentsDir];
   const makeRuntime = Effect.fn("AntigravityAdapterV2.makeRuntime")(
@@ -147,7 +156,7 @@ export function makeAntigravityAcpAdapterFlavor(
           options.makeRuntime({
             ...input,
             clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
+            sessionSystemPromptAppend,
             additionalDirectories: [options.host.paths.attachmentsDir],
           }),
         )
@@ -262,6 +271,10 @@ export function makeAntigravityAcpAdapterFlavor(
           request,
         }),
     },
+    permissionDisposition: (policy, request) =>
+      isAntigravitySendToUserPermissionRequest(request)
+        ? "allow"
+        : acpPermissionDisposition(policy, request),
     approvalOptions: antigravityApprovalOptions,
     extractPermissionQuestion: (request) => {
       const question = extractAntigravityUserInputQuestion(request);

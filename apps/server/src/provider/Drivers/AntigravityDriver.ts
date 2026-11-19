@@ -473,6 +473,7 @@ export const AntigravityDriver: ProviderDriver<
         ),
       ),
       profileDirectory,
+      milestoneProgressUpdates: settings.milestoneProgressUpdates,
       onSessionStarted: provider.onSessionStarted,
       onSessionEvent: (event) => {
         if (event._tag === "ConfigOptionsUpdated") {

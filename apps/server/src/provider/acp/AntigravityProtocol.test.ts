@@ -8,6 +8,7 @@ import {
   antigravityApprovalOptions,
   antigravitySubagentOutput,
   classifyAntigravitySubagentToolCall,
+  isAntigravitySendToUserPermissionRequest,
   isAntigravityUserInputRequest,
   makeAntigravityUserInputResponse,
   normalizeAntigravitySessionUpdate,
@@ -621,5 +622,83 @@ describe("Antigravity served reads", () => {
       toolCallId: "call_current",
       status: "completed",
     });
+  });
+});
+
+describe("isAntigravitySendToUserPermissionRequest", () => {
+  const permissionFor = (
+    toolCall: Partial<EffectAcpSchema.RequestPermissionRequest["toolCall"]>,
+  ): EffectAcpSchema.RequestPermissionRequest => ({
+    sessionId: "session-1",
+    options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+    toolCall: { toolCallId: "call-1", ...toolCall },
+  });
+
+  it("matches T3 send_to_user prompts across Antigravity title and MCP metadata shapes", () => {
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "Run send_to_user?", kind: "other" }),
+      ),
+    ).toBe(true);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "Running send_to_user", kind: "other" }),
+      ),
+    ).toBe(true);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({
+          title: "mcp__t3-code__send_to_user",
+          rawInput: { message: "Phase 1 done." },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({
+          title: "send_to_user",
+          rawInput: { server: "t3-code", tool: "send_to_user", arguments: { message: "Hi" } },
+          _meta: { is_mcp_tool_call: true },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects user questions, mutating kinds, other tools, and foreign MCP servers", () => {
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ toolCallId: "interaction_1", title: "Run send_to_user?" }),
+      ),
+    ).toBe(false);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "Run send_to_user?", kind: "execute" }),
+      ),
+    ).toBe(false);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "Run send_to_user?", kind: "edit" }),
+      ),
+    ).toBe(false);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "Run invoke_subagent?", kind: "other" }),
+      ),
+    ).toBe(false);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({
+          title: "Run send_to_user?",
+          kind: "other",
+          rawInput: { server: "other-mcp", tool: "send_to_user" },
+          _meta: { is_mcp_tool_call: true },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isAntigravitySendToUserPermissionRequest(
+        permissionFor({ title: "mcp__other__send_to_user", kind: "other" }),
+      ),
+    ).toBe(false);
   });
 });

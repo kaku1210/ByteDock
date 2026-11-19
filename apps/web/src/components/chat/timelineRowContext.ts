@@ -104,6 +104,7 @@ export interface TimelineRowSharedState {
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
   workGroupViewState: WorkGroupViewState;
+  enhancedToolGroupDisplay?: boolean;
 }
 
 export interface TimelineRowActivityState {
@@ -125,6 +126,7 @@ export const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(nu
 export interface WorkGroupViewState {
   scrollPositions: Map<string, WorkGroupScrollAnchor>;
   expandedEntries: Set<string>;
+  expandedHeights?: Set<string>;
 }
 
 /** One image the group's agent viewed; `item` is null until its URL resolves. */

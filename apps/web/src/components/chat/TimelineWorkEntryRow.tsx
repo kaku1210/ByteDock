@@ -73,6 +73,7 @@ import {
   THOUGHT_PREVIEW_PLUGINS,
   THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
 } from "./TimelineWorkEntryRow.logic";
+import { extractWorkEntryReadIntentSummary } from "./TimelineWorkGroupRows.logic";
 
 export function useThreadReadTarget(entry: TimelineWorkEntry, environmentId: EnvironmentId) {
   const rawThreadId = threadReadTargetId(entry);
@@ -434,7 +435,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? "text-secondary-label"
         : "text-foreground/80";
   const threadLabel = isReasoning ? null : threadReadLabel(previewText, threadTarget);
-  const accessiblePreview = [threadLabel?.text ?? previewText, answerPreview]
+  const readIntentSummary =
+    ctx.enhancedToolGroupDisplay && !isReasoning && !questionHeading && !threadLabel
+      ? extractWorkEntryReadIntentSummary(workEntry, previewText)
+      : null;
+  const accessiblePreview = [threadLabel?.text ?? previewText, readIntentSummary, answerPreview]
     .filter(Boolean)
     .join(": ");
   const accessibleDisplayText = showFailedIndicator
@@ -481,7 +486,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         <div className="min-w-0 flex-1 overflow-hidden">
           <p className="flex min-w-0 w-full items-baseline gap-1.5 text-sm leading-relaxed">
             <span
-              className={cn(answerPreview ? "min-w-0" : "min-w-0 flex-1", "truncate", headingClass)}
+              className={cn(
+                answerPreview
+                  ? "min-w-0"
+                  : readIntentSummary
+                    ? "min-w-0 max-w-[65%] shrink"
+                    : "min-w-0 flex-1",
+                "truncate",
+                headingClass,
+              )}
             >
               {isReasoning && !expanded ? (
                 <ChatMarkdown
@@ -508,6 +521,14 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                 previewText
               )}
             </span>
+            {readIntentSummary ? (
+              <span
+                className="min-w-0 flex-1 truncate text-xs text-muted-foreground/80"
+                data-read-intent-summary
+              >
+                · {readIntentSummary}
+              </span>
+            ) : null}
             {answerPreview ? (
               <span
                 className={cn(

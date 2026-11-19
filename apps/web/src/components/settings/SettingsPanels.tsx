@@ -566,6 +566,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.toolCallVisibility !== DEFAULT_UNIFIED_SETTINGS.toolCallVisibility
       ? ["Tool calls in chat"]
       : []),
+    ...(settings.enhancedToolGroupDisplay !== DEFAULT_UNIFIED_SETTINGS.enhancedToolGroupDisplay
+      ? ["Enhanced tool activity display"]
+      : []),
     ...(settings.screenReaderAnnouncements !== DEFAULT_UNIFIED_SETTINGS.screenReaderAnnouncements
       ? ["Screen reader announcements"]
       : []),
@@ -693,6 +696,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
       toolCallVisibility: DEFAULT_UNIFIED_SETTINGS.toolCallVisibility,
+      enhancedToolGroupDisplay: DEFAULT_UNIFIED_SETTINGS.enhancedToolGroupDisplay,
       screenReaderAnnouncements: DEFAULT_UNIFIED_SETTINGS.screenReaderAnnouncements,
       screenReaderWindowTitle: DEFAULT_UNIFIED_SETTINGS.screenReaderWindowTitle,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
@@ -1388,6 +1392,7 @@ export function ChatSettingsPanel() {
 
       <SettingsSection id="activity" title={uiText("Activity")}>
         <ToolCallVisibilityRow />
+        <EnhancedToolGroupDisplayRow />
       </SettingsSection>
 
       <SettingsSection id="screen-reader" title={uiText("Screen reader")}>
@@ -1451,6 +1456,41 @@ function ToolCallVisibilityRow() {
             ))}
           </SelectPopup>
         </Select>
+      }
+    />
+  );
+}
+
+function EnhancedToolGroupDisplayRow() {
+  const { text: uiText } = useUiLanguage();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("enhanced-tool-group-display")}
+      description={uiText(
+        "Show a progress summary bar with height expansion on long tool groups, and display read intent summaries alongside file paths.",
+      )}
+      resetAction={
+        settings.enhancedToolGroupDisplay !== DEFAULT_UNIFIED_SETTINGS.enhancedToolGroupDisplay ? (
+          <SettingResetButton
+            label={uiText("enhanced tool activity display")}
+            onClick={() =>
+              updateSettings({
+                enhancedToolGroupDisplay: DEFAULT_UNIFIED_SETTINGS.enhancedToolGroupDisplay,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.enhancedToolGroupDisplay}
+          onCheckedChange={(checked) =>
+            updateSettings({ enhancedToolGroupDisplay: Boolean(checked) })
+          }
+          aria-label={uiText("Enhanced tool activity display")}
+        />
       }
     />
   );

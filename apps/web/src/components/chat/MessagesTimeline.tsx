@@ -157,6 +157,7 @@ function timelineListStateFor(identity: string): {
     workGroupViewState: rememberedPosition?.disclosures?.workGroupState ?? {
       scrollPositions: new Map(),
       expandedEntries: new Set(),
+      expandedHeights: new Set(),
     },
   };
 }
@@ -658,6 +659,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }
 
   const preferredToolCallVisibility = useClientSettings((settings) => settings.toolCallVisibility);
+  const enhancedToolGroupDisplay = useClientSettings(
+    (settings) => settings.enhancedToolGroupDisplay,
+  );
   const screenReaderAnnouncements = useClientSettings(
     (settings) => settings.screenReaderAnnouncements,
   );
@@ -1206,6 +1210,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onWorktreeSetupWorkLocally: onWorktreeSetupWorkLocally ?? null,
     onOpenWorktreeSetupTerminal: onOpenWorktreeSetupTerminal ?? null,
     workGroupViewState,
+    enhancedToolGroupDisplay,
   };
   const compactionAwaitingRow =
     isCompacting &&
