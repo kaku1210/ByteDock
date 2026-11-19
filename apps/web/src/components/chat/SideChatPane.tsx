@@ -49,6 +49,8 @@ export default function SideChatPane(props: {
     [parentRef, threadId],
   );
   const shell = useQuietThreadShell(threadRef);
+  const rootThreadId = shell?.lineage.parentThreadId ?? parentRef.threadId;
+  const rootShell = useQuietThreadShell(scopeThreadRef(parentRef.environmentId, rootThreadId));
   const temporary = shell?.lineage.temporary === true;
   const snapshotLoaded = useEnvironmentShellHasSnapshot(parentRef.environmentId);
   useOpenThreadFamily(threadRef, snapshotLoaded && shell === null);
@@ -73,14 +75,20 @@ export default function SideChatPane(props: {
     setBringingBack(true);
     const result = await mergeBack({
       environmentId: parentRef.environmentId,
-      input: { sourceThreadId: threadId, targetThreadId: parentRef.threadId, runId: mergeRun.id },
+      input: {
+        sourceThreadId: threadId,
+        targetThreadId: rootThreadId,
+        runId: mergeRun.id,
+      },
     });
     setBringingBack(false);
     if (result._tag === "Success") {
       toastManager.add({
         type: "success",
         title: "Brought back",
-        description: "The main thread gets this side chat with your next message there.",
+        description: rootShell?.title
+          ? `"${rootShell.title}" gets this side chat with your next message there.`
+          : "The main thread gets this side chat with your next message there.",
       });
     } else if (!isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
@@ -151,7 +159,10 @@ export default function SideChatPane(props: {
               }
             />
             <TooltipPopup side="bottom">
-              {bringBackBlockedReason ?? "Adds this side chat to the main thread's next message."}
+              {bringBackBlockedReason ??
+                (rootShell?.title
+                  ? `Adds this side chat to "${rootShell.title}"'s next message.`
+                  : "Adds this side chat to the main thread's next message.")}
             </TooltipPopup>
           </Tooltip>
         )}

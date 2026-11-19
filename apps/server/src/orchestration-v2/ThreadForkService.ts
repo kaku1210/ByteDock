@@ -1,5 +1,6 @@
 import {
   ContextTransferId,
+  isTaskChildLineage,
   OrchestrationV2Actor,
   OrchestrationV2AppThread,
   OrchestrationV2ContextSourcePoint,
@@ -61,6 +62,7 @@ export interface ThreadForkServiceV2Shape {
     readonly targetThreadId: ThreadId;
     readonly title?: string;
     readonly sideChat?: boolean;
+    readonly sideChatOwnerThreadId?: ThreadId;
     readonly temporary?: boolean;
     readonly subtask?: boolean;
     readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor;
@@ -109,12 +111,10 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           cause: "A side chat cannot start a subtask.",
         });
       }
-      // A task a linked environment delegated here is a subagent of a remote thread.
+      // A task a linked environment delegated here belongs to a remote thread tree.
       if (
         input.sideChat &&
-        (sourceLineage.sideChat ||
-          sourceLineage.relationshipToParent === "subagent" ||
-          input.sourceProjection.thread.delegatedFrom !== undefined)
+        (sourceLineage.sideChat || input.sourceProjection.thread.delegatedFrom !== undefined)
       ) {
         return yield* new ThreadForkPlanError({
           sourceThreadId: input.sourceProjection.thread.id,
@@ -141,30 +141,32 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         sourceAnchor: _sourceAnchor,
         ...inherited
       } = input.sourceProjection.thread;
-      const resolvedSourceAnchor: OrchestrationV2SubtaskSourceAnchor | undefined = input.subtask
-        ? {
-            sourceThreadId: input.sourceAnchor?.sourceThreadId ?? input.sourceProjection.thread.id,
-            ...(input.sourceAnchor?.sourceRunId !== undefined
-              ? { sourceRunId: input.sourceAnchor.sourceRunId }
-              : sourceRun !== null
-                ? { sourceRunId: sourceRun.id }
+      const resolvedSourceAnchor: OrchestrationV2SubtaskSourceAnchor | undefined =
+        input.subtask || input.sideChat
+          ? {
+              sourceThreadId:
+                input.sourceAnchor?.sourceThreadId ?? input.sourceProjection.thread.id,
+              ...(input.sourceAnchor?.sourceRunId !== undefined
+                ? { sourceRunId: input.sourceAnchor.sourceRunId }
+                : sourceRun !== null
+                  ? { sourceRunId: sourceRun.id }
+                  : {}),
+              ...(input.sourceAnchor?.sourceMessageId !== undefined
+                ? { sourceMessageId: input.sourceAnchor.sourceMessageId }
                 : {}),
-            ...(input.sourceAnchor?.sourceMessageId !== undefined
-              ? { sourceMessageId: input.sourceAnchor.sourceMessageId }
-              : {}),
-            ...(input.sourceAnchor?.sourceTurnItemId !== undefined
-              ? { sourceTurnItemId: input.sourceAnchor.sourceTurnItemId }
-              : {}),
-            ...(input.sourceAnchor?.sourceOrdinal !== undefined
-              ? { sourceOrdinal: input.sourceAnchor.sourceOrdinal }
-              : sourceRun !== null
-                ? { sourceOrdinal: sourceRun.ordinal }
+              ...(input.sourceAnchor?.sourceTurnItemId !== undefined
+                ? { sourceTurnItemId: input.sourceAnchor.sourceTurnItemId }
                 : {}),
-            ...(input.sourceAnchor?.excerpt !== undefined
-              ? { excerpt: input.sourceAnchor.excerpt }
-              : {}),
-          }
-        : undefined;
+              ...(input.sourceAnchor?.sourceOrdinal !== undefined
+                ? { sourceOrdinal: input.sourceAnchor.sourceOrdinal }
+                : sourceRun !== null
+                  ? { sourceOrdinal: sourceRun.ordinal }
+                  : {}),
+              ...(input.sourceAnchor?.excerpt !== undefined
+                ? { excerpt: input.sourceAnchor.excerpt }
+                : {}),
+            }
+          : undefined;
       const targetThread: OrchestrationV2AppThread = {
         ...inherited,
         // PR context follows the conversation; watching remains the source thread's responsibility.
@@ -181,7 +183,12 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         titleRegeneration: null,
         activeProviderThreadId: null,
         lineage: {
-          parentThreadId: input.sourceProjection.thread.id,
+          parentThreadId: input.sideChat
+            ? (input.sideChatOwnerThreadId ??
+              (isTaskChildLineage(sourceLineage)
+                ? sourceLineage.rootThreadId
+                : input.sourceProjection.thread.id))
+            : input.sourceProjection.thread.id,
           relationshipToParent: input.subtask ? "subtask" : "fork",
           rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           ...(input.sideChat ? { sideChat: true } : {}),

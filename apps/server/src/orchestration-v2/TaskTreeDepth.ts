@@ -153,3 +153,26 @@ export const validateTaskChildPlacement = Effect.fn("TaskTreeDepth.validateTaskC
     };
   },
 );
+
+/**
+ * Resolves the root L0 owner thread for a task tree by climbing only task-child edges
+ * (`subtask` / `subagent`). Plain user forks remain independent L0 roots.
+ */
+export const resolveTaskTreeRootThreadId = Effect.fn("TaskTreeDepth.resolveTaskTreeRootThreadId")(
+  function* <E>(input: {
+    readonly thread: TaskTreeDepthTarget;
+    readonly loadThread: (threadId: ThreadId) => Effect.Effect<TaskTreeDepthTarget | null, E>;
+  }) {
+    const seen = new Set<ThreadId>([input.thread.id]);
+    let current: TaskTreeDepthTarget = input.thread;
+    while (isTaskChildLineage(current.lineage) && current.lineage.parentThreadId !== null) {
+      const parentId = current.lineage.parentThreadId;
+      if (seen.has(parentId)) break;
+      seen.add(parentId);
+      const parent = yield* input.loadThread(parentId);
+      if (parent === null) break;
+      current = parent;
+    }
+    return current.id;
+  },
+);

@@ -17,6 +17,7 @@ import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import { resolveTaskTreeRootThreadId } from "./threadRelationships.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -517,7 +518,14 @@ export function createEnvironmentThreadShellAtoms(input: {
     const ref = parseThreadKey(key);
     let previous = EMPTY_THREAD_SHELLS;
     return Atom.make((get) => {
-      const sideChats = get(environmentSideChatsByParentAtom(ref.environmentId)).get(ref.threadId);
+      const threadIndex = get(environmentThreadIndexAtom(ref.environmentId));
+      const thread = threadIndex.get(ref.threadId);
+      if (thread?.lineage.sideChat === true) {
+        previous = EMPTY_THREAD_SHELLS;
+        return previous;
+      }
+      const ownerThreadId = resolveTaskTreeRootThreadId(ref.threadId, (id) => threadIndex.get(id));
+      const sideChats = get(environmentSideChatsByParentAtom(ref.environmentId)).get(ownerThreadId);
       if (sideChats === undefined) {
         previous = EMPTY_THREAD_SHELLS;
         return previous;

@@ -324,6 +324,24 @@ describe("thread relationships", () => {
         },
       } as never),
     ).toBeNull();
+    expect(
+      resolveMergeBackTargetThreadId({
+        thread: {
+          id: fork,
+          forkedFrom: {
+            type: "run",
+            threadId: fallbackParent,
+            runId: "run-l1",
+          },
+          lineage: {
+            rootThreadId: source,
+            parentThreadId: source,
+            relationshipToParent: "fork",
+            sideChat: true,
+          },
+        },
+      } as never),
+    ).toBe(source);
   });
 });
 

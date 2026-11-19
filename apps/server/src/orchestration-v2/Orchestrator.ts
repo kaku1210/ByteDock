@@ -119,7 +119,7 @@ import {
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
-import { validateTaskChildPlacement } from "./TaskTreeDepth.ts";
+import { resolveTaskTreeRootThreadId, validateTaskChildPlacement } from "./TaskTreeDepth.ts";
 import {
   ContextHandoffServiceV2,
   readForkHistoryItems,
@@ -1872,21 +1872,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
     );
 
-  /** Side chats live inside their parent, so deleting the parent deletes them too. */
+  /** Side chats live inside their root parent, so deleting that parent deletes them too. */
   const liveSideChatIds = Effect.fn("Orchestrator.liveSideChatIds")(
     function* (threadId: ThreadId) {
-      const { contextTransfers } = yield* projectionStore
-        .getThreadRecords(threadId, ["contextTransfers"])
-        .pipe(
-          Effect.catchTags({
-            ProjectionStoreThreadNotFoundError: () => Effect.succeed({ contextTransfers: [] }),
-          }),
-        );
+      const childIds = yield* projectionStore.listDirectChildThreadIds(threadId);
       const sideChatIds: Array<ThreadId> = [];
-      for (const transfer of contextTransfers) {
-        if (transfer.type !== "fork" || transfer.sourceThreadId !== threadId) continue;
+      for (const childId of childIds) {
         const child = yield* projectionStore
-          .getThread(transfer.targetThreadId)
+          .getThread(childId)
           .pipe(
             Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
           );
@@ -6028,6 +6021,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.sourceThreadId} was deleted.`,
       });
     }
+    const sideChatOwnerThreadId =
+      command.sideChat === true
+        ? yield* resolveTaskTreeRootThreadId({
+            thread: sourceProjection.thread,
+            loadThread: findThread,
+          })
+        : undefined;
+    if (
+      sideChatOwnerThreadId !== undefined &&
+      sideChatOwnerThreadId !== sourceProjection.thread.id
+    ) {
+      const ownerThread = yield* findThread(sideChatOwnerThreadId);
+      if (ownerThread === null || ownerThread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Root thread ${sideChatOwnerThreadId} was deleted.`,
+        });
+      }
+    }
     if (command.subtask === true) {
       yield* validateTaskChildPlacement({
         parentThreadId: command.sourceThreadId,
@@ -6121,6 +6134,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         targetThreadId: command.targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.sideChat ? { sideChat: true } : {}),
+        ...(sideChatOwnerThreadId === undefined ? {} : { sideChatOwnerThreadId }),
         ...(command.temporary ? { temporary: true } : {}),
         ...(command.subtask ? { subtask: true } : {}),
         ...(command.sourceAnchor === undefined ? {} : { sourceAnchor: command.sourceAnchor }),
@@ -16429,9 +16443,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       const source = yield* findThread(command.sourceThreadId);
       const target = yield* findThread(command.targetThreadId);
-      return yield* source === null || source.lineage.sideChat === true || target !== null
-        ? dispatch
-        : threadDispatch.withLock(command.sourceThreadId, dispatch);
+      if (source === null || source.lineage.sideChat === true || target !== null) {
+        return yield* dispatch;
+      }
+      const lockedSource = threadDispatch.withLock(command.sourceThreadId, dispatch);
+      if (command.sideChat !== true) {
+        return yield* lockedSource;
+      }
+      const ownerThreadId = yield* resolveTaskTreeRootThreadId({
+        thread: source,
+        loadThread: findThread,
+      });
+      return yield* ownerThreadId !== command.sourceThreadId &&
+      ownerThreadId !== command.targetThreadId
+        ? threadDispatch.withLock(ownerThreadId, lockedSource)
+        : lockedSource;
     }
     if (command.type === "thread.delete")
       return yield* threadDispatch.withLock(

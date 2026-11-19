@@ -24,6 +24,7 @@ import {
   threadRelationshipRowStatus,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
+  resolveTaskTreeRootThreadId,
   type ThreadRelationshipEdge,
   type ThreadRelationshipWalkRow,
 } from "@t3tools/client-runtime/state/thread-relationships";
@@ -598,7 +599,7 @@ export function ThreadRelationshipsPanel(props: {
     related = [],
     active = [],
     previous = [],
-    sideChats = [],
+    sideChats: directSideChats = [],
   } = groupBy(visibleRelationships, ({ threadId, edge }) => {
     const isParent = isParentThreadRelationship(edge, props.threadId);
     if (!isParent && graph.nodes.get(threadId)?.thread?.lineage.sideChat === true)
@@ -606,6 +607,25 @@ export function ThreadRelationshipsPanel(props: {
     if (edge.kind !== "subagent" || isParent) return "related";
     return isFinishedAgentStatus(edge.status) ? "previous" : "active";
   });
+  const sideChatOwnerThreadId =
+    currentThread && currentThread.lineage.sideChat !== true
+      ? resolveTaskTreeRootThreadId(props.threadId, (id) => graph.nodes.get(id)?.thread)
+      : props.threadId;
+  const rootSideChats =
+    currentThread &&
+    currentThread.lineage.sideChat !== true &&
+    sideChatOwnerThreadId !== props.threadId
+      ? immediateThreadRelationships(graph, sideChatOwnerThreadId).filter(
+          (row) =>
+            !isParentThreadRelationship(row.edge, sideChatOwnerThreadId) &&
+            graph.nodes.get(row.threadId)?.thread?.lineage.sideChat === true &&
+            !isHiddenRelation(row.threadId) &&
+            !isHiddenUnloadedRelation(row) &&
+            !directSideChats.some((existing) => existing.threadId === row.threadId),
+        )
+      : [];
+  const sideChats =
+    rootSideChats.length === 0 ? directSideChats : [...directSideChats, ...rootSideChats];
   const { remoteActive = [], remotePrevious = [] } = groupBy(
     (projection?.subagents ?? [])
       .filter((agent): agent is RemoteSubagent => agent.remoteChild !== undefined)
@@ -655,7 +675,8 @@ export function ThreadRelationshipsPanel(props: {
 
   // Idle children can be omitted from the shell; opening one loads its own detail.
   const openThread = (threadId: ThreadId) => {
-    if (openSideChatTab(ref, graph.nodes.get(threadId)?.thread ?? null)) return;
+    if (openSideChatTab(ref, graph.nodes.get(threadId)?.thread ?? null, sideChatOwnerThreadId))
+      return;
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),

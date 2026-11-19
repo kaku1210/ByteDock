@@ -1,5 +1,6 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { resolveTaskTreeRootThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import type { Dispatch } from "react";
 import type { ComposerThreadTarget } from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
@@ -498,7 +499,17 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       toastManager.add({ type: "info", title: "This thread is no longer available" });
       return;
     }
-    if (activeThreadRef && openSideChatTab(activeThreadRef, shell)) return;
+    if (
+      activeThreadRef &&
+      openSideChatTab(
+        activeThreadRef,
+        shell,
+        resolveTaskTreeRootThreadId(activeThreadRef.threadId, (id) =>
+          readThreadShell(scopeThreadRef(activeThreadRef.environmentId, id)),
+        ),
+      )
+    )
+      return;
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),

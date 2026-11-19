@@ -18,12 +18,18 @@ export interface SideChatParentPanel {
   readonly runShellCommand: (command: string) => void;
 }
 
-/** Opens `thread` in its tab when it is a side chat of `parentRef`; false for any other thread. */
+/** Opens `thread` in its tab when it is a side chat of `parentRef` or its task-tree root; false otherwise. */
 export function openSideChatTab(
   parentRef: ScopedThreadRef,
   thread: Pick<OrchestrationV2ThreadShell, "id" | "lineage"> | null,
+  sideChatOwnerThreadId?: OrchestrationV2ThreadShell["id"] | null,
 ): boolean {
-  if (thread?.lineage.sideChat !== true || thread.lineage.parentThreadId !== parentRef.threadId) {
+  const ownerThreadId = sideChatOwnerThreadId ?? parentRef.threadId;
+  if (
+    thread?.lineage.sideChat !== true ||
+    (thread.lineage.parentThreadId !== parentRef.threadId &&
+      thread.lineage.parentThreadId !== ownerThreadId)
+  ) {
     return false;
   }
   useRightPanelStore.getState().openSideChat(parentRef, thread.id, thread.lineage.temporary);

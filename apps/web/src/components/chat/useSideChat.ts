@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import { resolveTaskTreeRootThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -153,9 +154,12 @@ export function useSideChat(input: {
       if (surface?.kind === "side-chat") {
         const targetRef = scopeThreadRef(threadRef.environmentId, surface.threadId);
         const thread = readThreadShell(targetRef);
+        const activeRootThreadId = resolveTaskTreeRootThreadId(threadRef.threadId, (id) =>
+          readThreadShell(scopeThreadRef(threadRef.environmentId, id)),
+        );
         if (
           thread?.lineage.temporary === true &&
-          thread.lineage.parentThreadId === threadRef.threadId &&
+          thread.lineage.parentThreadId === activeRootThreadId &&
           thread.latestRun === null &&
           thread.source.activeRunId === null &&
           thread.itemCount === 0 &&

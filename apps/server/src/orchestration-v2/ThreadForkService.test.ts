@@ -112,7 +112,7 @@ function makeSourceProjection(sourceRun: OrchestrationV2Run): OrchestrationV2Thr
 const planFork = (
   sourceRun: OrchestrationV2Run,
   sourceProjection = makeSourceProjection(sourceRun),
-  options: { readonly sideChat?: boolean } = {},
+  options: { readonly sideChat?: boolean; readonly subtask?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const service = yield* ThreadForkService.ThreadForkServiceV2;
@@ -336,6 +336,12 @@ it.effect("marks only requested forks as side chats and inherits parent permissi
     );
     assert.equal(nested.cause, "A side chat cannot start another side chat.");
 
+    const subtaskInsideSideChat = yield* planFork(sourceRun, sideChatProjection, {
+      subtask: true,
+    }).pipe(Effect.flip);
+    assert.equal(subtaskInsideSideChat.cause, "A side chat cannot start a subtask.");
+
+    const rootThreadId = ThreadId.make("thread-root");
     const subagentSource = makeSourceProjection(sourceRun);
     const fromSubagent = yield* planFork(
       sourceRun,
@@ -343,12 +349,44 @@ it.effect("marks only requested forks as side chats and inherits parent permissi
         ...subagentSource,
         thread: {
           ...subagentSource.thread,
-          lineage: { ...subagentSource.thread.lineage, relationshipToParent: "subagent" },
+          lineage: {
+            parentThreadId: rootThreadId,
+            relationshipToParent: "subagent",
+            rootThreadId,
+          },
         },
       },
       { sideChat: true },
-    ).pipe(Effect.flip);
-    assert.equal(fromSubagent.cause, "A subagent cannot start a side chat.");
+    );
+    assert.equal(fromSubagent.targetThread.lineage.sideChat, true);
+    assert.equal(fromSubagent.targetThread.lineage.parentThreadId, rootThreadId);
+    assert.equal(fromSubagent.targetThread.lineage.rootThreadId, rootThreadId);
+    assert.equal(fromSubagent.targetThread.sourceAnchor?.sourceThreadId, subagentSource.thread.id);
+    assert.equal(fromSubagent.targetThread.sourceAnchor?.sourceRunId, sourceRun.id);
+    assert.equal(fromSubagent.transfer.sourceThreadId, subagentSource.thread.id);
+
+    const subtaskSource = makeSourceProjection(sourceRun);
+    const fromSubtask = yield* planFork(
+      sourceRun,
+      {
+        ...subtaskSource,
+        thread: {
+          ...subtaskSource.thread,
+          lineage: {
+            parentThreadId: ThreadId.make("thread-l1"),
+            relationshipToParent: "subtask",
+            rootThreadId,
+          },
+        },
+      },
+      { sideChat: true },
+    );
+    assert.equal(fromSubtask.targetThread.lineage.sideChat, true);
+    assert.equal(fromSubtask.targetThread.lineage.parentThreadId, rootThreadId);
+    assert.equal(fromSubtask.targetThread.lineage.rootThreadId, rootThreadId);
+    assert.equal(fromSubtask.targetThread.sourceAnchor?.sourceThreadId, subtaskSource.thread.id);
+    assert.equal(fromSubtask.targetThread.sourceAnchor?.sourceRunId, sourceRun.id);
+    assert.equal(fromSubtask.transfer.sourceThreadId, subtaskSource.thread.id);
 
     const delegatedSource = makeSourceProjection(sourceRun);
     const fromDelegated = yield* planFork(

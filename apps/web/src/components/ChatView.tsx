@@ -2857,15 +2857,14 @@ export default function ChatView(props: ChatViewProps) {
   }, [embedded, toggleRightPanelStable, toggleRightPanelMaximizedStable]);
 
   usePasteToFocusComposer(embedded ? null : activeThreadId, composerRef);
-  // A delegated task is a remote thread's subagent.
-  const isSubagentThread =
-    activeThread?.lineage.relationshipToParent === "subagent" || delegatedFrom !== null;
-  // Side chats do not nest or start from subagents, and older servers would fork a listed thread.
+  // A delegated task belongs to a remote environment's thread tree.
+  const isRemoteDelegatedThread = delegatedFrom !== null;
+  // Side chats do not nest or start from remote delegated tasks, and older servers would fork a listed thread.
   const sideChatsOffered =
     !embedded &&
     canOperateThread &&
     activeThread?.lineage.sideChat !== true &&
-    !isSubagentThread &&
+    !isRemoteDelegatedThread &&
     serverConfig?.environment.capabilities.sideChats === true;
   const sideChat = useSideChat({
     threadRef: sideChatsOffered && isServerThread ? activeThreadRef : null,
@@ -2912,8 +2911,8 @@ export default function ChatView(props: ChatViewProps) {
   const sideChatDisabledReason =
     activeThread?.lineage.sideChat === true
       ? "Side chats cannot start side chats."
-      : isSubagentThread
-        ? "Subagent threads cannot start side chats."
+      : isRemoteDelegatedThread
+        ? "Delegated task threads cannot start side chats."
         : serverConfig === null
           ? "Side chats are not ready yet. Try again in a moment."
           : serverConfig.environment.capabilities.sideChats !== true

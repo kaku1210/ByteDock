@@ -678,4 +678,76 @@ describe("v2 thread shell lists", () => {
       harness.registry.dispose();
     }
   });
+
+  it("shares root-scoped side chats across L0, L1, and L2 while keeping side chats empty", () => {
+    const harness = makeHarness();
+    const rootId = ThreadId.make("root-thread");
+    const l1Id = ThreadId.make("l1-subtask");
+    const l2Id = ThreadId.make("l2-subtask");
+    const sideChatId = ThreadId.make("root-side-chat");
+
+    const root: OrchestrationV2ThreadShell = {
+      ...v2ThreadShell,
+      id: rootId,
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: rootId,
+      },
+    };
+    const l1: OrchestrationV2ThreadShell = {
+      ...v2ThreadShell,
+      id: l1Id,
+      lineage: {
+        parentThreadId: rootId,
+        relationshipToParent: "subtask",
+        rootThreadId: rootId,
+      },
+    };
+    const l2: OrchestrationV2ThreadShell = {
+      ...v2ThreadShell,
+      id: l2Id,
+      lineage: {
+        parentThreadId: l1Id,
+        relationshipToParent: "subtask",
+        rootThreadId: rootId,
+      },
+    };
+    const sideChat: OrchestrationV2ThreadShell = {
+      ...v2ThreadShell,
+      id: sideChatId,
+      title: "Root Side Chat",
+      lineage: {
+        parentThreadId: rootId,
+        relationshipToParent: "fork",
+        rootThreadId: rootId,
+        sideChat: true,
+      },
+    };
+
+    harness.registry.set(harness.snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [root, l1, l2, sideChat],
+    });
+
+    const rootSideChats = harness.threads.sideChatsAtom({ environmentId, threadId: rootId });
+    const l1SideChats = harness.threads.sideChatsAtom({ environmentId, threadId: l1Id });
+    const l2SideChats = harness.threads.sideChatsAtom({ environmentId, threadId: l2Id });
+    const nestedSideChats = harness.threads.sideChatsAtom({ environmentId, threadId: sideChatId });
+    const disposers = [
+      harness.registry.mount(rootSideChats),
+      harness.registry.mount(l1SideChats),
+      harness.registry.mount(l2SideChats),
+      harness.registry.mount(nestedSideChats),
+    ];
+    try {
+      expect(harness.registry.get(rootSideChats).map((t) => t.id)).toEqual([sideChatId]);
+      expect(harness.registry.get(l1SideChats).map((t) => t.id)).toEqual([sideChatId]);
+      expect(harness.registry.get(l2SideChats).map((t) => t.id)).toEqual([sideChatId]);
+      expect(harness.registry.get(nestedSideChats)).toEqual([]);
+    } finally {
+      for (const dispose of disposers) dispose();
+      harness.registry.dispose();
+    }
+  });
 });

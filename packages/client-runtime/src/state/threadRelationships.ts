@@ -1,5 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
+  isTaskChildLineage,
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -36,6 +37,26 @@ export interface ThreadRelationshipWalkRow {
 
 const MERGE_BACK_RELATIONSHIPS = new Set(["fork", "subtask", "subagent"]);
 
+export function resolveTaskTreeRootThreadId(
+  threadId: ThreadId,
+  lookup: (id: ThreadId) => Pick<OrchestrationV2ThreadShell, "id" | "lineage"> | null | undefined,
+): ThreadId {
+  let current = lookup(threadId);
+  if (!current) return threadId;
+  const seen = new Set<ThreadId>([current.id]);
+  while (isTaskChildLineage(current.lineage) && current.lineage.parentThreadId !== null) {
+    const parentId = current.lineage.parentThreadId;
+    if (seen.has(parentId)) break;
+    seen.add(parentId);
+    const parent = lookup(parentId);
+    if (!parent) {
+      return isTaskChildLineage(current.lineage) ? current.lineage.rootThreadId : current.id;
+    }
+    current = parent;
+  }
+  return current.id;
+}
+
 export function resolveMergeBackTargetThreadId(
   projection: Pick<ThreadStructure, "thread"> | null,
 ): ThreadId | null {
@@ -47,6 +68,9 @@ export function resolveMergeBackTargetThreadId(
     projection.thread.lineage.temporary === true
   )
     return null;
+  if (projection.thread.lineage.sideChat === true) {
+    return projection.thread.lineage.parentThreadId;
+  }
   return projection.thread.forkedFrom?.type === "run"
     ? projection.thread.forkedFrom.threadId
     : projection.thread.lineage.parentThreadId;
