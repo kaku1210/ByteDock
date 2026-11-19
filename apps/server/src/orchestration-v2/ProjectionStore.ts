@@ -582,6 +582,9 @@ export interface ProjectionStoreV2Shape {
     ReadonlyArray<ThreadId>,
     ProjectionStoreV2Error
   >;
+  readonly listDirectChildThreadIds: (
+    parentThreadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
   /** Threads that are not deleted, archived ones included. */
   readonly countThreads: () => Effect.Effect<number, ProjectionStoreV2Error>;
   /** Every active thread, in shell order. */
@@ -1193,7 +1196,9 @@ const shellIndexLineage = (row: {
 }): OrchestrationV2ThreadShell["lineage"] => ({
   parentThreadId: row.parent_thread_id === null ? null : ThreadId.make(row.parent_thread_id),
   relationshipToParent:
-    row.relationship_to_parent === "fork" || row.relationship_to_parent === "subagent"
+    row.relationship_to_parent === "fork" ||
+    row.relationship_to_parent === "subagent" ||
+    row.relationship_to_parent === "subtask"
       ? row.relationship_to_parent
       : null,
   rootThreadId: ThreadId.make(row.root_thread_id),
@@ -4686,10 +4691,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${booleanInt(options.autoResume)}
                   OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
                 )
-                -- A subagent of a settled, archived or deleted parent is abandoned work.
+                -- A subagent or subtask of a settled, archived or deleted parent is abandoned work.
                 AND NOT EXISTS (
                   SELECT 1 FROM orchestration_v2_projection_threads parent
-                  WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                  WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') IN ('subagent', 'subtask')
                     AND parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
                     AND (
                       json_extract(parent.payload_json, '$.settledOverride') = 'settled'
@@ -4794,7 +4799,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               return sql`
                 SELECT child.thread_id FROM orchestration_v2_projection_threads AS child
                 WHERE CASE WHEN json_valid(child.payload_json) THEN
-                  json_extract(child.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                  json_extract(child.payload_json, '$.lineage.relationshipToParent') IN ('subagent', 'subtask')
                   AND json_extract(child.payload_json, '$.lineage.parentThreadId') IS NOT NULL
                   AND json_extract(child.payload_json, '$.forkedFrom.type') = 'node'
                   ELSE 0 END
@@ -7940,6 +7945,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             WHERE ${includeDeleted ? sql`1 = 1` : sql`t.deleted_at IS NULL`}${
               listedOnly
                 ? sql` AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+                    AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subtask'
                     AND json_extract(t.payload_json, '$.lineage.sideChat') IS NOT 1`
                 : sql``
             }${threadId === undefined ? sql`` : sql` AND t.thread_id = ${threadId}`}${
@@ -8215,7 +8221,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
               AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL
               AND (
-                json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+                (
+                  json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+                  AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subtask'
+                )
                 OR NOT EXISTS (
                   SELECT 1 FROM orchestration_v2_projection_threads parent
                   WHERE parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
@@ -8826,7 +8835,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         FROM orchestration_v2_projection_threads
         WHERE deleted_at IS NULL
           AND json_extract(payload_json, '$.archivedAt') IS NULL
-          AND json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+          AND json_extract(payload_json, '$.lineage.relationshipToParent') IN ('subagent', 'subtask')
+      `;
+        return rows.map((row) => ThreadId.make(row.thread_id));
+      },
+      Effect.mapError(shellSnapshotReadError),
+    );
+
+    const listDirectChildThreadIds = Effect.fn("ProjectionStore.listDirectChildThreadIds")(
+      function* (parentThreadId: ThreadId) {
+        const rows = yield* sql<{ readonly thread_id: string }>`
+        SELECT thread_id
+        FROM orchestration_v2_projection_threads
+        WHERE deleted_at IS NULL
+          AND CASE WHEN json_valid(payload_json)
+            THEN json_extract(payload_json, '$.lineage.parentThreadId') END = ${parentThreadId}
+        ORDER BY updated_at DESC, thread_id ASC
       `;
         return rows.map((row) => ThreadId.make(row.thread_id));
       },
@@ -9048,6 +9072,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         WHERE t.deleted_at IS NULL
           AND json_extract(t.payload_json, '$.archivedAt') IS NULL
           AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+          AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subtask'
           AND json_extract(t.payload_json, '$.lineage.sideChat') IS NOT 1
           AND json_extract(t.payload_json, '$.settledOverride') = 'settled'
           AND json_extract(t.payload_json, '$.settledAt') IS NOT NULL${
@@ -9184,6 +9209,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getShellSnapshot: readOnReader(getShellSnapshot),
       getPullRequestSnapshot: readOnReader(getPullRequestSnapshot),
       listActiveSubagentThreadIds: readOnReader(listActiveSubagentThreadIds),
+      listDirectChildThreadIds: readOnReader(listDirectChildThreadIds),
       countThreads: readOnReader(countThreads),
       listActiveShellIndex: readOnReader(listActiveShellIndex),
       listActiveThreads: readOnReader(listActiveThreads),

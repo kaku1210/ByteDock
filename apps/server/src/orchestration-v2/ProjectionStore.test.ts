@@ -3495,11 +3495,12 @@ it.effect("lists only active subagent IDs without loading shell data", () =>
     const store = yield* ProjectionStore.ProjectionStoreV2;
     const sql = yield* SqlClient.SqlClient;
     const createdAt = "2026-01-05T00:00:00.000Z";
-    for (const [id, relationship, archivedAt, deletedAt] of [
-      ["parent", null, null, null],
-      ["active-subagent", "subagent", null, null],
-      ["archived-subagent", "subagent", createdAt, null],
-      ["deleted-subagent", "subagent", null, createdAt],
+    for (const [id, relationship, parentId, archivedAt, deletedAt] of [
+      ["parent", null, null, null, null],
+      ["active-subagent", "subagent", "parent", null, null],
+      ["active-subtask", "subtask", "parent", null, null],
+      ["archived-subagent", "subagent", "parent", createdAt, null],
+      ["deleted-subagent", "subagent", "parent", null, createdAt],
     ] as const) {
       yield* sql`
         INSERT INTO orchestration_v2_projection_threads (
@@ -3508,14 +3509,35 @@ it.effect("lists only active subagent IDs without loading shell data", () =>
         ) VALUES (
           ${id}, 'project:test', ${id}, 'codex', 'full-access', 'default',
           ${createdAt}, ${createdAt}, ${archivedAt}, ${deletedAt},
-          ${JSON.stringify({ lineage: { relationshipToParent: relationship }, archivedAt })}
+          ${JSON.stringify({
+            lineage: {
+              parentThreadId: parentId,
+              relationshipToParent: relationship,
+              rootThreadId: "parent",
+            },
+            archivedAt,
+          })}
         )
       `;
     }
 
     assert.sameMembers(
       [...(yield* store.listActiveSubagentThreadIds())],
-      [ThreadId.make("active-subagent")],
+      [ThreadId.make("active-subagent"), ThreadId.make("active-subtask")],
+    );
+    assert.sameMembers(
+      [...(yield* store.listDirectChildThreadIds(ThreadId.make("parent")))],
+      [
+        ThreadId.make("active-subagent"),
+        ThreadId.make("active-subtask"),
+        ThreadId.make("archived-subagent"),
+      ],
+    );
+    const activeIndex = yield* store.listActiveShellIndex();
+    assert.strictEqual(
+      activeIndex.find((entry) => entry.id === ThreadId.make("active-subtask"))?.lineage
+        .relationshipToParent,
+      "subtask",
     );
   }).pipe(Effect.provide(layerTest)),
 );

@@ -9,6 +9,7 @@ import type {
 import {
   isListedThreadLineage,
   isProviderNativeSubagentThread,
+  isTaskChildLineage,
   OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -76,7 +77,7 @@ function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
   if (
     kind === undefined ||
     kind === "auth_refresh" ||
-    (thread.lineage.relationshipToParent !== "subagent" && thread.delegatedFrom === undefined) ||
+    (!isTaskChildLineage(thread.lineage) && thread.delegatedFrom === undefined) ||
     isProviderNativeSubagentThread(thread) ||
     !isChildRunLive(thread)
   ) {
@@ -107,7 +108,7 @@ function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
 
 /**
  * The threads to flag for a subagent's live approval, up its
- * subagent chain and through a side chat to its parent. `delegated` are tasks this
+ * task chain and through a side chat to its parent. `delegated` are tasks this
  * environment's threads delegated to linked environments, with what each one, or its
  * own subagents, asks.
  */
@@ -130,7 +131,8 @@ function pendingSubagentRequestsByThread(
       if (requests.get(parentId) !== "approval") requests.set(parentId, request);
       const parent = byId.get(parentId);
       parentId =
-        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
+        parent !== undefined &&
+        (isTaskChildLineage(parent.lineage) || parent.lineage.sideChat === true)
           ? parent.lineage.parentThreadId
           : null;
     }
@@ -144,7 +146,7 @@ function pendingSubagentRequestsByThread(
       }
       continue;
     }
-    if (child.lineage.relationshipToParent !== "subagent") continue;
+    if (!isTaskChildLineage(child.lineage)) continue;
     const request = rolledUpRequest(child, subagentRequest(child));
     if (request !== null) flag(parentId, request, new Set([child.id]));
   }
@@ -466,7 +468,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           const parent = thread.lineage.parentThreadId;
           if (
             parent !== null &&
-            (thread.lineage.relationshipToParent === "subagent" || thread.lineage.sideChat === true)
+            (isTaskChildLineage(thread.lineage) || thread.lineage.sideChat === true)
           ) {
             addChild({ environmentId, threadId: parent }, environmentId, thread);
           } else if (thread.delegatedFrom !== undefined) {

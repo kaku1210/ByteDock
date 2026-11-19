@@ -16,6 +16,7 @@ import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effec
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   DeviceToolError,
+  isTaskChildLineage,
   OrchestratorMcpFailure,
   PreviewAutomationError,
   ProviderInteractionMode,
@@ -1006,13 +1007,12 @@ const withToolAnalytics =
       /* Request instrumentation already owns the span; keep this helper in that context. */
       Effect.fnUntraced(function* (thread: AgentThread) {
         let depth = 0;
-        let parentId =
-          thread.lineage.relationshipToParent === "subagent" ? thread.lineage.parentThreadId : null;
+        let parentId = isTaskChildLineage(thread.lineage) ? thread.lineage.parentThreadId : null;
         while (parentId !== null && depth < MAX_REPORTED_DEPTH) {
           depth += 1;
           const parent = yield* shellOf(parentId);
           parentId =
-            parent?.lineage.relationshipToParent === "subagent"
+            parent !== null && isTaskChildLineage(parent.lineage)
               ? parent.lineage.parentThreadId
               : null;
         }

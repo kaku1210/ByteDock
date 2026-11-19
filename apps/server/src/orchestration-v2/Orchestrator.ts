@@ -29,6 +29,7 @@ import {
   isCompactionCommandMessage,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
+  isTaskChildLineage,
   MessageId,
   type NodeId,
   type ModelSelection,
@@ -118,6 +119,7 @@ import {
   resolveMessageDispatchIntent,
 } from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
+import { validateTaskChildPlacement } from "./TaskTreeDepth.ts";
 import {
   ContextHandoffServiceV2,
   readForkHistoryItems,
@@ -4185,12 +4187,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.type === "thread.pull-request.watch" &&
       command.watching &&
-      thread.lineage.relationshipToParent === "subagent"
+      isTaskChildLineage(thread.lineage)
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Thread ${command.threadId} is a subagent; its parent thread watches pull requests.`,
+        cause: `Thread ${command.threadId} is a child task; its parent thread watches pull requests.`,
       });
     }
     // Agent watches use the latest executed run to catch calls racing Stop; users can still watch.
@@ -9406,6 +9408,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Parent node ${command.parentNodeId} is not part of active run ${parentRun.id}.`,
         });
       }
+
+      yield* validateTaskChildPlacement({
+        parentThreadId: command.parentThreadId,
+        loadThread: findThread,
+      }).pipe(
+        Effect.catchTags({
+          TaskTreeDepthError: (error) =>
+            Effect.fail(
+              new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: error.message,
+              }),
+            ),
+        }),
+      );
 
       const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(

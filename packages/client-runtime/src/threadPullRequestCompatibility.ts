@@ -1,7 +1,8 @@
-import type {
-  ExecutionEnvironmentCapabilities,
-  ThreadId,
-  ThreadPullRequestKey,
+import {
+  isTaskChildLineage,
+  type ExecutionEnvironmentCapabilities,
+  type ThreadId,
+  type ThreadPullRequestKey,
 } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "./state/models.ts";
 import { normalizeThreadPullRequestKey } from "./threadPullRequests.ts";
@@ -13,7 +14,7 @@ export function threadPullRequestLinkMode(
   return capabilities ? ("multiple" as const) : ("unsupported" as const);
 }
 
-/** The server refuses new watches on settled, archived, and subagent threads. */
+/** The server refuses new watches on settled, archived, and task-child threads. */
 export function canStartThreadPullRequestWatch(
   thread: Pick<EnvironmentThreadShell, "archivedAt" | "settledAt" | "settledOverride" | "lineage">,
 ): boolean {
@@ -21,7 +22,7 @@ export function canStartThreadPullRequestWatch(
     thread.archivedAt === null &&
     thread.settledAt === null &&
     thread.settledOverride !== "settled" &&
-    thread.lineage.relationshipToParent !== "subagent"
+    !isTaskChildLineage(thread.lineage)
   );
 }
 

@@ -7,7 +7,7 @@ import * as DateTime from "effect/DateTime";
 
 import type { ThreadStructure } from "./models.ts";
 
-export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "transfer";
+export type ThreadRelationshipKind = "parent" | "fork" | "subagent" | "subtask" | "transfer";
 
 export interface ThreadRelationshipNode {
   readonly threadId: ThreadId;
@@ -99,7 +99,12 @@ export function deriveThreadRelationshipGraph(input: {
     addEdge({
       sourceThreadId: parentThreadId,
       targetThreadId: thread.id,
-      kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
+      kind:
+        thread.lineage.relationshipToParent === "subagent"
+          ? "subagent"
+          : thread.lineage.relationshipToParent === "subtask"
+            ? "subtask"
+            : "fork",
       status: thread.activityRunStatus ?? thread.status,
     });
   }

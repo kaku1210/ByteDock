@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isTaskChildLineage,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -297,7 +298,7 @@ const layerBase: Layer.Layer<
       // One payload row; unlike the shell, it still resolves a deleted child thread.
       projectionStore
         .getThread(threadId)
-        .pipe(Effect.map((thread) => thread.lineage.relationshipToParent === "subagent")),
+        .pipe(Effect.map((thread) => isTaskChildLineage(thread.lineage))),
     );
     // Recorded before publication, so an interrupted publish cannot lose a committed outcome.
     const publishStoredEvents = (

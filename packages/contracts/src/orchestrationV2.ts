@@ -164,18 +164,42 @@ export const OrchestrationV2ProviderRef = Schema.Struct({
 });
 export type OrchestrationV2ProviderRef = typeof OrchestrationV2ProviderRef.Type;
 
+export const MAX_TASK_TREE_DEPTH = 2;
+
+export const OrchestrationV2ThreadRelationshipToParent = Schema.Literals([
+  "fork",
+  "subagent",
+  "subtask",
+]);
+export type OrchestrationV2ThreadRelationshipToParent =
+  typeof OrchestrationV2ThreadRelationshipToParent.Type;
+
 export const OrchestrationV2AppThreadLineage = Schema.Struct({
   parentThreadId: Schema.NullOr(ThreadId),
-  relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+  relationshipToParent: Schema.NullOr(OrchestrationV2ThreadRelationshipToParent),
   rootThreadId: ThreadId,
   sideChat: Schema.optional(Schema.Boolean),
   temporary: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLineage.Type;
 
-/** Subagents and side chats live inside their parent's view, never in thread lists. */
+export const OrchestrationV2SubtaskSourceAnchor = Schema.Struct({
+  sourceThreadId: ThreadId,
+  sourceRunId: Schema.optional(RunId),
+  sourceMessageId: Schema.optional(MessageId),
+  sourceTurnItemId: Schema.optional(TurnItemId),
+  sourceOrdinal: Schema.optional(NonNegativeInt),
+  excerpt: Schema.optional(TrimmedNonEmptyString),
+});
+export type OrchestrationV2SubtaskSourceAnchor = typeof OrchestrationV2SubtaskSourceAnchor.Type;
+
+/** Subtasks and subagents are child nodes inside a task tree. */
+export const isTaskChildLineage = (lineage: OrchestrationV2AppThreadLineage): boolean =>
+  lineage.relationshipToParent === "subagent" || lineage.relationshipToParent === "subtask";
+
+/** Subagents, subtasks, and side chats live inside their parent's view, never in thread lists. */
 export const isListedThreadLineage = (lineage: OrchestrationV2AppThreadLineage): boolean =>
-  lineage.relationshipToParent !== "subagent" && lineage.sideChat !== true;
+  !isTaskChildLineage(lineage) && lineage.sideChat !== true;
 
 export const OrchestrationV2ContextTransferType = Schema.Literals([
   "fork",
@@ -483,6 +507,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   lineage: OrchestrationV2AppThreadLineage,
+  sourceAnchor: Schema.optional(OrchestrationV2SubtaskSourceAnchor),
   forkedFrom: Schema.NullOr(
     Schema.Union([
       Schema.Struct({ type: Schema.Literal("run"), threadId: ThreadId, runId: RunId }),
