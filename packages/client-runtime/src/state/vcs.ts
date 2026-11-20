@@ -17,6 +17,7 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import {
   createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
 } from "./runtime.ts";
@@ -41,6 +42,9 @@ import {
 
 // Share freshness across search and pagination keys, but keep it local to this registry.
 const serverRefsRevisionAtom = Atom.family((_key: string) => Atom.make(0).pipe(Atom.keepAlive));
+const sharedWorktreeRevisionAtom = Atom.family((_environmentId: EnvironmentId) =>
+  Atom.make(0).pipe(Atom.keepAlive),
+);
 
 const OFFLINE_BRANCH_LIST_LIMIT = 100;
 const VCS_REFS_IDLE_TTL_MS = 30_000;
@@ -372,6 +376,30 @@ export function createVcsEnvironmentAtoms<R, E>(
     resolveWorktreeApproval: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:resolve-worktree-approval",
       tag: WS_METHODS.worktreeApprovalResolve,
+    }),
+    sharedWorktreeSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:vcs:shared-worktree-snapshot",
+      tag: WS_METHODS.sharedWorktreeGetSnapshot,
+      idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
+      staleTimeMs: 2_000,
+      refreshIntervalMs: 5_000,
+      refreshTrigger: (target) => sharedWorktreeRevisionAtom(target.environmentId),
+    }),
+    setSharedWorktreePolicy: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:set-shared-worktree-policy",
+      tag: WS_METHODS.sharedWorktreeSetPolicy,
+      onSettled: (target, registry) =>
+        Effect.sync(() => {
+          registry.update(sharedWorktreeRevisionAtom(target.environmentId), (n) => n + 1);
+        }),
+    }),
+    setSharedWorktreePlannedPaths: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:set-shared-worktree-planned-paths",
+      tag: WS_METHODS.sharedWorktreeSetPlannedPaths,
+      onSettled: (target, registry) =>
+        Effect.sync(() => {
+          registry.update(sharedWorktreeRevisionAtom(target.environmentId), (n) => n + 1);
+        }),
     }),
     removeWorktree: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:remove-worktree",

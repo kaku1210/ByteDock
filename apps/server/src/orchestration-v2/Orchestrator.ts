@@ -203,6 +203,7 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { computeOutboundCausationChain, mergeCausationChains } from "./CausationChain.ts";
+import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
 import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1635,6 +1636,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const subtaskEscalationStore = yield* Effect.serviceOption(
     SubtaskEscalationStore.SubtaskEscalationStore,
+  );
+  const sharedWorktreeCoordination = yield* Effect.serviceOption(
+    SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
   );
   const messageIntake = yield* KeyedLock.make<ThreadId>();
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
@@ -16817,6 +16821,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             threadIds: cancelledChildIds,
             reason: `Delegated task ${command.subagentId} was cancelled.`,
           });
+        }
+      }
+    }
+    if (Option.isSome(sharedWorktreeCoordination)) {
+      if (command.type === "thread.archive" || command.type === "thread.delete") {
+        yield* sharedWorktreeCoordination.value.clearThreadState([
+          command.threadId,
+          ...cascade.descendantIds,
+        ]);
+      } else if (command.type === "run.interrupt") {
+        const releasedRunIds = new Set<RunId>([command.runId]);
+        for (const { event } of committed.storedEvents) {
+          if (
+            event.type === "run.updated" &&
+            (event.payload.status === "interrupted" ||
+              event.payload.status === "cancelled" ||
+              event.payload.status === "failed" ||
+              event.payload.status === "completed")
+          ) {
+            releasedRunIds.add(event.payload.id);
+          }
+        }
+        for (const runId of releasedRunIds) {
+          yield* sharedWorktreeCoordination.value.releaseRunReservations(command.threadId, runId);
+        }
+      } else if (command.type === "subagent.stop") {
+        const cancelledChildIds = committed.storedEvents.flatMap(({ event }) =>
+          event.type === "subagent.updated" &&
+          event.payload.status === "cancelled" &&
+          event.payload.childThreadId !== null
+            ? [event.payload.childThreadId]
+            : [],
+        );
+        for (const childId of cancelledChildIds) {
+          yield* sharedWorktreeCoordination.value.clearThreadState([childId]);
         }
       }
     }

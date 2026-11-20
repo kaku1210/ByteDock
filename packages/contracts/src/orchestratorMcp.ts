@@ -45,6 +45,14 @@ import {
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
+  SharedWorktreeCoordinationSnapshot,
+  SharedWorktreeFileRevision,
+  SharedWorktreePathOverlap,
+  SharedWorktreePlannedPathEntry,
+  SharedWorktreeReservationId,
+  SharedWorktreeWriteReservation,
+} from "./sharedWorktreeCoordination.ts";
+import {
   SubtaskEscalationRequest,
   SubtaskEscalationRequestId,
   SubtaskEscalationStatus,
@@ -201,6 +209,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     }),
   ),
   causationChain: Schema.optional(Schema.Array(ThreadId)),
+  plannedPaths: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString).annotate({
+      description:
+        "Optional workspace-relative paths this delegated task plans to modify so sibling tasks sharing the checkout can detect overlaps upfront.",
+    }),
+  ),
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
@@ -999,6 +1013,64 @@ export const OrchestratorMcpSubtaskEscalateResult = Schema.Struct({
   next: Schema.String,
 });
 export type OrchestratorMcpSubtaskEscalateResult = typeof OrchestratorMcpSubtaskEscalateResult.Type;
+
+export const OrchestratorMcpWorktreeCoordinateRenamePair = Schema.Struct({
+  from: TrimmedNonEmptyString,
+  to: TrimmedNonEmptyString,
+});
+export type OrchestratorMcpWorktreeCoordinateRenamePair =
+  typeof OrchestratorMcpWorktreeCoordinateRenamePair.Type;
+
+export const OrchestratorMcpWorktreeCoordinateInput = Schema.Struct({
+  action: Schema.Literals([
+    "inspect",
+    "declare_plan",
+    "reserve_paths",
+    "release_paths",
+    "write_file",
+  ]).annotate({
+    description:
+      "'inspect': read three-layer attribution & overlaps; 'declare_plan': declare planned paths; 'reserve_paths': reserve normalized paths (waits for overlapping writer and returns latest file contents); 'release_paths': release reservation; 'write_file': reservation-protected write with latest-revision check.",
+  }),
+  paths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  renamePairs: Schema.optional(Schema.Array(OrchestratorMcpWorktreeCoordinateRenamePair)),
+  reservationId: Schema.optional(SharedWorktreeReservationId),
+  path: Schema.optional(TrimmedNonEmptyString),
+  renameFrom: Schema.optional(TrimmedNonEmptyString),
+  contents: Schema.optional(Schema.String),
+  expectedSha256: Schema.optional(TrimmedNonEmptyString),
+  note: Schema.optional(Schema.String),
+});
+export type OrchestratorMcpWorktreeCoordinateInput =
+  typeof OrchestratorMcpWorktreeCoordinateInput.Type;
+
+export const OrchestratorMcpWorktreeCoordinateResult = Schema.Struct({
+  action: Schema.Literals([
+    "inspect",
+    "declare_plan",
+    "reserve_paths",
+    "release_paths",
+    "write_file",
+  ]),
+  snapshot: Schema.optional(SharedWorktreeCoordinationSnapshot),
+  plannedPaths: Schema.optional(Schema.Array(SharedWorktreePlannedPathEntry)),
+  overlaps: Schema.optional(Schema.Array(SharedWorktreePathOverlap)),
+  reservation: Schema.optional(SharedWorktreeWriteReservation),
+  waited: Schema.optional(Schema.Boolean),
+  priorWriters: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        threadId: ThreadId,
+        runId: Schema.NullOr(RunId),
+      }),
+    ),
+  ),
+  latestFiles: Schema.optional(Schema.Array(SharedWorktreeFileRevision)),
+  releasedCount: Schema.optional(Schema.Int),
+  writtenFile: Schema.optional(SharedWorktreeFileRevision),
+});
+export type OrchestratorMcpWorktreeCoordinateResult =
+  typeof OrchestratorMcpWorktreeCoordinateResult.Type;
 
 export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFailure>()(
   "OrchestratorMcpFailure",

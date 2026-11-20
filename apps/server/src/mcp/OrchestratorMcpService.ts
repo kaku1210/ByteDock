@@ -52,6 +52,8 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestratorMcpThreadWaitInput,
   type OrchestratorMcpThreadWaitResult,
+  type OrchestratorMcpWorktreeCoordinateInput,
+  type OrchestratorMcpWorktreeCoordinateResult,
   type ProviderInteractionMode,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
@@ -62,6 +64,7 @@ import {
   scheduledTaskThreadMode,
   type ServerProvider,
   type ServerProviderModel,
+  type SharedWorktreeCoordinationError,
   type SubtaskEscalationError,
   SubtaskEscalationRequestId,
   ThreadId,
@@ -117,6 +120,7 @@ import {
   delegatedTaskRuns,
   runOutcome,
 } from "../orchestration-v2/RestartBackgroundNote.ts";
+import * as SharedWorktreeCoordinationService from "../orchestration-v2/SharedWorktreeCoordinationService.ts";
 import * as SubtaskEscalationService from "../orchestration-v2/SubtaskEscalationService.ts";
 import * as SubtaskEscalationStore from "../orchestration-v2/SubtaskEscalationStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -203,6 +207,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpSubtaskEscalateInput,
   ) => Effect.Effect<OrchestratorMcpSubtaskEscalateResult, OrchestratorMcpFailure>;
+  readonly coordinateWorktree: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpWorktreeCoordinateInput,
+  ) => Effect.Effect<OrchestratorMcpWorktreeCoordinateResult, OrchestratorMcpFailure>;
   readonly createThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
@@ -1265,6 +1273,36 @@ const make = Effect.gen(function* () {
   const subtaskEscalationStore = yield* Effect.serviceOption(
     SubtaskEscalationStore.SubtaskEscalationStore,
   );
+  const sharedWorktree = yield* Effect.serviceOption(
+    SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
+  );
+
+  const mapSharedWorktreeFailure = (
+    error: SharedWorktreeCoordinationError,
+  ): OrchestratorMcpFailure => {
+    switch (error.reason) {
+      case "thread_not_found":
+        return failure("thread_not_found", error.message);
+      case "project_not_found":
+      case "invalid_path":
+      case "reservation_not_found":
+      case "reservation_owner_mismatch":
+      case "stale_revision":
+        return failure("invalid_request", error.message);
+      case "persistence_failed":
+      case "write_failed":
+        return failure("orchestration_error", error.message);
+    }
+  };
+
+  const suspendCallerCheckoutLease = <A, E, R>(
+    threadId: ThreadId,
+    runId: RunId | null,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Option.isSome(sharedWorktree)
+      ? sharedWorktree.value.suspendCheckoutTurnLease(threadId, runId, effect)
+      : effect;
 
   const mapSubtaskEscalationFailure = (error: SubtaskEscalationError): OrchestratorMcpFailure => {
     switch (error.reason) {
@@ -1954,7 +1992,11 @@ const make = Effect.gen(function* () {
     const delivered = (waited: Option.Option<OrchestratorMcpDelegateTaskResult>) =>
       Option.isSome(waited) && isTerminalTaskStatus(waited.value.status);
     // The finalizer runs uninterruptibly, so a cancel right after the wait returns still upgrades.
-    const waited = yield* waitForTask(scope, taskId, timeoutMs).pipe(
+    const waited = yield* suspendCallerCheckoutLease(
+      scope.thread.threadId,
+      null,
+      waitForTask(scope, taskId, timeoutMs),
+    ).pipe(
       Effect.onExit((exit) =>
         Exit.isSuccess(exit) && delivered(exit.value) ? Effect.void : upgradeWake,
       ),
@@ -2860,6 +2902,28 @@ const make = Effect.gen(function* () {
               runId: childRunEvent.event.payload.id,
             });
           }
+          if (
+            Option.isSome(sharedWorktree) &&
+            input.plannedPaths !== undefined &&
+            input.plannedPaths.length > 0
+          ) {
+            yield* sharedWorktree.value
+              .setPlannedPaths({
+                threadId: childThreadId,
+                paths: input.plannedPaths,
+                runId:
+                  childRunEvent?.event.type === "run.created"
+                    ? childRunEvent.event.payload.id
+                    : null,
+                note: "Declared via delegate_task",
+              })
+              .pipe(
+                Effect.catchTags({
+                  SharedWorktreeCoordinationError: (error) =>
+                    Effect.fail(mapSharedWorktreeFailure(error)),
+                }),
+              );
+          }
           return { taskId, childThreadId, key } as const;
         },
       );
@@ -3007,6 +3071,132 @@ const make = Effect.gen(function* () {
           replayed: submitted.replayed,
           next,
         } satisfies OrchestratorMcpSubtaskEscalateResult;
+      },
+    ),
+    coordinateWorktree: Effect.fn("OrchestratorMcpService.coordinateWorktree")(
+      function* (callerScope, input) {
+        if (Option.isNone(sharedWorktree)) {
+          return yield* failure(
+            "orchestration_error",
+            "Shared worktree coordination service is not available.",
+          );
+        }
+        const { parent } = yield* loadThreadCaller(callerScope, "t3_worktree_coordinate");
+        const activeRun = ThreadManagementService.latestActiveRun(parent);
+        const runId = activeRun?.id ?? null;
+
+        const runMapped = <A>(
+          effect: Effect.Effect<A, SharedWorktreeCoordinationError>,
+        ): Effect.Effect<A, OrchestratorMcpFailure> =>
+          effect.pipe(
+            Effect.catchTags({
+              SharedWorktreeCoordinationError: (error) =>
+                Effect.fail(mapSharedWorktreeFailure(error)),
+            }),
+          );
+
+        switch (input.action) {
+          case "inspect": {
+            const snapshot = yield* runMapped(sharedWorktree.value.getSnapshot(parent.thread.id));
+            return {
+              action: "inspect",
+              snapshot,
+            } satisfies OrchestratorMcpWorktreeCoordinateResult;
+          }
+          case "declare_plan": {
+            if (input.paths === undefined) {
+              return yield* failure(
+                "invalid_request",
+                "Action 'declare_plan' requires a `paths` array (pass [] to clear).",
+              );
+            }
+            const result = yield* runMapped(
+              sharedWorktree.value.setPlannedPaths({
+                threadId: parent.thread.id,
+                paths: input.paths,
+                runId,
+                note: input.note ?? null,
+              }),
+            );
+            return {
+              action: "declare_plan",
+              plannedPaths: result.plannedPaths,
+              overlaps: result.overlaps,
+            } satisfies OrchestratorMcpWorktreeCoordinateResult;
+          }
+          case "reserve_paths": {
+            const paths = input.paths ?? [];
+            const renamePairs = input.renamePairs ?? [];
+            if (paths.length === 0 && renamePairs.length === 0) {
+              return yield* failure(
+                "invalid_request",
+                "Action 'reserve_paths' requires at least one path or renamePair.",
+              );
+            }
+            const result = yield* runMapped(
+              sharedWorktree.value.acquireWriteReservation({
+                threadId: parent.thread.id,
+                runId,
+                paths,
+                renamePairs,
+              }),
+            );
+            return {
+              action: "reserve_paths",
+              reservation: result.reservation,
+              waited: result.waited,
+              priorWriters: result.priorWriters,
+              latestFiles: result.latestFiles,
+            } satisfies OrchestratorMcpWorktreeCoordinateResult;
+          }
+          case "release_paths": {
+            const releasedCount = yield* runMapped(
+              sharedWorktree.value.releaseWriteReservation({
+                threadId: parent.thread.id,
+                runId,
+                ...(input.reservationId === undefined
+                  ? {}
+                  : { reservationId: input.reservationId }),
+              }),
+            );
+            return {
+              action: "release_paths",
+              releasedCount,
+            } satisfies OrchestratorMcpWorktreeCoordinateResult;
+          }
+          case "write_file": {
+            if (parent.thread.interactionMode === "plan") {
+              return yield* failure(
+                "interaction_mode_escalation_denied",
+                "Cannot write files via t3_worktree_coordinate while the thread is in plan mode.",
+              );
+            }
+            if (input.path === undefined || input.contents === undefined) {
+              return yield* failure(
+                "invalid_request",
+                "Action 'write_file' requires both `path` and `contents`.",
+              );
+            }
+            const result = yield* runMapped(
+              sharedWorktree.value.controlledWriteFile({
+                threadId: parent.thread.id,
+                runId,
+                path: input.path,
+                ...(input.renameFrom === undefined ? {} : { renameFrom: input.renameFrom }),
+                contents: input.contents,
+                ...(input.expectedSha256 === undefined
+                  ? {}
+                  : { expectedSha256: input.expectedSha256 }),
+              }),
+            );
+            return {
+              action: "write_file",
+              writtenFile: result.writtenFile,
+              waited: result.waited,
+              priorWriters: result.priorWriters,
+            } satisfies OrchestratorMcpWorktreeCoordinateResult;
+          }
+        }
       },
     ),
     cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
@@ -3798,7 +3988,7 @@ const make = Effect.gen(function* () {
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
       const { parent, target } = yield* loadScopedThread(scope, input.threadId, []);
-      const result = yield* threadManagement
+      const waitEffect = threadManagement
         .waitForThread({
           projectId: target.thread.projectId,
           threadId: input.threadId,
@@ -3810,6 +4000,9 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      const result = yield* parent !== undefined
+        ? suspendCallerCheckoutLease(parent.thread.id, null, waitEffect)
+        : waitEffect;
       const status = result.run === null ? "idle" : runOutcome(result.run);
       const taskId = result.run?.delegatedTaskId;
       const ownedTask =

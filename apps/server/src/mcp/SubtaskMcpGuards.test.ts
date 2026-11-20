@@ -12,6 +12,7 @@ import {
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
+  OrchestratorMcpWorktreeCoordinateResult,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,7 +24,9 @@ import {
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -34,7 +37,10 @@ import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as SharedWorktreeCoordinationService from "../orchestration-v2/SharedWorktreeCoordinationService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -65,6 +71,9 @@ const decodeSubtaskEscalateResult = Schema.decodeUnknownEffect(
 const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
+const decodeWorktreeCoordinateResult = Schema.decodeUnknownEffect(
+  OrchestratorMcpWorktreeCoordinateResult,
+);
 
 const declaredFailure = (result: McpSchema.CallToolResult) => {
   const text = result.content[0];
@@ -102,6 +111,7 @@ function scopeFor(threadId: ThreadId): McpInvocationContext.McpInvocationScope {
 function makeMcpHarness(input: {
   readonly projectId: ProjectId;
   readonly capturedTurns: Array<CapturedTurn>;
+  readonly workspaceRoot?: string;
 }) {
   const driver = ProviderDriverKind.make("codex");
   const instanceId = ProviderInstanceId.make(driver);
@@ -179,6 +189,12 @@ function makeMcpHarness(input: {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
   );
+  const layerSharedWorktree = SharedWorktreeCoordinationService.layer.pipe(
+    Layer.provide(Layer.merge(ProjectionStore.layer, ProjectStore.layer)),
+    Layer.provide(layerDatabase),
+    Layer.provide(NodeServices.layer),
+    Layer.provide(NodeCrypto.layer),
+  );
   const layerToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(layerThreads),
@@ -187,6 +203,7 @@ function makeMcpHarness(input: {
         NodeServices.layer,
         NodeCrypto.layer,
         layerAdapters,
+        layerSharedWorktree,
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
           getProviders: Effect.succeed([
@@ -223,7 +240,7 @@ function makeMcpHarness(input: {
               ? Effect.succeedSome({
                   id: projectId,
                   title: "MCP Guard Project",
-                  workspaceRoot: process.cwd(),
+                  workspaceRoot: input.workspaceRoot ?? process.cwd(),
                   defaultModelSelection: null,
                   scripts: [],
                   createdAt: "2026-10-18T00:00:00.000Z",
@@ -1333,5 +1350,172 @@ describe("Subtask MCP guards, children scope, privilege-safe inbox, and causatio
         assert.notEqual(l1ReportL0.isError, true);
       }).pipe(Effect.provide(env.layer));
     },
+  );
+
+  it.effect(
+    "records delegate_task plannedPaths, coordinates shared worktree writes via t3_worktree_coordinate, and refuses write_file in plan mode",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tmpDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-mcp-shared-wt-" });
+          yield* fs.makeDirectory(path.join(tmpDir, "src"), { recursive: true });
+          yield* fs.writeFileString(path.join(tmpDir, "src", "shared.ts"), "base\n");
+
+          const projectId = ProjectId.make("project:mcp-shared-wt");
+          const capturedTurns: Array<CapturedTurn> = [];
+          const env = makeMcpHarness({ projectId, capturedTurns, workspaceRoot: tmpDir });
+
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const rootId = ThreadId.make("thread:mcp-sw-l0");
+            const planChildId = ThreadId.make("thread:mcp-sw-plan");
+
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("cmd:sw:root"),
+              projectId,
+              threadId: rootId,
+              title: "L0 Coordinator",
+              modelSelection: env.modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              worktreePath: tmpDir,
+              branch: "develop",
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("cmd:sw:root-run"),
+              threadId: rootId,
+              messageId: MessageId.make("msg:sw:root-run"),
+              text: "Delegate two siblings on shared.ts",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* worker.drain();
+
+            // Delegate L1-A with plannedPaths declared on delegate_task.
+            const delARaw = yield* callTool(rootId, "delegate_task", {
+              task: "Edit src/shared.ts for task A",
+              target: {
+                providerInstanceId: env.modelSelection.instanceId,
+                model: env.modelSelection.model,
+              },
+              mode: "async",
+              plannedPaths: ["src/shared.ts"],
+            });
+            assert.notEqual(delARaw.isError, true);
+            const delA = yield* decodeDelegateTaskResult(delARaw.structuredContent);
+            if (delA.childThreadId === null) {
+              assert.fail("Expected childThreadId for L1-A");
+            }
+
+            // Delegate L1-B with overlapping plannedPaths.
+            const delBRaw = yield* callTool(rootId, "delegate_task", {
+              task: "Edit src/shared.ts for task B",
+              target: {
+                providerInstanceId: env.modelSelection.instanceId,
+                model: env.modelSelection.model,
+              },
+              mode: "async",
+              plannedPaths: ["./src/shared.ts"],
+            });
+            assert.notEqual(delBRaw.isError, true);
+            const delB = yield* decodeDelegateTaskResult(delBRaw.structuredContent);
+            if (delB.childThreadId === null) {
+              assert.fail("Expected childThreadId for L1-B");
+            }
+            yield* worker.drain();
+
+            // Inspect from L1-A detects planned overlap between L1-A and L1-B.
+            const inspectRaw = yield* callTool(delA.childThreadId, "t3_worktree_coordinate", {
+              action: "inspect",
+            });
+            assert.notEqual(inspectRaw.isError, true);
+            const inspected = yield* decodeWorktreeCoordinateResult(inspectRaw.structuredContent);
+            assert.equal(inspected.snapshot?.overlaps.length, 1);
+            assert.equal(inspected.snapshot?.overlaps[0]?.normalizedPath, "src/shared.ts");
+
+            // L1-A reserves, reads latest revision, releases, and performs controlled write_file.
+            const reserveRaw = yield* callTool(delA.childThreadId, "t3_worktree_coordinate", {
+              action: "reserve_paths",
+              paths: ["src/shared.ts"],
+            });
+            assert.notEqual(reserveRaw.isError, true);
+            const reserved = yield* decodeWorktreeCoordinateResult(reserveRaw.structuredContent);
+            assert.equal(reserved.latestFiles?.[0]?.contents, "base\n");
+            const baseSha = reserved.latestFiles?.[0]?.sha256;
+            assert.isNotNull(baseSha);
+
+            const releaseRaw = yield* callTool(delA.childThreadId, "t3_worktree_coordinate", {
+              action: "release_paths",
+              reservationId: reserved.reservation?.reservationId,
+            });
+            assert.notEqual(releaseRaw.isError, true);
+            const released = yield* decodeWorktreeCoordinateResult(releaseRaw.structuredContent);
+            assert.equal(released.releasedCount, 1);
+
+            const writeRaw = yield* callTool(delA.childThreadId, "t3_worktree_coordinate", {
+              action: "write_file",
+              path: "src/shared.ts",
+              contents: "base\nwritten-by-A\n",
+              expectedSha256: baseSha!,
+            });
+            assert.notEqual(writeRaw.isError, true);
+            const written = yield* decodeWorktreeCoordinateResult(writeRaw.structuredContent);
+            assert.equal(written.writtenFile?.contents, "base\nwritten-by-A\n");
+
+            // A plan-mode thread MUST be refused write_file via t3_worktree_coordinate.
+            yield* orchestrator.dispatch({
+              type: "thread.fork",
+              commandId: CommandId.make("cmd:sw:plan-child"),
+              sourceThreadId: rootId,
+              targetThreadId: planChildId,
+              subtask: true,
+              title: "L1 Plan Mode",
+              sourcePoint: { type: "latest_stable" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make("cmd:sw:plan-child-rt"),
+              threadId: planChildId,
+              runtimeMode: "approval-required",
+            });
+            yield* orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make("cmd:sw:plan-child-mode"),
+              threadId: planChildId,
+              interactionMode: "plan",
+            });
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("cmd:sw:plan-child-run"),
+              threadId: planChildId,
+              messageId: MessageId.make("msg:sw:plan-child-run"),
+              text: "Attempt write in plan mode",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* worker.drain();
+            const planWriteRaw = yield* callTool(planChildId, "t3_worktree_coordinate", {
+              action: "write_file",
+              path: "src/shared.ts",
+              contents: "illegal-plan-write\n",
+            });
+            assert.equal(planWriteRaw.isError, true);
+            assert.equal(declaredFailure(planWriteRaw)?.code, "interaction_mode_escalation_denied");
+          }).pipe(Effect.provide(env.layer));
+        }),
+      ).pipe(Effect.provide(NodeServices.layer)),
   );
 });

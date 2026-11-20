@@ -32,6 +32,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -55,6 +56,7 @@ import {
   makeProviderFailureTurnItem,
 } from "@t3tools/provider-core/server/failure";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
+import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import { userFacingDatabaseErrorMessage } from "./UserFacingErrors.ts";
@@ -665,6 +667,9 @@ export const layer: Layer.Layer<
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+    const sharedWorktreeCoordination = yield* Effect.serviceOption(
+      SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
+    );
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1738,6 +1743,19 @@ export const layer: Layer.Layer<
           yield* trackChildLifecycle(event, deliveredEvent !== null);
           yield* scheduleIdleFlush;
         });
+        let checkoutLeaseRelease: Effect.Effect<void> = Effect.void;
+        let coordinationReleased = false;
+        const releaseRunCoordination = Effect.suspend(() => {
+          if (coordinationReleased) return Effect.void;
+          coordinationReleased = true;
+          const releaseLease = checkoutLeaseRelease.pipe(Effect.ignore);
+          const releaseReservations = Option.isSome(sharedWorktreeCoordination)
+            ? sharedWorktreeCoordination.value
+                .releaseRunReservations(input.run.threadId, input.run.id)
+                .pipe(Effect.asVoid, Effect.ignore)
+            : Effect.void;
+          return releaseLease.pipe(Effect.andThen(releaseReservations));
+        });
         const providerEventFiber = yield* eventSink
           .consumeProviderEvents(
             eventSubscription.events.pipe(
@@ -1928,10 +1946,22 @@ export const layer: Layer.Layer<
                   );
                 }),
             ),
+            Effect.ensuring(releaseRunCoordination),
             Effect.ensuring(endPreviewActivity),
             Effect.ensuring(eventSubscription.close),
             Effect.forkDetach,
           );
+
+        if (Option.isSome(sharedWorktreeCoordination)) {
+          const lease = yield* sharedWorktreeCoordination.value
+            .acquireCheckoutTurnLease({
+              cwd: input.checkpointScope.cwd,
+              threadId: input.run.threadId,
+              runId: input.run.id,
+            })
+            .pipe(Effect.onInterrupt(() => Fiber.interrupt(providerEventFiber)));
+          checkoutLeaseRelease = lease.release;
+        }
 
         // A provider turn is a sign that the session is still alive. Keep
         // its already-issued MCP credential valid even when the agent goes
@@ -1987,6 +2017,7 @@ export const layer: Layer.Layer<
             ? Exit.succeed(true)
             : yield* Effect.exit(input.shouldStartProviderTurn());
         if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
+          yield* releaseRunCoordination;
           yield* Fiber.interrupt(providerEventFiber);
           return;
         }
@@ -2039,6 +2070,7 @@ export const layer: Layer.Layer<
               runId: input.run.id,
               cause,
             }).pipe(
+              Effect.andThen(releaseRunCoordination),
               Effect.andThen(Fiber.interrupt(providerEventFiber)),
               Effect.andThen(Ref.get(latestProviderThread)),
               Effect.flatMap((providerThread) =>

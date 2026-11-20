@@ -57,6 +57,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./WorktreeApprovalService.ts";
+import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
 import * as SubtaskEscalationService from "./SubtaskEscalationService.ts";
 import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
@@ -155,6 +156,10 @@ const layerProviderAuthServiceProvided = ProviderAuthService.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
 
+const layerSharedWorktreeCoordinationProvided = SharedWorktreeCoordinationService.layer.pipe(
+  Layer.provide(Layer.merge(ProjectionStore.layer, ProjectStore.layer)),
+);
+
 const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -164,6 +169,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
       layerEventSink,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
+      layerSharedWorktreeCoordinationProvided,
       TurnItemPositionStore.layer,
       ThreadCommandExecutor.layer,
     ),
@@ -243,6 +249,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerProviderSessionManagerProvided,
       layerProviderSwitchServiceProvided,
       layerRunExecutionServiceProvided,
+      layerSharedWorktreeCoordinationProvided,
       layerSubtaskEscalationStoreProvided,
       ThreadForkService.layer,
     ),
@@ -406,6 +413,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
+  layerSharedWorktreeCoordinationProvided,
   layerSubtaskEscalationStoreProvided,
   layerSubtaskEscalationProvided,
   layerMcpAppRequestsProvided,

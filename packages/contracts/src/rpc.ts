@@ -121,6 +121,15 @@ import {
   OrchestrationGetTurnDiffError,
 } from "./checkpointDiff.ts";
 import {
+  SharedWorktreeCheckoutPolicy,
+  SharedWorktreeCoordinationError,
+  SharedWorktreeCoordinationSnapshot,
+  SharedWorktreeGetSnapshotInput,
+  SharedWorktreeSetPlannedPathsInput,
+  SharedWorktreeSetPlannedPathsResult,
+  SharedWorktreeSetPolicyInput,
+} from "./sharedWorktreeCoordination.ts";
+import {
   SubtaskEscalationCreateDraftInput,
   SubtaskEscalationCreateDraftResult,
   SubtaskEscalationError,
@@ -647,6 +656,9 @@ export const WS_METHODS = {
   subtaskEscalationCreateDraft: "subtaskEscalation.createDraft",
   subtaskEscalationList: "subtaskEscalation.list",
   subtaskEscalationResolve: "subtaskEscalation.resolve",
+  sharedWorktreeGetSnapshot: "sharedWorktree.getSnapshot",
+  sharedWorktreeSetPolicy: "sharedWorktree.setPolicy",
+  sharedWorktreeSetPlannedPaths: "sharedWorktree.setPlannedPaths",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
@@ -1664,6 +1676,24 @@ const WsSubtaskEscalationResolveRpc = Rpc.make(WS_METHODS.subtaskEscalationResol
   error: Schema.Union([SubtaskEscalationError, EnvironmentAuthorizationError]),
 });
 
+const WsSharedWorktreeGetSnapshotRpc = Rpc.make(WS_METHODS.sharedWorktreeGetSnapshot, {
+  payload: SharedWorktreeGetSnapshotInput,
+  success: SharedWorktreeCoordinationSnapshot,
+  error: Schema.Union([SharedWorktreeCoordinationError, EnvironmentAuthorizationError]),
+});
+
+const WsSharedWorktreeSetPolicyRpc = Rpc.make(WS_METHODS.sharedWorktreeSetPolicy, {
+  payload: SharedWorktreeSetPolicyInput,
+  success: SharedWorktreeCheckoutPolicy,
+  error: Schema.Union([SharedWorktreeCoordinationError, EnvironmentAuthorizationError]),
+});
+
+const WsSharedWorktreeSetPlannedPathsRpc = Rpc.make(WS_METHODS.sharedWorktreeSetPlannedPaths, {
+  payload: SharedWorktreeSetPlannedPathsInput,
+  success: SharedWorktreeSetPlannedPathsResult,
+  error: Schema.Union([SharedWorktreeCoordinationError, EnvironmentAuthorizationError]),
+});
+
 const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
   payload: GitRunStackedActionInput,
   success: GitActionProgressEvent,
@@ -2366,6 +2396,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubtaskEscalationCreateDraftRpc,
   WsSubtaskEscalationListRpc,
   WsSubtaskEscalationResolveRpc,
+  WsSharedWorktreeGetSnapshotRpc,
+  WsSharedWorktreeSetPolicyRpc,
+  WsSharedWorktreeSetPlannedPathsRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

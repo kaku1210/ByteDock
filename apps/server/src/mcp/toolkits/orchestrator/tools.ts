@@ -36,6 +36,8 @@ import {
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+  OrchestratorMcpWorktreeCoordinateInput,
+  OrchestratorMcpWorktreeCoordinateResult,
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
   TrimmedNonEmptyString,
@@ -139,6 +141,18 @@ const SubtaskEscalateTool = Tool.make("t3_subtask_escalate", {
   .annotate(Tool.Title, "Escalate L1 task to root for sibling L1")
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
+
+const WorktreeCoordinateTool = Tool.make("t3_worktree_coordinate", {
+  description:
+    "Coordinate shared-worktree file edits across sibling threads. `inspect`: three-layer attribution (`planned`, `confirmed_write`, `observed_unverified`) and overlaps; `declare_plan`: register planned paths; `reserve_paths`/`release_paths`: acquire/release normalized write-path reservations (blocks on overlap and returns latest on-disk revisions); `write_file`: reservation-protected write with stale-revision check.",
+  parameters: OrchestratorMcpWorktreeCoordinateInput,
+  success: OrchestratorMcpWorktreeCoordinateResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Coordinate shared worktree paths")
+  .annotate(Tool.Destructive, true);
 
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
@@ -377,6 +391,7 @@ export const OrchestratorToolkit = Toolkit.make(
   TaskStatusTool,
   TaskCancelTool,
   SubtaskEscalateTool,
+  WorktreeCoordinateTool,
   WorkflowStopTool,
   BackgroundWaitTool,
   ScheduleTaskTool,

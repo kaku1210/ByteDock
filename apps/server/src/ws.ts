@@ -122,6 +122,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./orchestration-v2/WorktreeApprovalService.ts";
+import * as SharedWorktreeCoordinationService from "./orchestration-v2/SharedWorktreeCoordinationService.ts";
 import * as SubtaskEscalationService from "./orchestration-v2/SubtaskEscalationService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
@@ -1508,6 +1509,8 @@ export const layerWsRpc = (
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const worktreeApprovals = yield* WorktreeApprovalService.WorktreeApprovalService;
       const subtaskEscalations = yield* SubtaskEscalationService.SubtaskEscalationService;
+      const sharedWorktree =
+        yield* SharedWorktreeCoordinationService.SharedWorktreeCoordinationService;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -3158,6 +3161,28 @@ export const layerWsRpc = (
             "subtask_escalation.request_id": input.requestId,
             "subtask_escalation.decision": input.decision,
           }).pipe(Effect.andThen(subtaskEscalations.resolveByHuman(input))),
+        [WS_METHODS.sharedWorktreeGetSnapshot]: (input) =>
+          sharedWorktree.getSnapshot(input.threadId),
+        [WS_METHODS.sharedWorktreeSetPolicy]: (input) =>
+          Effect.annotateCurrentSpan({
+            "shared_worktree.thread_id": input.threadId,
+            "shared_worktree.serialization_mode": input.serializationMode,
+          }).pipe(
+            Effect.andThen(
+              sharedWorktree.setPolicy({
+                threadId: input.threadId,
+                serializationMode: input.serializationMode,
+                updatedBy: "user",
+              }),
+            ),
+          ),
+        [WS_METHODS.sharedWorktreeSetPlannedPaths]: (input) =>
+          sharedWorktree.setPlannedPaths({
+            threadId: input.threadId,
+            paths: input.paths,
+            runId: input.runId ?? null,
+            note: input.note ?? null,
+          }),
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           vcsStatusBroadcaster.refreshStatus(input.cwd, { localOnly: input.localOnly ?? false }),
         [WS_METHODS.vcsPull]: (input) =>
