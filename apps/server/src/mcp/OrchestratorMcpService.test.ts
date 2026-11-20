@@ -13,6 +13,7 @@ import {
   type OrchestratorMcpListScheduledTasksInput,
   type Project,
   OrchestratorMcpTarget,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
@@ -1359,6 +1360,21 @@ describe("OrchestratorMcpService provider resolution", () => {
   const childThreadId = ThreadId.make("thread:mcp-providers-child");
   const parentRunId = RunId.make("run:mcp-providers-parent");
   const parentNodeId = NodeId.make("node:mcp-providers-root");
+  const messageTime = DateTime.makeUnsafe("2026-09-13T00:00:00Z");
+  const parentMessage: OrchestrationV2ConversationMessage = {
+    id: MessageId.make("message:mcp-providers-parent"),
+    threadId: parentThreadId,
+    runId: parentRunId,
+    nodeId: null,
+    role: "user",
+    createdBy: "user",
+    creationSource: "web",
+    text: "Review the change.",
+    attachments: [],
+    streaming: false,
+    createdAt: messageTime,
+    updatedAt: messageTime,
+  };
   const taskId = NodeId.make("node:mcp-providers-task");
   const projectId = ProjectId.make("project:mcp-providers");
   const codexInstanceId = ProviderInstanceId.make("codex");
@@ -1447,10 +1463,12 @@ describe("OrchestratorMcpService provider resolution", () => {
           ordinal: 1,
           status: "running",
           rootNodeId: parentNodeId,
+          userMessageId: parentMessage.id,
           providerInstanceId: codexInstanceId,
           modelSelection,
         },
       ],
+      messages: [parentMessage],
       contextTransfers: [],
       subagents,
     }) as unknown as OrchestrationV2ThreadProjection;
@@ -1578,7 +1596,11 @@ describe("OrchestratorMcpService provider resolution", () => {
         const waiting = yield* service
           .delegateTask(scope, { task: "Review the change.", mode: "wait" })
           .pipe(Effect.forkChild);
-        yield* Deferred.await(subscribed);
+        yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.join(waiting));
+        assert.isTrue(
+          yield* Deferred.isDone(subscribed),
+          "delegateTask returned before subscribing",
+        );
         if (wake === "Node fetch's 300 s idle timeout") {
           // Nothing is written during the wait, so undici drops the call at 300 s, before any handle.
           const beforeClientTimeout = yield* Fiber.join(waiting).pipe(
@@ -1712,7 +1734,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             Effect.tap(() => Deferred.succeed(returned, undefined)),
             Effect.forkChild,
           );
-        yield* Deferred.await(subscribed);
+        yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.join(waiting));
+        assert.isTrue(
+          yield* Deferred.isDone(subscribed),
+          "delegateTask returned before subscribing",
+        );
         yield* TestClock.adjust(Duration.millis(scenario.budgetMs - 1));
         assert.isFalse(yield* Deferred.isDone(returned));
         yield* TestClock.adjust(Duration.millis(1));
@@ -4482,7 +4508,11 @@ describe("OrchestratorMcpService thread lookup", () => {
           const sent = yield* Ref.make(0);
           yield* Effect.gen(function* () {
             const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
-            yield* mcp.sendToThread(scope, { threadId: target.id, message: "hello" });
+            const result = yield* mcp.sendToThread(scope, {
+              threadId: target.id,
+              message: "hello",
+            });
+            assert.equal(result.messageId, inputs[0]?.messageId);
           }).pipe(
             Effect.provide(
               service([target], sent, {
@@ -4490,6 +4520,7 @@ describe("OrchestratorMcpService thread lookup", () => {
                 sendToThread: (input) => {
                   inputs.push(input);
                   return Effect.succeed({
+                    message: { id: input.messageId },
                     run: { id: RunId.make("run:sent"), status: "running" },
                     delivery: "started",
                   } as never);
