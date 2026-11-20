@@ -1,5 +1,6 @@
 import {
   ORCHESTRATION_V2_WS_METHODS,
+  WS_METHODS,
   type EnvironmentId,
   type ThreadId,
   type OrchestrationV2ThreadLinkMetadata,
@@ -252,6 +253,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       tag: ORCHESTRATION_V2_WS_METHODS.getThreadFamily,
       staleTimeMs: 0,
       idleTtlMs: 0,
+    }),
+    familyCollaborationOverview: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:family-collaboration-overview",
+      tag: WS_METHODS.familyCollaborationGetOverview,
+      staleTimeMs: 2_000,
+      idleTtlMs: 30_000,
+      refreshIntervalMs: 5_000,
     }),
     // Read right before deleting a worktree, so never served from cache.
     worktreeThreadIds: createEnvironmentRpcQueryAtomFamily(runtime, {

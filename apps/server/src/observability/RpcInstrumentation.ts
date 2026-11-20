@@ -195,6 +195,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.sharedWorktreeGetSnapshot]: "orchestration",
   [WS_METHODS.sharedWorktreeSetPolicy]: "orchestration",
   [WS_METHODS.sharedWorktreeSetPlannedPaths]: "orchestration",
+  [WS_METHODS.familyCollaborationGetOverview]: "orchestration",
   [WS_METHODS.subscribeResourceTelemetry]: "server",
   [WS_METHODS.vcsRefreshStatus]: "vcs",
   [WS_METHODS.vcsPull]: "git",

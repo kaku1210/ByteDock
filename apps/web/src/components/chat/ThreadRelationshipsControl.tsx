@@ -60,6 +60,7 @@ import {
   GitForkIcon,
   MessagesSquareIcon,
   MoreHorizontalIcon,
+  NetworkIcon,
   PlusIcon,
   SendIcon,
   SquareIcon,
@@ -69,6 +70,7 @@ import { useRef, useState, type ReactNode } from "react";
 
 import { newThreadId, randomUUID } from "~/lib/utils";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import {
   readThreadProjection,
@@ -1273,29 +1275,48 @@ export function ThreadRelationshipsPanel(props: {
           }
           data-thread-relationships-panel
           actions={
-            canDetach ? (
-              <Menu>
-                <MenuTrigger
+            <div className="flex items-center gap-0.5">
+              <Tooltip>
+                <TooltipTrigger
                   render={
                     <ThreadDetailsControl
                       size="icon-xs"
                       variant="ghost"
                       part="icon"
-                      aria-label={uiText("More thread actions")}
-                      disabled={busyAction !== null}
+                      data-testid="open-collaboration-overview"
+                      aria-label={uiText("Multi-agent tree overview")}
+                      onClick={() => useRightPanelStore.getState().open(ref, "collaboration")}
                     />
                   }
                 >
-                  <MoreHorizontalIcon className="size-3.5" />
-                </MenuTrigger>
-                <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
-                  <MenuItem onClick={() => void detach()}>
-                    <UnplugIcon className="size-3.5" />
-                    {uiText("Disconnect agent session")}
-                  </MenuItem>
-                </MenuPopup>
-              </Menu>
-            ) : null
+                  <NetworkIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="bottom">{uiText("Multi-agent tree overview")}</TooltipPopup>
+              </Tooltip>
+              {canDetach ? (
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <ThreadDetailsControl
+                        size="icon-xs"
+                        variant="ghost"
+                        part="icon"
+                        aria-label={uiText("More thread actions")}
+                        disabled={busyAction !== null}
+                      />
+                    }
+                  >
+                    <MoreHorizontalIcon className="size-3.5" />
+                  </MenuTrigger>
+                  <MenuPopup align="end" className="min-w-60 max-w-(--available-width)">
+                    <MenuItem onClick={() => void detach()}>
+                      <UnplugIcon className="size-3.5" />
+                      {uiText("Disconnect agent session")}
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </div>
           }
         >
           {delegatedFrom === undefined ? null : (

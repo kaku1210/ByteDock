@@ -58,6 +58,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./WorktreeApprovalService.ts";
 import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
+import * as FamilyCollaborationOverviewService from "./FamilyCollaborationOverviewService.ts";
 import * as SubtaskEscalationService from "./SubtaskEscalationService.ts";
 import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
@@ -410,10 +411,22 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
   ),
 );
 
+const layerFamilyCollaborationOverviewProvided = FamilyCollaborationOverviewService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectionStore.layer,
+      layerSubtaskEscalationProvided,
+      layerWorktreeApprovalProvided,
+      layerSharedWorktreeCoordinationProvided,
+    ),
+  ),
+);
+
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerSharedWorktreeCoordinationProvided,
+  layerFamilyCollaborationOverviewProvided,
   layerSubtaskEscalationStoreProvided,
   layerSubtaskEscalationProvided,
   layerMcpAppRequestsProvided,

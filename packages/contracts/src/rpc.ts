@@ -130,6 +130,11 @@ import {
   SharedWorktreeSetPolicyInput,
 } from "./sharedWorktreeCoordination.ts";
 import {
+  FamilyCollaborationGetOverviewInput,
+  FamilyCollaborationOverview,
+  FamilyCollaborationOverviewError,
+} from "./familyCollaborationOverview.ts";
+import {
   SubtaskEscalationCreateDraftInput,
   SubtaskEscalationCreateDraftResult,
   SubtaskEscalationError,
@@ -659,6 +664,7 @@ export const WS_METHODS = {
   sharedWorktreeGetSnapshot: "sharedWorktree.getSnapshot",
   sharedWorktreeSetPolicy: "sharedWorktree.setPolicy",
   sharedWorktreeSetPlannedPaths: "sharedWorktree.setPlannedPaths",
+  familyCollaborationGetOverview: "familyCollaboration.getOverview",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
@@ -1694,6 +1700,12 @@ const WsSharedWorktreeSetPlannedPathsRpc = Rpc.make(WS_METHODS.sharedWorktreeSet
   error: Schema.Union([SharedWorktreeCoordinationError, EnvironmentAuthorizationError]),
 });
 
+const WsFamilyCollaborationGetOverviewRpc = Rpc.make(WS_METHODS.familyCollaborationGetOverview, {
+  payload: FamilyCollaborationGetOverviewInput,
+  success: FamilyCollaborationOverview,
+  error: Schema.Union([FamilyCollaborationOverviewError, EnvironmentAuthorizationError]),
+});
+
 const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
   payload: GitRunStackedActionInput,
   success: GitActionProgressEvent,
@@ -2399,6 +2411,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSharedWorktreeGetSnapshotRpc,
   WsSharedWorktreeSetPolicyRpc,
   WsSharedWorktreeSetPlannedPathsRpc,
+  WsFamilyCollaborationGetOverviewRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

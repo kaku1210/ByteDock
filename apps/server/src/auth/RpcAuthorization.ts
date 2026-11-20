@@ -186,6 +186,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.sharedWorktreeGetSnapshot]: AuthOrchestrationReadScope,
   [WS_METHODS.sharedWorktreeSetPolicy]: AuthOrchestrationOperateScope,
   [WS_METHODS.sharedWorktreeSetPlannedPaths]: AuthOrchestrationOperateScope,
+  [WS_METHODS.familyCollaborationGetOverview]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeResourceTelemetry]: AuthDiagnosticsReadScope,
   [WS_METHODS.vcsRefreshStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.gitResolvePullRequest]: AuthOrchestrationReadScope,

@@ -123,6 +123,7 @@ import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManag
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./orchestration-v2/WorktreeApprovalService.ts";
 import * as SharedWorktreeCoordinationService from "./orchestration-v2/SharedWorktreeCoordinationService.ts";
+import * as FamilyCollaborationOverviewService from "./orchestration-v2/FamilyCollaborationOverviewService.ts";
 import * as SubtaskEscalationService from "./orchestration-v2/SubtaskEscalationService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
@@ -1511,6 +1512,8 @@ export const layerWsRpc = (
       const subtaskEscalations = yield* SubtaskEscalationService.SubtaskEscalationService;
       const sharedWorktree =
         yield* SharedWorktreeCoordinationService.SharedWorktreeCoordinationService;
+      const familyCollaborationOverview =
+        yield* FamilyCollaborationOverviewService.FamilyCollaborationOverviewService;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -3183,6 +3186,8 @@ export const layerWsRpc = (
             runId: input.runId ?? null,
             note: input.note ?? null,
           }),
+        [WS_METHODS.familyCollaborationGetOverview]: (input) =>
+          familyCollaborationOverview.getOverview(input),
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           vcsStatusBroadcaster.refreshStatus(input.cwd, { localOnly: input.localOnly ?? false }),
         [WS_METHODS.vcsPull]: (input) =>
