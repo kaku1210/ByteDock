@@ -561,7 +561,7 @@ function FamilyCollaborationOverviewView({
               const isExpanded = expandedNodeIds.has(node.threadId);
               const isStopping = stoppingThreadId === node.threadId;
               const indentRem = Math.min(node.depth, 3) * 1.25;
-              const modelLabel = `${node.modelSelection.provider}/${node.modelSelection.model}`;
+              const modelLabel = `${node.modelSelection.instanceId}/${node.modelSelection.model}`;
 
               return (
                 <div

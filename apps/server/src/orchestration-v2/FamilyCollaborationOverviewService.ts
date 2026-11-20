@@ -13,7 +13,6 @@ import {
   type FamilyCollaborationSessionStatus,
   type FamilyCollaborationSideChatSummary,
   type FamilyCollaborationTaskStatus,
-  type NonNegativeInt,
   type OrchestrationV2ContextTransfer,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
@@ -61,8 +60,8 @@ const EMPTY_RECORDS: ThreadDetailRecords = {
   contextTransfers: [],
 };
 
-function toNonNegativeInt(value: number): NonNegativeInt {
-  return Math.max(0, Math.floor(value)) as NonNegativeInt;
+function toNonNegativeInt(value: number): number {
+  return Math.max(0, Math.floor(value));
 }
 
 function toIsoDateTime(value: DateTime.Utc): IsoDateTime {
@@ -366,11 +365,11 @@ function resolveDeliveryMetrics(input: {
 }): {
   readonly deliveryStatus: FamilyCollaborationDeliveryStatus;
   readonly delegatedDeliveryState: FamilyCollaborationNode["delegatedDeliveryState"];
-  readonly pendingMergeBackCount: NonNegativeInt;
-  readonly boundMergeBackCount: NonNegativeInt;
-  readonly deliveredMergeBackCount: NonNegativeInt;
-  readonly interimReportCount: NonNegativeInt;
-  readonly finalReportCount: NonNegativeInt;
+  readonly pendingMergeBackCount: number;
+  readonly boundMergeBackCount: number;
+  readonly deliveredMergeBackCount: number;
+  readonly interimReportCount: number;
+  readonly finalReportCount: number;
 } {
   const { shell, rootThreadId, taskStatus, parentSubagent, parentTransfers } = input;
 
@@ -671,7 +670,7 @@ function buildDigest(input: {
   lines.push("", "## Task Tree");
   for (const node of nodes) {
     const indent = "  ".repeat(node.depth);
-    const modelLabel = `${node.modelSelection.provider}/${node.modelSelection.model}`;
+    const modelLabel = `${node.modelSelection.instanceId}/${node.modelSelection.model}`;
     const statusTuple = `session=${node.sessionStatus} | task=${node.taskStatus} | delivery=${node.deliveryStatus}`;
     const extra = node.blockingReason !== null ? ` (${node.blockingReason})` : "";
     lines.push(
@@ -812,7 +811,7 @@ export const layer: Layer.Layer<
       )
         ? yield* escalationServiceOption.value
             .listForThread(rootThreadId)
-            .pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<SubtaskEscalationRequest>)))
+            .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<SubtaskEscalationRequest>))
         : [];
 
       const pendingWorktreeApprovalsRaw: ReadonlyArray<WorktreeApprovalRequest> = Option.isSome(
@@ -820,12 +819,7 @@ export const layer: Layer.Layer<
       )
         ? yield* Effect.forEach(
             shells,
-            (shell) =>
-              worktreeApprovalServiceOption.value
-                .listForThread(shell.id)
-                .pipe(
-                  Effect.catch(() => Effect.succeed([] as ReadonlyArray<WorktreeApprovalRequest>)),
-                ),
+            (shell) => worktreeApprovalServiceOption.value.listForThread(shell.id),
             { concurrency: 8 },
           ).pipe(
             Effect.map((lists) => {
@@ -849,7 +843,7 @@ export const layer: Layer.Layer<
       )
         ? yield* sharedWorktreeServiceOption.value
             .getSnapshot(shellById.has(rootThreadId) ? rootThreadId : input.threadId)
-            .pipe(Effect.catch(() => Effect.succeed(null)))
+            .pipe(Effect.orElseSucceed(() => null))
         : null;
 
       const sideChatShells = shells
