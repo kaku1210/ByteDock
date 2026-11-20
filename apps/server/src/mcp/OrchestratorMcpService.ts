@@ -30,6 +30,8 @@ import {
   type OrchestratorMcpScheduledTask,
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
+  type OrchestratorMcpSubtaskEscalateInput,
+  type OrchestratorMcpSubtaskEscalateResult,
   type OrchestratorMcpTarget,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
@@ -60,6 +62,8 @@ import {
   scheduledTaskThreadMode,
   type ServerProvider,
   type ServerProviderModel,
+  type SubtaskEscalationError,
+  SubtaskEscalationRequestId,
   ThreadId,
   isOrchestrationV2WorkActive,
   isTaskChildLineage,
@@ -95,6 +99,10 @@ import {
   delegatedTaskProgress,
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
+  computeOutboundCausationChain,
+  mergeCausationChains,
+} from "../orchestration-v2/CausationChain.ts";
+import {
   DispatchModeLimit,
   type DispatchModeRefusal,
   exceededDispatchModeLimit,
@@ -109,6 +117,8 @@ import {
   delegatedTaskRuns,
   runOutcome,
 } from "../orchestration-v2/RestartBackgroundNote.ts";
+import * as SubtaskEscalationService from "../orchestration-v2/SubtaskEscalationService.ts";
+import * as SubtaskEscalationStore from "../orchestration-v2/SubtaskEscalationStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -189,6 +199,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskCancelInput,
   ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
+  readonly escalateSubtask: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpSubtaskEscalateInput,
+  ) => Effect.Effect<OrchestratorMcpSubtaskEscalateResult, OrchestratorMcpFailure>;
   readonly createThreads: (
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
@@ -1245,6 +1259,33 @@ const make = Effect.gen(function* () {
   const worktreeApprovals = yield* Effect.serviceOption(
     WorktreeApprovalService.WorktreeApprovalService,
   );
+  const subtaskEscalations = yield* Effect.serviceOption(
+    SubtaskEscalationService.SubtaskEscalationService,
+  );
+  const subtaskEscalationStore = yield* Effect.serviceOption(
+    SubtaskEscalationStore.SubtaskEscalationStore,
+  );
+
+  const mapSubtaskEscalationFailure = (error: SubtaskEscalationError): OrchestratorMcpFailure => {
+    switch (error.reason) {
+      case "privilege_denied":
+        return failure("capability_denied", error.message);
+      case "root_unreachable":
+      case "root_deleted":
+      case "root_archived":
+        return failure("thread_not_found", error.message);
+      case "persistence_failed":
+      case "orchestration_failed":
+        return failure("orchestration_error", error.message);
+      case "invalid_source":
+      case "root_worktree_pending":
+      case "binding_mismatch":
+      case "already_resolved":
+      case "not_found":
+      case "causation_loop":
+        return failure("invalid_request", error.message);
+    }
+  };
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2611,6 +2652,12 @@ const make = Effect.gen(function* () {
           ? undefined
           : PeerForwarding.remoteTarget(callerScope, input.target.environmentId);
       if (input.target !== undefined && environmentId !== undefined) {
+        if (input.escalationRequestId !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "escalationRequestId can only be fulfilled locally within the root thread's environment.",
+          );
+        }
         yield* requireCapability(callerScope);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         // The task's child runs as an ordinary thread there; this thread keeps the task.
@@ -2645,119 +2692,224 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      const parentRunMessages = yield* loadThreadRecords(parent.thread.id, ["messages"], {
+        messageIds: [parentRun.userMessageId],
+      });
+      const callerIncomingChain = parentRunMessages.messages.find(
+        (message) => message.id === parentRun.userMessageId,
+      )?.causationChain;
       const providers = yield* loadProviders;
-      const key = yield* requestKey(input.clientRequestId);
-      const commandId = stableCommandId({
-        scope,
-        requestKey: key,
-        operation: "delegate-task",
-      });
-      const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
-        parent,
-        target: input.target,
-        providers,
-        skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      });
-      const runtimeMode = yield* resolveRuntimeMode(
-        parent.thread.runtimeMode,
-        input.runtimeMode,
-        target,
-      );
-      const interactionMode = yield* resolveInteractionMode(
-        parent.thread.interactionMode,
-        input.interactionMode,
-      );
-      let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
-        const base = yield* gitDriver
-          .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-            revision: "HEAD",
-          })
-          .pipe(
-            Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
-            ),
+
+      const executeDelegation = Effect.fn("OrchestratorMcpService.executeDelegation")(
+        function* (options?: {
+          readonly escalationRequestId?: SubtaskEscalationRequestId;
+          readonly sourceAnchor?: Parameters<
+            SubtaskEscalationService.SubtaskEscalationServiceShape["fulfillForDelegation"]
+          >[0]["runDelegation"] extends (context: infer C) => unknown
+            ? C extends { readonly sourceAnchor: infer S }
+              ? S
+              : never
+            : never;
+          readonly escalationCausationChain?: ReadonlyArray<ThreadId>;
+        }) {
+          const baseIncomingChain = mergeCausationChains(
+            callerIncomingChain,
+            options?.escalationCausationChain,
           );
-        // Launch preparation creates the worktree from the project root, so a
-        // parent checkout in another repository (such as a Git folder inside
-        // Scratch) would hand it a commit it cannot find.
-        if (parent.thread.worktreePath !== null) {
-          yield* gitDriver
-            .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
-            .pipe(
-              Effect.mapError(() =>
-                failure(
-                  "invalid_request",
-                  `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+          const mergedIncoming = mergeCausationChains(baseIncomingChain, input.causationChain);
+          const validatedChain = computeOutboundCausationChain({
+            callerThreadId: scope.thread.threadId,
+            targetThreadId: scope.thread.threadId,
+            callerIncomingChain: baseIncomingChain,
+            explicitChain: input.causationChain,
+            intent: "delegation",
+          });
+          if (validatedChain.loopDetected) {
+            return yield* failure(
+              "invalid_request",
+              validatedChain.loopReason ??
+                `Circular delegation loop detected from thread ${scope.thread.threadId}.`,
+            );
+          }
+          const key =
+            options?.escalationRequestId !== undefined
+              ? `escalation:${options.escalationRequestId}`
+              : yield* requestKey(input.clientRequestId);
+          const commandId = stableCommandId({
+            scope,
+            requestKey: key,
+            operation: "delegate-task",
+          });
+          const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+          const target = yield* resolveTargetRechecking({
+            parent,
+            target: input.target,
+            providers,
+            skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+          });
+          const runtimeMode = yield* resolveRuntimeMode(
+            parent.thread.runtimeMode,
+            input.runtimeMode,
+            target,
+          );
+          const interactionMode = yield* resolveInteractionMode(
+            parent.thread.interactionMode,
+            input.interactionMode,
+          );
+          let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+          if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+            const project = yield* requireProject(parent.thread.projectId);
+            const base = yield* gitDriver
+              .resolveCommit({
+                cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+                revision: "HEAD",
+              })
+              .pipe(
+                Effect.mapError(() =>
+                  failure("invalid_request", "Unable to resolve the parent checkout commit."),
                 ),
+              );
+            // Launch preparation creates the worktree from the project root, so a
+            // parent checkout in another repository (such as a Git folder inside
+            // Scratch) would hand it a commit it cannot find.
+            if (parent.thread.worktreePath !== null) {
+              yield* gitDriver
+                .resolveCommit({ cwd: project.workspaceRoot, revision: base.commitSha })
+                .pipe(
+                  Effect.mapError(() =>
+                    failure(
+                      "invalid_request",
+                      `Isolation "worktree" creates the child checkout in project "${project.title}" (${project.workspaceRoot}), which does not contain the parent checkout's commit. Use isolation "shared" to work in the parent's checkout.`,
+                    ),
+                  ),
+                );
+            }
+            workspaceStrategy = {
+              type: "worktree",
+              baseRef: base.commitSha,
+              startFromOrigin: false,
+            };
+          }
+          // ThreadManagementService.dispatch is the chokepoint for this command
+          // type's own enablement check, using the same command id and its
+          // receipt-replay exemption, so no separate assert runs here.
+          const result = yield* threadManagement
+            .dispatch({
+              type: "delegated_task.request",
+              createdBy: "agent",
+              creationSource: "mcp",
+              commandId,
+              parentThreadId: scope.thread.threadId,
+              parentRunId: parentRun.id,
+              parentNodeId: parentRun.rootNodeId!,
+              task: taskPrompt(input),
+              ...(input.title === undefined ? {} : { title: input.title }),
+              modelSelection: target.modelSelection,
+              runtimeMode,
+              interactionMode,
+              ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+              ...(mergedIncoming.length === 0 ? {} : { causationChain: [...mergedIncoming] }),
+              ...(options?.sourceAnchor === undefined
+                ? {}
+                : { sourceAnchor: options.sourceAnchor }),
+              // Async delegations wake the parent on every child terminal; wait
+              // delegations deliver through the blocking tool call until `awaitTask`
+              // gives up the wait (timeout, cancelled call) and upgrades the wake.
+              completionWake: input.mode === "wait" ? "settled_only" : "always",
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "ThreadManagementProviderInstanceDisabledError"
+                  ? threadManagementFailure(error)
+                  : failure(
+                      "orchestration_error",
+                      `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
+                    ),
               ),
             );
+          const taskEvent = result.storedEvents.find(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.origin === "app_owned",
+          );
+          if (taskEvent?.event.type !== "subagent.updated") {
+            return yield* failure(
+              "orchestration_error",
+              "Delegated task command did not produce a task projection.",
+            );
+          }
+          const taskId = taskEvent.event.payload.id;
+          const childThreadId = taskEvent.event.payload.childThreadId;
+          if (childThreadId === null) {
+            return yield* failure(
+              "orchestration_error",
+              "Delegated task command did not produce a local child thread.",
+            );
+          }
+          const childRunEvent = result.storedEvents.find(
+            (stored) =>
+              stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+          );
+          if (
+            childRunEvent?.event.type === "run.created" &&
+            childRunEvent.event.payload.workspacePreparation !== undefined
+          ) {
+            yield* threadLaunch.prepareRun({
+              commandId,
+              threadId: childThreadId,
+              runId: childRunEvent.event.payload.id,
+            });
+          }
+          return { taskId, childThreadId, key } as const;
+        },
+      );
+
+      if (input.escalationRequestId !== undefined) {
+        if (Option.isNone(subtaskEscalations)) {
+          return yield* failure(
+            "orchestration_error",
+            "Subtask escalation service is not available.",
+          );
         }
-        workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
-      }
-      // ThreadManagementService.dispatch is the chokepoint for this command
-      // type's own enablement check, using the same command id and its
-      // receipt-replay exemption, so no separate assert runs here.
-      const result = yield* threadManagement
-        .dispatch({
-          type: "delegated_task.request",
-          createdBy: "agent",
-          creationSource: "mcp",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          task: taskPrompt(input),
-          ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
-          runtimeMode,
-          interactionMode,
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          // Async delegations wake the parent on every child terminal; wait
-          // delegations deliver through the blocking tool call until `awaitTask`
-          // gives up the wait (timeout, cancelled call) and upgrades the wake.
-          completionWake: input.mode === "wait" ? "settled_only" : "always",
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "ThreadManagementProviderInstanceDisabledError"
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
-                ),
-          ),
-        );
-      const taskEvent = result.storedEvents.find(
-        (stored) =>
-          stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
-      );
-      if (taskEvent?.event.type !== "subagent.updated") {
-        return yield* failure(
-          "orchestration_error",
-          "Delegated task command did not produce a task projection.",
-        );
-      }
-      const taskId = taskEvent.event.payload.id;
-      const childThreadId = taskEvent.event.payload.childThreadId;
-      const childRunEvent = result.storedEvents.find(
-        (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
-      );
-      if (
-        childThreadId !== null &&
-        childRunEvent?.event.type === "run.created" &&
-        childRunEvent.event.payload.workspacePreparation !== undefined
-      ) {
-        yield* threadLaunch.prepareRun({
-          commandId,
-          threadId: childThreadId,
-          runId: childRunEvent.event.payload.id,
-        });
+        const escalationRequestId = input.escalationRequestId;
+        const outcome = yield* subtaskEscalations.value
+          .fulfillForDelegation({
+            requestId: escalationRequestId,
+            callerThreadId: scope.thread.threadId,
+            runDelegation: ({ request, sourceAnchor }) =>
+              executeDelegation({
+                escalationRequestId: request.requestId,
+                sourceAnchor,
+                escalationCausationChain: request.causationChain,
+              }).pipe(
+                Effect.map(({ taskId, childThreadId }) => ({
+                  delegatedTaskId: taskId,
+                  childThreadId,
+                })),
+              ),
+          })
+          .pipe(
+            Effect.catchTags({
+              SubtaskEscalationError: (error) => Effect.fail(mapSubtaskEscalationFailure(error)),
+            }),
+          );
+        if (outcome.delegatedTaskId === null) {
+          return yield* failure(
+            "invalid_request",
+            `Escalation request ${escalationRequestId} was already fulfilled as draft sibling L1 thread ${outcome.childThreadId}; do not create a duplicate sibling.`,
+          );
+        }
+        return yield* !outcome.replayed && input.mode === "wait"
+          ? awaitTask(
+              scope,
+              outcome.delegatedTaskId,
+              `escalation:${escalationRequestId}`,
+              input.timeoutMs,
+            )
+          : readTask(scope, outcome.delegatedTaskId, false, true);
       }
 
+      const { taskId, key } = yield* executeDelegation();
       return yield* input.mode === "wait"
         ? awaitTask(scope, taskId, key, input.timeoutMs)
         : readTask(scope, taskId, false, true);
@@ -2766,6 +2918,97 @@ const make = Effect.gen(function* () {
       const scope = yield* requireThreadScope(callerScope, "task_status");
       return yield* readTask(scope, taskId, false, true);
     }),
+    escalateSubtask: Effect.fn("OrchestratorMcpService.escalateSubtask")(
+      function* (callerScope, input) {
+        if (Option.isNone(subtaskEscalations)) {
+          return yield* failure(
+            "orchestration_error",
+            "Subtask escalation service is not available.",
+          );
+        }
+        const { scope, parent } = yield* loadThreadCaller(callerScope, "t3_subtask_escalate");
+        const callerRecords = yield* loadThreadRecords(parent.thread.id, ["runs", "messages"]);
+        const callerLatestRun = callerRecords.runs.toSorted(
+          (left, right) => right.ordinal - left.ordinal,
+        )[0];
+        const callerIncomingChain =
+          callerLatestRun === undefined
+            ? undefined
+            : callerRecords.messages.find((message) => message.id === callerLatestRun.userMessageId)
+                ?.causationChain;
+        const limits = {
+          runtimeMode: parent.thread.runtimeMode,
+          interactionMode: parent.thread.interactionMode,
+        } as const;
+        const parentThreadId = parent.thread.lineage.parentThreadId;
+        const rootShell =
+          parentThreadId === null
+            ? null
+            : yield* threadManagement
+                .getThreadShell(parentThreadId)
+                .pipe(Effect.mapError(threadManagementFailure));
+        const holdParentQueue =
+          rootShell !== null && exceededDispatchModeLimit(limits, rootShell) !== undefined;
+        const requestId =
+          input.requestId ??
+          SubtaskEscalationRequestId.make(
+            `esc:mcp:${scope.thread.threadId}:${yield* requestKey(input.clientRequestId)}`,
+          );
+        const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+        const submitted = yield* subtaskEscalations.value
+          .submitAgentEscalation({
+            requestId,
+            sourceThreadId: parent.thread.id,
+            sourceRunId: callerLatestRun?.id,
+            sourceMessageId: input.sourceMessageId,
+            excerpt: input.excerpt,
+            title: input.title,
+            task: input.task,
+            reason: input.reason,
+            callerIncomingChain,
+            explicitCausationChain: input.causationChain,
+            holdParentQueue,
+          })
+          .pipe(
+            Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+            Effect.catch((error) =>
+              Effect.flatMap(Ref.get(refused), (refusal) =>
+                Effect.fail(
+                  refusal !== undefined
+                    ? failure(
+                        refusal.mode === "runtime"
+                          ? "runtime_mode_escalation_denied"
+                          : "interaction_mode_escalation_denied",
+                        `Thread ${refusal.threadId} runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above this caller's.`,
+                      )
+                    : mapSubtaskEscalationFailure(error),
+                ),
+              ),
+            ),
+          );
+        const rootTitle = rootShell?.title ?? submitted.request.rootThreadId;
+        const rootThreadLink = threadLinkFor(scope, submitted.request.rootThreadId, rootTitle);
+        const next =
+          submitted.request.status === "fulfilled" && submitted.request.childThreadId !== null
+            ? `Escalation ${submitted.request.requestId} is already fulfilled with sibling L1 thread ${submitted.request.childThreadId}.`
+            : submitted.request.parentQueueHeld
+              ? `Escalation ${submitted.request.requestId} was queued into ${rootThreadLink}'s held inbox without auto-waking it (higher privilege). Wait for the user or root coordinator to accept it.`
+              : `Escalation ${submitted.request.requestId} was submitted to ${rootThreadLink}. The root coordinator can accept it idempotently via delegate_task({ escalationRequestId: "${submitted.request.requestId}", ... }).`;
+        return {
+          request: submitted.request,
+          rootThreadId: submitted.request.rootThreadId,
+          rootThreadLink,
+          status: submitted.request.status,
+          childThreadId: submitted.request.childThreadId,
+          delegatedTaskId: submitted.request.delegatedTaskId,
+          inboxMessageId: submitted.request.inboxMessageId,
+          inboxRunId: submitted.request.inboxRunId,
+          parentQueueHeld: submitted.request.parentQueueHeld,
+          replayed: submitted.replayed,
+          next,
+        } satisfies OrchestratorMcpSubtaskEscalateResult;
+      },
+    ),
     cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
       const scope = yield* requireThreadScope(callerScope, "task_cancel");
       const current = yield* readTask(scope, input.taskId);
@@ -2792,9 +3035,11 @@ const make = Effect.gen(function* () {
       // Cancelling stops the child and every task under it, each a write to a
       // thread its user may have raised above the parent's modes since it was
       // delegated. All of them are checked before anything is stopped.
+      const subtreeThreadIds: Array<ThreadId> = [];
       const assertStoppable = Effect.fn("OrchestratorMcpService.assertStoppable")(function* (
         threadId: ThreadId,
       ): Effect.fn.Return<void, OrchestratorMcpFailure> {
+        subtreeThreadIds.push(threadId);
         const shell = yield* threadManagement
           .getThreadShell(threadId)
           .pipe(Effect.mapError(threadManagementFailure));
@@ -2846,6 +3091,12 @@ const make = Effect.gen(function* () {
           yield* worktreeApprovals.value.cancelByScope({
             parentTaskId: input.taskId,
             childThreadId,
+            reason,
+          });
+        }
+        if (Option.isSome(subtaskEscalationStore)) {
+          yield* subtaskEscalationStore.value.cancelByThreadIds({
+            threadIds: subtreeThreadIds,
             reason,
           });
         }
@@ -3441,18 +3692,40 @@ const make = Effect.gen(function* () {
           ? undefined
           : callerRecords?.messages.find((message) => message.id === callerLatestRun.userMessageId)
               ?.causationChain;
-      const causationChain: ReadonlyArray<ThreadId> | undefined =
-        input.causationChain !== undefined
-          ? input.causationChain
-          : parent === undefined || parent.thread.id === input.threadId
-            ? undefined
-            : callerIncomingChain !== undefined && callerIncomingChain.length > 0
-              ? isReportingToParent &&
-                callerIncomingChain.length === 1 &&
-                callerIncomingChain[0] === input.threadId
-                ? [parent.thread.id]
-                : [...callerIncomingChain, parent.thread.id]
-              : [parent.thread.id];
+      const callerAncestorThreadIds: Array<ThreadId> = [];
+      if (parent !== undefined && isDirectTaskChildToParent) {
+        let cursorParentId: ThreadId | null = parent.thread.lineage.parentThreadId;
+        const visited = new Set<ThreadId>([parent.thread.id]);
+        while (
+          cursorParentId !== null &&
+          !visited.has(cursorParentId) &&
+          callerAncestorThreadIds.length < 4
+        ) {
+          visited.add(cursorParentId);
+          callerAncestorThreadIds.push(cursorParentId);
+          const ancestorShell: OrchestrationV2ThreadShell | null = yield* threadManagement
+            .getThreadShell(cursorParentId)
+            .pipe(Effect.mapError(threadManagementFailure));
+          if (ancestorShell === null || !isTaskChildLineage(ancestorShell.lineage)) break;
+          cursorParentId = ancestorShell.lineage.parentThreadId;
+        }
+      }
+      const computedChain = computeOutboundCausationChain({
+        callerThreadId: parent?.thread.id,
+        targetThreadId: input.threadId,
+        callerIncomingChain,
+        explicitChain: input.causationChain,
+        intent: isDirectTaskChildToParent ? "child_report" : "send",
+        callerAncestorThreadIds,
+      });
+      if (computedChain.loopDetected) {
+        return yield* failure(
+          "invalid_request",
+          computedChain.loopReason ??
+            `Cross-thread auto-wake loop detected: thread ${input.threadId} is already in causationChain.`,
+        );
+      }
+      const causationChain = computedChain.causationChain;
       const reportKind =
         input.reportKind ??
         (isReportingToParent || holdParentQueueForPrivilege

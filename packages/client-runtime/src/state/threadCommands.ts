@@ -34,6 +34,7 @@ import {
   interruptThreadTurn,
   forkSideChat,
   createSubtask,
+  escalateSubtaskToRoot,
   forkThreadFromRun,
   markThreadUnread,
   mergeThreadBack,
@@ -371,6 +372,15 @@ export function createThreadEnvironmentAtoms<R, E>(
     createSubtask: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:create-subtask",
       execute: createSubtask,
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.sourceThreadId]),
+      },
+    }),
+    escalateSubtaskToRoot: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:escalate-subtask-to-root",
+      execute: escalateSubtaskToRoot,
       scheduler,
       concurrency: {
         mode: "serial",

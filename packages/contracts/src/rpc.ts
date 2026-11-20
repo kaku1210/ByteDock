@@ -121,6 +121,15 @@ import {
   OrchestrationGetTurnDiffError,
 } from "./checkpointDiff.ts";
 import {
+  SubtaskEscalationCreateDraftInput,
+  SubtaskEscalationCreateDraftResult,
+  SubtaskEscalationError,
+  SubtaskEscalationListInput,
+  SubtaskEscalationListResult,
+  SubtaskEscalationResolveInput,
+  SubtaskEscalationResolveResult,
+} from "./subtaskEscalation.ts";
+import {
   WorktreeApprovalError,
   WorktreeApprovalResolveInput,
   WorktreeApprovalResolveResult,
@@ -635,6 +644,9 @@ export const WS_METHODS = {
   worktreeSetupCancel: "worktreeSetup.cancel",
   subscribeWorktreeApprovals: "subscribeWorktreeApprovals",
   worktreeApprovalResolve: "worktreeApproval.resolve",
+  subtaskEscalationCreateDraft: "subtaskEscalation.createDraft",
+  subtaskEscalationList: "subtaskEscalation.list",
+  subtaskEscalationResolve: "subtaskEscalation.resolve",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribePreviewEvents: "subscribePreviewEvents",
   subscribeDiscoveredLocalServers: "subscribeDiscoveredLocalServers",
@@ -1634,6 +1646,24 @@ const WsWorktreeApprovalResolveRpc = Rpc.make(WS_METHODS.worktreeApprovalResolve
   error: Schema.Union([WorktreeApprovalError, EnvironmentAuthorizationError]),
 });
 
+const WsSubtaskEscalationCreateDraftRpc = Rpc.make(WS_METHODS.subtaskEscalationCreateDraft, {
+  payload: SubtaskEscalationCreateDraftInput,
+  success: SubtaskEscalationCreateDraftResult,
+  error: Schema.Union([SubtaskEscalationError, EnvironmentAuthorizationError]),
+});
+
+const WsSubtaskEscalationListRpc = Rpc.make(WS_METHODS.subtaskEscalationList, {
+  payload: SubtaskEscalationListInput,
+  success: SubtaskEscalationListResult,
+  error: Schema.Union([SubtaskEscalationError, EnvironmentAuthorizationError]),
+});
+
+const WsSubtaskEscalationResolveRpc = Rpc.make(WS_METHODS.subtaskEscalationResolve, {
+  payload: SubtaskEscalationResolveInput,
+  success: SubtaskEscalationResolveResult,
+  error: Schema.Union([SubtaskEscalationError, EnvironmentAuthorizationError]),
+});
+
 const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
   payload: GitRunStackedActionInput,
   success: GitActionProgressEvent,
@@ -2333,6 +2363,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorktreeSetupCancelRpc,
   WsSubscribeWorktreeApprovalsRpc,
   WsWorktreeApprovalResolveRpc,
+  WsSubtaskEscalationCreateDraftRpc,
+  WsSubtaskEscalationListRpc,
+  WsSubtaskEscalationResolveRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
   WsGitRunStackedActionRpc,

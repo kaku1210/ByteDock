@@ -7,6 +7,8 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  OrchestratorMcpDelegateTaskResult,
+  OrchestratorMcpSubtaskEscalateResult,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
@@ -14,6 +16,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type RunId,
+  SubtaskEscalationRequestId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -55,6 +58,10 @@ interface CapturedTurn {
   readonly text: string;
 }
 
+const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskResult);
+const decodeSubtaskEscalateResult = Schema.decodeUnknownEffect(
+  OrchestratorMcpSubtaskEscalateResult,
+);
 const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
@@ -181,7 +188,30 @@ function makeMcpHarness(input: {
         NodeCrypto.layer,
         layerAdapters,
         ServerSettings.layerTest(),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([
+            {
+              instanceId,
+              driver,
+              enabled: true,
+              installed: true,
+              version: "test",
+              status: "ready",
+              auth: { status: "authenticated" },
+              checkedAt: "2026-10-18T00:00:00.000Z",
+              models: [
+                {
+                  slug: modelSelection.model,
+                  name: modelSelection.model,
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+              slashCommands: [],
+              skills: [],
+            },
+          ]),
+        }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(PeerForwarding.PeerForwarding)({}),
@@ -791,6 +821,516 @@ describe("Subtask MCP guards, children scope, privilege-safe inbox, and causatio
         });
         assert.equal(l0BounceRaw.isError, true);
         assert.include(String(declaredFailure(l0BounceRaw)?.message ?? ""), "causationChain");
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "t3_subtask_escalate enforces L1-only guard, holds low-privilege escalations in L0 inbox without auto-wake, and L0 fulfills idempotently via delegate_task(escalationRequestId)",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-escalate");
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      const l0 = ThreadId.make("thread:mcp-esc:l0");
+      const l1Low = ThreadId.make("thread:mcp-esc:l1-low");
+      const l1Same = ThreadId.make("thread:mcp-esc:l1-same");
+      const l2 = ThreadId.make("thread:mcp-esc:l2");
+      const sideChat = ThreadId.make("thread:mcp-esc:side");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:mesc:create-l0"),
+          threadId: l0,
+          projectId,
+          title: "Root L0 (full-access)",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:mesc:l0-r1"),
+          threadId: l0,
+          messageId: MessageId.make("msg:mesc:l0-r1"),
+          text: "Root bootstrap",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const l0Run1 = (yield* orchestrator.getThreadProjection(l0)).runs[0]!;
+        yield* completeRun({ threadId: l0, runId: l0Run1.id, replyText: "Root ready." });
+
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:mesc:fork-l1-low"),
+          sourceThreadId: l0,
+          targetThreadId: l1Low,
+          subtask: true,
+          title: "Low-priv L1",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("cmd:mesc:l1-low-mode"),
+          threadId: l1Low,
+          runtimeMode: "approval-required",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:mesc:fork-l1-same"),
+          sourceThreadId: l0,
+          targetThreadId: l1Same,
+          subtask: true,
+          title: "Same-priv L1",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:mesc:fork-l2"),
+          sourceThreadId: l1Same,
+          targetThreadId: l2,
+          subtask: true,
+          title: "L2 Child",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:mesc:fork-side"),
+          sourceThreadId: l0,
+          targetThreadId: sideChat,
+          sideChat: true,
+          temporary: false,
+          title: "Root Side Chat",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // 1. L0, L2, and Side Chat calling t3_subtask_escalate (with live active runs) must be rejected with invalid_request.
+        for (const forbidden of [l0, l2, sideChat]) {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`cmd:mesc:start-forbidden:${forbidden}`),
+            threadId: forbidden,
+            messageId: MessageId.make(`msg:mesc:start-forbidden:${forbidden}`),
+            text: `Start ${forbidden}`,
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        yield* worker.drain();
+        for (const forbidden of [l0, l2, sideChat]) {
+          const forbiddenRaw = yield* callTool(forbidden, "t3_subtask_escalate", {
+            task: "Try forbidden escalate",
+          });
+          assert.equal(forbiddenRaw.isError, true);
+          assert.equal(declaredFailure(forbiddenRaw)?.code, "invalid_request");
+        }
+        // Complete L0's run so L0 is idle before testing low-privilege held inbox (zero auto-wake).
+        const l0Active = (yield* orchestrator.getThreadProjection(l0)).runs.find(
+          (run) => run.status === "running",
+        );
+        assert.isDefined(l0Active);
+        yield* completeRun({ threadId: l0, runId: l0Active.id, replyText: "L0 idle again." });
+
+        // Start active run on low-privilege L1.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:mesc:l1-low-r1"),
+          threadId: l1Low,
+          messageId: MessageId.make("msg:mesc:l1-low-r1"),
+          text: "Start low-priv L1",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // 2. Low-privilege L1 escalates to higher-privilege L0 -> held inbox (parentQueueHeld: true, zero auto-wake!).
+        const turnsBeforeLowEscalate = capturedTurns.filter((turn) => turn.threadId === l0).length;
+        const lowReqId = SubtaskEscalationRequestId.make("esc:mcp:low-priv-1");
+        const lowEscRaw = yield* callTool(l1Low, "t3_subtask_escalate", {
+          requestId: lowReqId,
+          title: "Auth sibling",
+          task: "Spawn sibling L1 for auth service",
+        });
+        assert.notEqual(lowEscRaw.isError, true);
+        const lowEsc = yield* decodeSubtaskEscalateResult(lowEscRaw.structuredContent);
+        assert.equal(lowEsc.request.requestId, lowReqId);
+        assert.equal(lowEsc.rootThreadId, l0);
+        assert.equal(lowEsc.request.sourceThreadId, l1Low);
+        assert.equal(lowEsc.status, "pending");
+        assert.isTrue(lowEsc.parentQueueHeld);
+        assert.isFalse(lowEsc.replayed);
+
+        yield* worker.drain();
+        // L0 must NOT have auto-woken!
+        assert.equal(
+          capturedTurns.filter((turn) => turn.threadId === l0).length,
+          turnsBeforeLowEscalate,
+        );
+        const l0AfterLow = yield* orchestrator.getThreadProjection(l0);
+        const heldRun = l0AfterLow.runs.find((run) => run.queueHeld === true);
+        assert.isDefined(heldRun);
+        assert.equal(heldRun.status, "queued");
+        const heldMsg = l0AfterLow.messages.find((msg) => msg.id === heldRun.userMessageId);
+        assert.isDefined(heldMsg);
+        assert.notInclude(heldMsg.text, "[阶段性进度]");
+        assert.include(heldMsg.text, lowReqId);
+
+        // Retrying t3_subtask_escalate with the same requestId is strictly idempotent.
+        const lowEscReplayRaw = yield* callTool(l1Low, "t3_subtask_escalate", {
+          requestId: lowReqId,
+          task: "Retry duplicate escalation",
+        });
+        assert.notEqual(lowEscReplayRaw.isError, true);
+        const lowEscReplay = yield* decodeSubtaskEscalateResult(lowEscReplayRaw.structuredContent);
+        assert.isTrue(lowEscReplay.replayed);
+        assert.equal(lowEscReplay.request.requestId, lowReqId);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(l0)).runs.filter((run) => run.queueHeld === true)
+            .length,
+          1,
+        );
+
+        // 3. Same-privilege L1 escalates to L0 -> parentQueueHeld: false (normal queue).
+        // First clear the held run by starting a fresh turn on L0 via user action so L0 has an active run for delegate_task.
+        yield* orchestrator.dispatch({
+          type: "queued-run.start",
+          commandId: CommandId.make("cmd:mesc:start-held"),
+          threadId: l0,
+          runId: heldRun.id,
+        });
+        yield* worker.drain();
+
+        // Wrong caller (l1Same) trying to fulfill l0's escalation via delegate_task is rejected.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:mesc:l1-same-r1"),
+          threadId: l1Same,
+          messageId: MessageId.make("msg:mesc:l1-same-r1"),
+          text: "Run L1 same",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const wrongCallerRaw = yield* callTool(l1Same, "delegate_task", {
+          task: "Try hijacking escalation",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+          escalationRequestId: lowReqId,
+        });
+        assert.equal(wrongCallerRaw.isError, true);
+        assert.equal(declaredFailure(wrongCallerRaw)?.code, "capability_denied");
+
+        // 4. L0 fulfills lowReqId via delegate_task({ escalationRequestId }) -> creates sibling L1 with sourceAnchor pointing to l1Low.
+        const fulfillRaw1 = yield* callTool(l0, "delegate_task", {
+          task: "Handle auth service audit",
+          title: "Sibling Auth L1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+          escalationRequestId: lowReqId,
+        });
+        assert.notEqual(fulfillRaw1.isError, true);
+        const fulfilled1 = yield* decodeDelegateTaskResult(fulfillRaw1.structuredContent);
+        if (fulfilled1.childThreadId === null) {
+          assert.fail("Expected fulfilled1.childThreadId to be non-null");
+        }
+        const siblingProj = yield* orchestrator.getThreadProjection(fulfilled1.childThreadId);
+        assert.equal(siblingProj.thread.lineage.parentThreadId, l0);
+        assert.equal(siblingProj.thread.lineage.rootThreadId, l0);
+        assert.equal(siblingProj.thread.sourceAnchor?.sourceThreadId, l1Low);
+
+        // 5. Repeating delegate_task with the same escalationRequestId returns the EXACT same taskId & childThreadId (no duplicate sibling).
+        const fulfillRaw2 = yield* callTool(l0, "delegate_task", {
+          task: "Handle auth service audit (retry)",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+          escalationRequestId: lowReqId,
+        });
+        assert.notEqual(fulfillRaw2.isError, true);
+        const fulfilled2 = yield* decodeDelegateTaskResult(fulfillRaw2.structuredContent);
+        assert.equal(fulfilled2.taskId, fulfilled1.taskId);
+        assert.equal(fulfilled2.childThreadId, fulfilled1.childThreadId);
+
+        // Verify same-privilege L1 escalation submits with parentQueueHeld: false.
+        const sameReqId = SubtaskEscalationRequestId.make("esc:mcp:same-priv-1");
+        const sameEscRaw = yield* callTool(l1Same, "t3_subtask_escalate", {
+          requestId: sameReqId,
+          task: "Same privilege sibling request",
+        });
+        assert.notEqual(sameEscRaw.isError, true);
+        const sameEsc = yield* decodeSubtaskEscalateResult(sameEscRaw.structuredContent);
+        assert.isFalse(sameEsc.parentQueueHeld);
+        assert.equal(sameEsc.status, "pending");
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "causationChain blocks empty-array spoofing, send->delegate->send cycles, and infinite horizontal escalation loops while allowing L0->L1->L2->L1->L0 reporting",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-causation-hardening");
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      const peerA = ThreadId.make("thread:ch:peer-a");
+      const peerB = ThreadId.make("thread:ch:peer-b");
+      const l0 = ThreadId.make("thread:ch:l0");
+      const l1 = ThreadId.make("thread:ch:l1");
+      const l2 = ThreadId.make("thread:ch:l2");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+
+        for (const [id, title] of [
+          [peerA, "Peer A"],
+          [peerB, "Peer B"],
+          [l0, "Tree Root L0"],
+        ] as const) {
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`cmd:ch:create:${id}`),
+            threadId: id,
+            projectId,
+            title,
+            modelSelection: env.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+
+        // 1. Empty-array spoofing & send -> delegate -> send cycle:
+        // Peer A starts a run and sends to Peer B (B's run carries causationChain: [peerA]).
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:ch:a-r1"),
+          threadId: peerA,
+          messageId: MessageId.make("msg:ch:a-r1"),
+          text: "Start A",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const aToB = yield* callTool(peerA, "t3_thread_send", {
+          threadId: peerB,
+          message: "Ask B to do work",
+        });
+        assert.notEqual(aToB.isError, true);
+        yield* worker.drain();
+
+        // Peer B tries spoofing causationChain: [] to send back to Peer A -> MUST be rejected!
+        const spoofRaw = yield* callTool(peerB, "t3_thread_send", {
+          threadId: peerA,
+          message: "Spoofed empty chain bounce",
+          causationChain: [],
+        });
+        assert.equal(spoofRaw.isError, true);
+        assert.include(String(declaredFailure(spoofRaw)?.message ?? ""), "causationChain");
+
+        // Peer B delegates to Child C -> C's run inherits causationChain: [peerA, peerB].
+        // C trying to send back to Peer A must be rejected!
+        const bDelegatesCRaw = yield* callTool(peerB, "delegate_task", {
+          task: "Work delegated from B",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(bDelegatesCRaw.isError, true);
+        const bDelegatesC = yield* decodeDelegateTaskResult(bDelegatesCRaw.structuredContent);
+        yield* worker.drain();
+        const childC = bDelegatesC.childThreadId;
+        if (childC === null) {
+          assert.fail("Expected bDelegatesC.childThreadId to be non-null");
+        }
+        const cToARaw = yield* callTool(childC, "t3_thread_send", {
+          threadId: peerA,
+          message: "Cycle back to A via delegation",
+        });
+        assert.equal(cToARaw.isError, true);
+        assert.include(String(declaredFailure(cToARaw)?.message ?? ""), "causationChain");
+
+        // 2. Infinite horizontal escalation loop: L1-A -> escalate L0 -> L0 delegates L1-B -> L1-B tries to escalate L0 again -> REJECTED!
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:ch:l0-r1"),
+          threadId: l0,
+          messageId: MessageId.make("msg:ch:l0-r1"),
+          text: "Bootstrap L0",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const l0Run1 = (yield* orchestrator.getThreadProjection(l0)).runs[0]!;
+        yield* completeRun({ threadId: l0, runId: l0Run1.id, replyText: "L0 ready." });
+
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:ch:fork-l1"),
+          sourceThreadId: l0,
+          targetThreadId: l1,
+          subtask: true,
+          title: "L1-A",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:ch:l1-r1"),
+          threadId: l1,
+          messageId: MessageId.make("msg:ch:l1-r1"),
+          text: "Run L1-A",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // L1-A escalates to L0 (first hop allowed; L0's inbox run carries causationChain: [l1]).
+        const loopReq1 = SubtaskEscalationRequestId.make("esc:ch:loop-1");
+        const esc1Raw = yield* callTool(l1, "t3_subtask_escalate", {
+          requestId: loopReq1,
+          task: "Need sibling L1-B",
+        });
+        assert.notEqual(esc1Raw.isError, true);
+        yield* worker.drain();
+
+        // L0 (now running from the escalation inbox run) fulfills loopReq1 by delegating sibling L1-B.
+        // L1-B's run carries causationChain: [l1, l0].
+        const delSiblingRaw = yield* callTool(l0, "delegate_task", {
+          task: "Run sibling L1-B",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+          escalationRequestId: loopReq1,
+        });
+        assert.notEqual(delSiblingRaw.isError, true);
+        const delSibling = yield* decodeDelegateTaskResult(delSiblingRaw.structuredContent);
+        if (delSibling.childThreadId === null) {
+          assert.fail("Expected delSibling.childThreadId to be non-null");
+        }
+        yield* worker.drain();
+
+        // Sibling L1-B tries to escalate back to L0 again -> infinite escalation loop MUST be rejected!
+        const loopReq2 = SubtaskEscalationRequestId.make("esc:ch:loop-2");
+        const esc2Raw = yield* callTool(delSibling.childThreadId, "t3_subtask_escalate", {
+          requestId: loopReq2,
+          task: "Recursive escalation loop back to L0",
+        });
+        assert.equal(esc2Raw.isError, true);
+        assert.include(String(declaredFailure(esc2Raw)?.message ?? ""), "causationChain");
+
+        // 3. Legitimate L0 -> L1 -> L2 -> report L1 -> report L0 still works cleanly!
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:ch:fork-l2"),
+          sourceThreadId: l1,
+          targetThreadId: l2,
+          subtask: true,
+          title: "L2 Leaf",
+          sourcePoint: { type: "latest_stable" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        // Finish L1's active run and L0's active run so downward->upward flow is clean.
+        const l1Run1 = (yield* orchestrator.getThreadProjection(l1)).runs[0]!;
+        yield* completeRun({ threadId: l1, runId: l1Run1.id, replyText: "L1-A paused." });
+        const l0ActiveRun = (yield* orchestrator.getThreadProjection(l0)).runs.at(-1)!;
+        yield* completeRun({
+          threadId: l0,
+          runId: l0ActiveRun.id,
+          replyText: "L0 ready for L1->L2.",
+        });
+
+        // Fresh user turn on L0 sends down to L1 -> L1 sends down to L2 -> L2 reports to L1 -> L1 reports to L0.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:ch:l0-r3"),
+          threadId: l0,
+          messageId: MessageId.make("msg:ch:l0-r3"),
+          text: "Kick off L0->L1->L2",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const l0DownToL1 = yield* callTool(l0, "t3_thread_send", {
+          threadId: l1,
+          message: "Go inspect L2",
+        });
+        assert.notEqual(l0DownToL1.isError, true);
+        yield* worker.drain();
+        const l0Run3 = (yield* orchestrator.getThreadProjection(l0)).runs.at(-1)!;
+        yield* completeRun({ threadId: l0, runId: l0Run3.id, replyText: "Waiting for L1." });
+
+        const l1DownToL2 = yield* callTool(l1, "t3_thread_send", {
+          threadId: l2,
+          message: "Run leaf check",
+        });
+        assert.notEqual(l1DownToL2.isError, true);
+        yield* worker.drain();
+        const l1Run2 = (yield* orchestrator.getThreadProjection(l1)).runs.at(-1)!;
+        yield* completeRun({ threadId: l1, runId: l1Run2.id, replyText: "Waiting for L2." });
+
+        // L2 reports back to L1 -> MUST succeed!
+        const l2ReportL1 = yield* callTool(l2, "t3_thread_send", {
+          threadId: l1,
+          message: "L2 check passed",
+        });
+        assert.notEqual(l2ReportL1.isError, true);
+        yield* worker.drain();
+
+        // L1 (woken by L2's report) reports up to L0 -> MUST succeed!
+        const l1ReportL0 = yield* callTool(l1, "t3_thread_send", {
+          threadId: l0,
+          message: "L1 aggregated L2 result",
+        });
+        assert.notEqual(l1ReportL0.isError, true);
       }).pipe(Effect.provide(env.layer));
     },
   );

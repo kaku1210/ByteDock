@@ -34,6 +34,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   CommandId,
+  SubtaskEscalationRequestId,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   isTaskChildLineage,
@@ -52,6 +53,7 @@ import * as DateTime from "effect/DateTime";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
   ArrowRightIcon,
+  ArrowUpRightIcon,
   BotIcon,
   ChevronDownIcon,
   CornerLeftUpIcon,
@@ -65,6 +67,7 @@ import {
 } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
+import { newThreadId, randomUUID } from "~/lib/utils";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import {
@@ -75,6 +78,7 @@ import {
   useThreadRelationshipShells,
   useHiddenThreadKeys,
   useAnyEnvironmentHiding,
+  waitForThreadShell,
 } from "../../state/entities";
 import { useEnvironment, useEnvironmentProviders } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
@@ -484,15 +488,24 @@ export function ThreadRelationshipsPanel(props: {
   const navigate = useNavigate();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
   const reportToParent = useAtomCommand(threadEnvironment.reportToParent);
+  const escalateSubtaskToRoot = useAtomCommand(threadEnvironment.escalateSubtaskToRoot);
   const stopSession = useAtomCommand(threadEnvironment.stopSession);
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn);
   const stopWorkflowCommand = useAtomCommand(orchestrationEnvironment.stopWorkflow);
   const canOperateWorkflow = useAtomValue(
     orchestrationEnvironment.stopWorkflow.permissionAtom(props.environmentId),
   );
-  const [busyAction, setBusyAction] = useState<"merge" | "detach" | "report" | null>(null);
+  const [busyAction, setBusyAction] = useState<"merge" | "detach" | "report" | "escalate" | null>(
+    null,
+  );
   const mergeErrorToastId = useRef<string | null>(null);
   const reportErrorToastId = useRef<string | null>(null);
+  const escalateErrorToastId = useRef<string | null>(null);
+  const pendingEscalationRef = useRef<{
+    readonly sourceThreadId: ThreadId;
+    readonly requestId: SubtaskEscalationRequestId;
+    readonly targetThreadId: ThreadId;
+  } | null>(null);
   const detachErrorToastId = useRef<string | null>(null);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
   // Derive graphs after hooks to preserve their compiler cache.
@@ -808,6 +821,63 @@ export function ThreadRelationshipsPanel(props: {
     });
   };
 
+  const canEscalateToRoot =
+    currentThread !== undefined &&
+    currentThread.lineage.sideChat !== true &&
+    currentThread.delegatedFrom == null &&
+    isTaskChild &&
+    parentThreadId != null &&
+    currentThread.lineage.rootThreadId === parentThreadId &&
+    (parentShell === undefined ||
+      ((!isTaskChildLineage(parentShell.lineage) || parentShell.lineage.parentThreadId === null) &&
+        parentShell.archivedAt == null));
+
+  const escalateToRoot = async () => {
+    if (!canEscalateToRoot || parentThreadId == null || busyAction !== null) return;
+    if (escalateErrorToastId.current !== null) {
+      toastManager.close(escalateErrorToastId.current);
+      escalateErrorToastId.current = null;
+    }
+    const intent =
+      pendingEscalationRef.current?.sourceThreadId === props.threadId
+        ? pendingEscalationRef.current
+        : {
+            sourceThreadId: props.threadId,
+            requestId: SubtaskEscalationRequestId.make(`esc:user:${randomUUID()}`),
+            targetThreadId: newThreadId(),
+          };
+    pendingEscalationRef.current = intent;
+    const latestRun = activeChildRun ?? latestCompletedChildRun;
+    setBusyAction("escalate");
+    const result = await escalateSubtaskToRoot({
+      environmentId: props.environmentId,
+      input: {
+        requestId: intent.requestId,
+        sourceThreadId: props.threadId,
+        targetThreadId: intent.targetThreadId,
+        ...(latestRun === null ? {} : { sourceRunId: latestRun.id }),
+      },
+    });
+    setBusyAction(null);
+    if (result._tag === "Failure") {
+      escalateErrorToastId.current = toastManager.add({
+        type: "error",
+        title: "Could not escalate subtask to root",
+      });
+      return;
+    }
+    const targetRef = scopeThreadRef(props.environmentId, result.value.childThreadId);
+    if (!(await waitForThreadShell(targetRef))) {
+      escalateErrorToastId.current = toastManager.add({
+        type: "error",
+        title: "Escalated L1 subtask created, waiting for thread sync",
+      });
+      return;
+    }
+    pendingEscalationRef.current = null;
+    openThread(result.value.childThreadId);
+  };
+
   const detach = async () => {
     if (!canDetach || busyAction !== null) return;
     if (detachErrorToastId.current !== null) {
@@ -1024,6 +1094,7 @@ export function ThreadRelationshipsPanel(props: {
       );
     }
     const isReportTarget = isTaskChild && isParent && threadId === parentThreadId;
+    const isEscalateTarget = canEscalateToRoot && isParent && threadId === parentThreadId;
     const reportActionButton = isReportTarget ? (
       <>
         <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
@@ -1056,9 +1127,37 @@ export function ThreadRelationshipsPanel(props: {
         </Tooltip>
       </>
     ) : null;
+    const escalateActionButton = isEscalateTarget ? (
+      <>
+        <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <ThreadDetailsControl
+                size="sm"
+                variant="ghost"
+                part="secondary"
+                aria-label={`Escalate to ${threadTitle} as new L1`}
+                disabled={busyAction !== null}
+                onClick={() => void escalateToRoot()}
+              >
+                {busyAction === "escalate" ? (
+                  <Spinner size="xs" />
+                ) : (
+                  <ArrowUpRightIcon className="size-3" />
+                )}
+              </ThreadDetailsControl>
+            }
+          />
+          <TooltipPopup side="left">
+            {`Escalate to ${threadTitle} and create a sibling L1 draft`}
+          </TooltipPopup>
+        </Tooltip>
+      </>
+    ) : null;
     return (
       <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
-        {isMergeTarget || isReportTarget ? (
+        {isMergeTarget || isReportTarget || isEscalateTarget ? (
           <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
             <Tooltip>
               <TooltipTrigger
@@ -1078,6 +1177,7 @@ export function ThreadRelationshipsPanel(props: {
               <RelationshipPopup side="left">{relationshipTooltip}</RelationshipPopup>
             </Tooltip>
             {reportActionButton}
+            {escalateActionButton}
             {isMergeTarget ? (
               <>
                 <span aria-hidden="true" className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS} />

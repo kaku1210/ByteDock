@@ -202,6 +202,8 @@ import {
   isForkableSourceRunStatus,
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
+import { computeOutboundCausationChain, mergeCausationChains } from "./CausationChain.ts";
+import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1631,6 +1633,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const subtaskEscalationStore = yield* Effect.serviceOption(
+    SubtaskEscalationStore.SubtaskEscalationStore,
+  );
   const messageIntake = yield* KeyedLock.make<ThreadId>();
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
@@ -6093,6 +6098,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.sourceThreadId} was deleted.`,
       });
     }
+    if (command.subtask === true && sourceProjection.thread.archivedAt !== null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.sourceThreadId} is archived.`,
+      });
+    }
+    if (
+      command.subtask === true &&
+      command.sourceAnchor !== undefined &&
+      command.sourceAnchor.sourceThreadId !== command.sourceThreadId
+    ) {
+      const anchorThread = yield* findThread(command.sourceAnchor.sourceThreadId);
+      if (anchorThread === null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Source thread ${command.sourceAnchor.sourceThreadId} was not found.`,
+        });
+      }
+      if (anchorThread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Source thread ${command.sourceAnchor.sourceThreadId} was deleted.`,
+        });
+      }
+      if (anchorThread.archivedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Source thread ${command.sourceAnchor.sourceThreadId} is archived.`,
+        });
+      }
+    }
     const sideChatOwnerThreadId =
       command.sideChat === true
         ? yield* resolveTaskTreeRootThreadId({
@@ -6534,6 +6574,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly idleCompaction?: OrchestrationV2ConversationMessage["idleCompaction"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly notification?: OrchestrationV2ConversationMessage["notification"];
+    readonly causationChain?: OrchestrationV2ConversationMessage["causationChain"];
     readonly forceRestart: boolean;
   }) {
     const targetRun = input.projection.runs.find((candidate) => candidate.id === input.targetRunId);
@@ -6677,6 +6718,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
           ...(input.idleCompaction === undefined ? {} : { idleCompaction: input.idleCompaction }),
+          ...(input.causationChain === undefined ? {} : { causationChain: input.causationChain }),
           id: input.messageId,
           threadId: input.command.threadId,
           runId: messageInput.runId,
@@ -7282,6 +7324,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               command.restartContinuationOfRunId,
               command.usageLimitContinuationOfRunId,
               command.steerFollowUpOfRunId,
+              command.delegatedCompletion?.parentRunId,
               ...(command.dispatchMode.type === "steer_active" ||
               command.dispatchMode.type === "restart_active"
                 ? [command.dispatchMode.targetRunId]
@@ -7823,7 +7866,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     const childReport = command.childReport;
-    const causationChain = command.causationChain ?? childReport?.causationChain;
+    const delegatedCompletionCausationChain = (() => {
+      if (delegatedCompletion === undefined) return undefined;
+      const parentRun = projection.runs.find(
+        (candidate) => candidate.id === delegatedCompletion.parentRunId,
+      );
+      const parentRunMessage =
+        parentRun === undefined
+          ? undefined
+          : projection.messages.find((message) => message.id === parentRun.userMessageId);
+      const inheritedParentChain = (parentRunMessage?.causationChain ?? []).filter(
+        (threadId) => threadId !== command.threadId,
+      );
+      const completedChildThreadIds = delegatedCompletion.taskIds
+        .map(
+          (taskId) =>
+            projection.subagents.find((candidate) => candidate.id === taskId)?.childThreadId ??
+            null,
+        )
+        .filter((threadId): threadId is ThreadId => threadId !== null);
+      const merged = mergeCausationChains(inheritedParentChain, completedChildThreadIds);
+      return merged.length > 0 ? merged : undefined;
+    })();
+    const causationChain =
+      command.causationChain ?? childReport?.causationChain ?? delegatedCompletionCausationChain;
     if (causationChain !== undefined && causationChain.includes(command.threadId)) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -7832,6 +7898,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (childReport !== undefined) {
+      if (projection.thread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} was deleted.`,
+        });
+      }
+      if (projection.thread.archivedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} is archived.`,
+        });
+      }
       if (childReport.childThreadId === command.threadId) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7890,7 +7970,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? command.text
           : delegatedCompletionWakeDetail(delegatedCompletion.taskIds, projection.subagents);
     const dispatchText =
-      childReport?.reportKind === "interim" && !rawDispatchText.startsWith("[阶段性进度]")
+      childReport?.reportKind === "interim" &&
+      childReport.escalationRequestId === undefined &&
+      !rawDispatchText.startsWith("[阶段性进度]")
         ? `[阶段性进度] ${rawDispatchText}`
         : rawDispatchText;
     const sourcePlanProjection =
@@ -8074,6 +8156,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
         ...(command.linkedSender === undefined ? {} : { linkedSender: command.linkedSender }),
         ...(command.idleCompaction === undefined ? {} : { idleCompaction: command.idleCompaction }),
+        ...(causationChain === undefined ? {} : { causationChain }),
         forceRestart: dispatchMode.type === "restart_active",
       });
       return;
@@ -10096,6 +10179,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (cause) => new OrchestratorProjectionError({ threadId: command.parentThreadId, cause }),
           ),
         );
+      if (parentProjection.thread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Parent thread ${command.parentThreadId} was deleted.`,
+        });
+      }
+      if (parentProjection.thread.archivedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Parent thread ${command.parentThreadId} is archived.`,
+        });
+      }
       const parentRun = parentProjection.runs.find(
         (candidate) => candidate.id === command.parentRunId,
       );
@@ -10168,25 +10265,56 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem({
         commandId: command.commandId,
       });
+      const parentRunMessages = yield* projectionStore
+        .getThreadRecords(command.parentThreadId, ["messages"], {
+          messageIds: [parentRun.userMessageId],
+        })
+        .pipe(
+          Effect.catchTags({
+            ProjectionStoreThreadNotFoundError: () => Effect.succeed({ messages: [] }),
+          }),
+          mapDispatchError(command),
+        );
+      const parentIncomingChain = parentRunMessages.messages.find(
+        (message) => message.id === parentRun.userMessageId,
+      )?.causationChain;
+      const delegatedChain = computeOutboundCausationChain({
+        callerThreadId: command.parentThreadId,
+        targetThreadId: childThreadId,
+        callerIncomingChain: parentIncomingChain,
+        explicitChain: command.causationChain,
+        intent: "delegation",
+      });
+      if (delegatedChain.loopDetected) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            delegatedChain.loopReason ??
+            `Circular delegation loop detected from thread ${command.parentThreadId}.`,
+        });
+      }
       const taskTitle = subagentThreadTitle({
         parentTitle: parentProjection.thread.title,
         prompt: command.task,
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: (yield* subagentCount(command.parentThreadId)) + 1,
       });
+      const baseChildThread = makeSubagentChildThread({
+        parentThread: parentProjection.thread,
+        childThreadId,
+        parentNodeId: taskNodeId,
+        activeProviderThreadId: null,
+        providerInstanceId: command.modelSelection.instanceId,
+        modelSelection: command.modelSelection,
+        title: taskTitle,
+        now,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
       const childThread: OrchestrationV2AppThread = {
-        ...makeSubagentChildThread({
-          parentThread: parentProjection.thread,
-          childThreadId,
-          parentNodeId: taskNodeId,
-          activeProviderThreadId: null,
-          providerInstanceId: command.modelSelection.instanceId,
-          modelSelection: command.modelSelection,
-          title: taskTitle,
-          now,
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-        }),
+        ...baseChildThread,
+        ...(command.sourceAnchor === undefined ? {} : { sourceAnchor: command.sourceAnchor }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
@@ -10308,6 +10436,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
+        ...(delegatedChain.causationChain === undefined
+          ? {}
+          : { causationChain: [...delegatedChain.causationChain] }),
         dispatchMode:
           command.workspaceStrategy === undefined
             ? { type: "start_immediately" }
@@ -16664,6 +16795,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
     }
+    if (Option.isSome(subtaskEscalationStore)) {
+      if (command.type === "thread.archive" || command.type === "thread.delete") {
+        yield* subtaskEscalationStore.value.cancelByThreadIds({
+          threadIds: [command.threadId, ...cascade.descendantIds],
+          reason:
+            command.type === "thread.delete"
+              ? `Thread ${command.threadId} was deleted.`
+              : `Thread ${command.threadId} was archived.`,
+        });
+      } else if (command.type === "subagent.stop") {
+        const cancelledChildIds = committed.storedEvents.flatMap(({ event }) =>
+          event.type === "subagent.updated" &&
+          event.payload.status === "cancelled" &&
+          event.payload.childThreadId !== null
+            ? [event.payload.childThreadId]
+            : [],
+        );
+        if (cancelledChildIds.length > 0) {
+          yield* subtaskEscalationStore.value.cancelByThreadIds({
+            threadIds: cancelledChildIds,
+            reason: `Delegated task ${command.subagentId} was cancelled.`,
+          });
+        }
+      }
+    }
 
     return {
       sequence: committed.receipt.resultSequence,
@@ -16701,8 +16857,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* dispatch;
       }
       if (command.sideChat !== true) {
+        const ancestorIds = yield* liveTaskAncestorIds(command.sourceThreadId);
+        const anchorThreadId =
+          command.sourceAnchor !== undefined &&
+          command.sourceAnchor.sourceThreadId !== command.sourceThreadId
+            ? yield* findThread(command.sourceAnchor.sourceThreadId).pipe(
+                Effect.map((anchor) =>
+                  anchor !== null && anchor.lineage.parentThreadId === command.sourceThreadId
+                    ? anchor.id
+                    : undefined,
+                ),
+              )
+            : undefined;
         return yield* withThreadLocksInOrder(
-          [command.sourceThreadId, command.targetThreadId],
+          [
+            ...ancestorIds,
+            command.sourceThreadId,
+            ...(anchorThreadId === undefined ? [] : [anchorThreadId]),
+            command.targetThreadId,
+          ],
           dispatchWithReceiptEffect(command),
         );
       }

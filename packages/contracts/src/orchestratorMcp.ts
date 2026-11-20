@@ -44,6 +44,11 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import {
+  SubtaskEscalationRequest,
+  SubtaskEscalationRequestId,
+  SubtaskEscalationStatus,
+} from "./subtaskEscalation.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -189,6 +194,13 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     description: "Mode 'wait' only. At most 45 s. A timeout does not cancel the child.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  escalationRequestId: Schema.optional(
+    SubtaskEscalationRequestId.annotate({
+      description:
+        "When L0 fulfills a pending L1 horizontal escalation, pass its requestId to idempotently bind and return the same sibling L1 childThreadId.",
+    }),
+  ),
+  causationChain: Schema.optional(Schema.Array(ThreadId)),
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
@@ -949,6 +961,44 @@ export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Struct({
 });
 export type OrchestratorMcpDeleteScheduledTaskResult =
   typeof OrchestratorMcpDeleteScheduledTaskResult.Type;
+
+export const OrchestratorMcpSubtaskEscalateInput = Schema.Struct({
+  requestId: Schema.optional(
+    SubtaskEscalationRequestId.annotate({
+      description:
+        "Stable idempotency key for this escalation. Retrying with the same requestId returns the same escalation record and childThreadId.",
+    }),
+  ),
+  clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  title: Schema.optional(OrchestratorMcpTitle),
+  task: OrchestratorMcpPrompt.annotate({
+    description: "Requested sibling L1 task description to submit to the L0 root coordinator.",
+  }),
+  reason: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)).annotate({
+      description: "Optional rationale explaining why this work belongs in a sibling L1 under L0.",
+    }),
+  ),
+  sourceMessageId: Schema.optional(MessageId),
+  excerpt: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_000))),
+  causationChain: Schema.optional(Schema.Array(ThreadId)),
+});
+export type OrchestratorMcpSubtaskEscalateInput = typeof OrchestratorMcpSubtaskEscalateInput.Type;
+
+export const OrchestratorMcpSubtaskEscalateResult = Schema.Struct({
+  request: SubtaskEscalationRequest,
+  rootThreadId: ThreadId,
+  rootThreadLink: Schema.String,
+  status: SubtaskEscalationStatus,
+  childThreadId: Schema.NullOr(ThreadId),
+  delegatedTaskId: Schema.NullOr(NodeId),
+  inboxMessageId: Schema.NullOr(MessageId),
+  inboxRunId: Schema.NullOr(RunId),
+  parentQueueHeld: Schema.Boolean,
+  replayed: Schema.Boolean,
+  next: Schema.String,
+});
+export type OrchestratorMcpSubtaskEscalateResult = typeof OrchestratorMcpSubtaskEscalateResult.Type;
 
 export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFailure>()(
   "OrchestratorMcpFailure",

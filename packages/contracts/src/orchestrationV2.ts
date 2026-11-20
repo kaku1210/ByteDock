@@ -279,6 +279,8 @@ export const OrchestrationV2ChildReport = Schema.Struct({
   holdParentQueue: Schema.optional(Schema.Boolean),
   /** Causal chain of thread IDs for cross-thread auto-wake loop prevention. */
   causationChain: Schema.optional(Schema.Array(ThreadId)),
+  /** Present when this inbox delivery represents an L1 horizontal escalation request. */
+  escalationRequestId: Schema.optional(TrimmedNonEmptyString),
 });
 export type OrchestrationV2ChildReport = typeof OrchestrationV2ChildReport.Type;
 
@@ -3595,6 +3597,10 @@ export const OrchestrationV2Command = Schema.Union([
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    /** Upstream causal chain of thread IDs propagated into the delegated child run. */
+    causationChain: Schema.optional(Schema.Array(ThreadId)),
+    /** Optional source anchor preserved when L0 fulfills an L1 horizontal escalation. */
+    sourceAnchor: Schema.optional(OrchestrationV2SubtaskSourceAnchor),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

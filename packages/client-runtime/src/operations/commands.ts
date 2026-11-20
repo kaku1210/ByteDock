@@ -26,6 +26,7 @@ import {
   type RunId,
   type RuntimeMode,
   type RuntimeRequestId,
+  type SubtaskEscalationCreateDraftInput,
   type ThreadId,
   type ThreadEnvMode,
   type UploadChatAttachment,
@@ -1144,6 +1145,13 @@ export const createSubtask = Effect.fn("EnvironmentCommands.createSubtask")(func
     ...(input.title === undefined ? {} : { title: input.title }),
   });
 });
+
+/** Escalates an L1 subtask horizontally to its root L0 thread as a new sibling L1 draft without auto-sending. */
+export const escalateSubtaskToRoot = Effect.fn("EnvironmentCommands.escalateSubtaskToRoot")(
+  function* (input: SubtaskEscalationCreateDraftInput) {
+    return yield* request(WS_METHODS.subtaskEscalationCreateDraft, input);
+  },
+);
 
 export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(function* (
   input: MergeThreadBackInput,

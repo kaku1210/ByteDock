@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   EventId,
   ExecutionEnvironmentDescriptor,
+  IsoDateTime,
   MessageId,
   NodeId,
   OrchestrationV2DispatchCommandError,
@@ -17,6 +18,7 @@ import {
   RunId,
   RuntimeRequestId,
   ServerConfig,
+  SubtaskEscalationRequestId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
@@ -33,6 +35,8 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type SubtaskEscalationCreateDraftInput,
+  type SubtaskEscalationCreateDraftResult,
   type TerminalMetadataStreamEvent,
   type TextGenerationError,
   type ThreadPromptSuggestionInput,
@@ -426,6 +430,7 @@ let shellSubscriber: Queue.Queue<OrchestrationV2ShellStreamItem> | null = null;
 let terminalMetadataSubscriber: Queue.Queue<TerminalMetadataStreamEvent> | null = null;
 let threads: ReadonlyArray<FakeThread> = [];
 let dispatched: OrchestrationV2Command[] = [];
+let escalationDrafts: SubtaskEscalationCreateDraftInput[] = [];
 let acceptCommands = false;
 let projects: ReadonlyArray<OrchestrationProjectShell> = [project];
 let holdCommand: (command: OrchestrationV2Command) => boolean = () => false;
@@ -461,6 +466,47 @@ const handlers: Record<string, (input: never) => unknown> = {
       const reply = Deferred.makeUnsafe<never, OrchestrationV2DispatchCommandError>();
       pendingDispatches.push({ command, reply });
       return Deferred.await(reply);
+    }),
+  [WS_METHODS.subtaskEscalationCreateDraft]: (input: SubtaskEscalationCreateDraftInput) =>
+    Effect.suspend(() => {
+      escalationDrafts.push(input);
+      if (!acceptCommands) return Effect.never;
+      const source = threads.find((candidate) => candidate.id === input.sourceThreadId);
+      const rootThreadId = source?.rootThreadId ?? source?.subtaskOf ?? input.sourceThreadId;
+      const requestId =
+        input.requestId ?? SubtaskEscalationRequestId.make(`esc:fake:${escalationDrafts.length}`);
+      const childThreadId =
+        input.targetThreadId ?? ThreadId.make(`escalated-l1-${escalationDrafts.length}`);
+      const iso = IsoDateTime.make("2026-03-17T19:15:00.000Z");
+      const result: SubtaskEscalationCreateDraftResult = {
+        request: {
+          requestId,
+          projectId: project.id,
+          rootThreadId,
+          sourceThreadId: input.sourceThreadId,
+          sourceRunId: input.sourceRunId ?? null,
+          sourceMessageId: input.sourceMessageId ?? null,
+          excerpt: input.excerpt ?? null,
+          title: input.title ?? null,
+          task: input.task ?? input.excerpt ?? "Escalated sibling L1 subtask",
+          trigger: "user",
+          status: "fulfilled",
+          childThreadId,
+          delegatedTaskId: null,
+          inboxMessageId: null,
+          inboxRunId: null,
+          parentQueueHeld: false,
+          causationChain: [],
+          createdAt: iso,
+          updatedAt: iso,
+          resolvedAt: iso,
+          resolvedBy: "user",
+          resolutionReason: "Created sibling L1 draft.",
+        },
+        childThreadId,
+        replayed: false,
+      };
+      return Effect.succeed(result);
     }),
   // Held like any other unanswered call, until `answerAssetUrls`.
   [WS_METHODS.assetsCreateUrl]: () =>
@@ -617,6 +663,7 @@ export function installFakeEnvironment(
     };
   }
   dispatched = [];
+  escalationDrafts = [];
   acceptCommands = options?.acceptCommands === true;
   projects = [
     project,
@@ -677,6 +724,7 @@ export function installFakeEnvironment(
       threads = [];
       baseServerConfig = makeServerConfig([CODEX_PROVIDER]);
       dispatched = [];
+      escalationDrafts = [];
       acceptCommands = false;
       projects = [project];
       holdCommand = () => false;
@@ -721,6 +769,11 @@ export async function answerAssetUrls(): Promise<void> {
 /** Commands the app dispatched to the environment, oldest first. */
 export function dispatchedCommands(): ReadonlyArray<OrchestrationV2Command> {
   return dispatched;
+}
+
+/** Subtask escalation draft RPC requests dispatched to the environment, oldest first. */
+export function dispatchedEscalations(): ReadonlyArray<SubtaskEscalationCreateDraftInput> {
+  return escalationDrafts;
 }
 
 export async function addEnvironmentThread(thread: FakeThread): Promise<void> {

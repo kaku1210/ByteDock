@@ -440,6 +440,10 @@ function makeSubtaskContext(input: {
   ].filter((part): part is string => part !== null);
   const metadataLines = [
     `Parent thread: ${compactText(input.parentTitle, 140)} (${input.parentThreadId})`,
+    ...(input.sourceAnchor?.sourceThreadId &&
+    input.sourceAnchor.sourceThreadId !== input.parentThreadId
+      ? [`Escalated from sibling L1 subtask: ${input.sourceAnchor.sourceThreadId}`]
+      : []),
     ...(cutoffParts.length > 0 ? [`Source cutoff: ${cutoffParts.join(", ")}`] : []),
     ...(input.parentGoal && input.parentGoal.trim().length > 0
       ? [`Parent goal: ${compactText(input.parentGoal, 320)}`]

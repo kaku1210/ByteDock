@@ -1,6 +1,7 @@
 import {
   CommandId,
   MAX_TASK_TREE_DEPTH,
+  SubtaskEscalationRequestId,
   isTaskChildLineage,
   type AssistantCitation,
   type ModelSelection,
@@ -57,9 +58,51 @@ export function useCanSplitSubtaskFromThread(threadRef: ScopedThreadRef | null):
   return MAX_TASK_TREE_DEPTH > 1;
 }
 
+/** Reactive L1-only guard for horizontal escalation to root L0 (hides on L0, L2+, side chats, remote). */
+export function useCanEscalateSubtaskFromThread(threadRef: ScopedThreadRef | null): boolean {
+  const shell = useQuietThreadShell(threadRef);
+  const parentRef =
+    threadRef !== null &&
+    shell !== null &&
+    isTaskChildLineage(shell.lineage) &&
+    shell.lineage.parentThreadId !== null
+      ? scopeThreadRef(threadRef.environmentId, shell.lineage.parentThreadId)
+      : null;
+  const parentShell = useQuietThreadShell(parentRef);
+  if (
+    threadRef === null ||
+    shell === null ||
+    shell.lineage.sideChat === true ||
+    shell.delegatedFrom != null
+  ) {
+    return false;
+  }
+  if (!isTaskChildLineage(shell.lineage) || shell.lineage.parentThreadId === null) {
+    return false;
+  }
+  if (shell.lineage.rootThreadId !== shell.lineage.parentThreadId) {
+    return false;
+  }
+  if (parentShell !== null) {
+    if (
+      (isTaskChildLineage(parentShell.lineage) && parentShell.lineage.parentThreadId !== null) ||
+      parentShell.archivedAt != null
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 interface PendingSplitIntent {
   readonly key: string;
   readonly commandId: CommandId;
+  readonly targetThreadId: ThreadId;
+}
+
+interface PendingEscalationIntent {
+  readonly key: string;
+  readonly requestId: SubtaskEscalationRequestId;
   readonly targetThreadId: ThreadId;
 }
 
@@ -88,8 +131,9 @@ function appendCitationDraft(threadRef: ScopedThreadRef, citation: AssistantCita
 
 /**
  * Splits a persistent subtask from `threadRef` anchored at the selected message/run or
- * latest stable cutoff. Prefills the subtask composer draft without auto-sending and
- * preserves idempotency across disconnect retries.
+ * latest stable cutoff, and supports horizontal escalation from L1 to root L0 as a new
+ * sibling L1 draft. Prefills the draft composer without auto-sending and preserves
+ * idempotency across disconnect retries.
  */
 export function useSubtask(input: {
   readonly threadRef: ScopedThreadRef | null;
@@ -105,7 +149,11 @@ export function useSubtask(input: {
   const navigate = useNavigate();
   const pendingRef = useRef(false);
   const pendingIntentRef = useRef<PendingSplitIntent | null>(null);
+  const pendingEscalationIntentRef = useRef<PendingEscalationIntent | null>(null);
   const createSubtask = useAtomCommand(threadEnvironment.createSubtask, { reportFailure: false });
+  const escalateSubtaskToRoot = useAtomCommand(threadEnvironment.escalateSubtaskToRoot, {
+    reportFailure: false,
+  });
   const setThreadRuntimeMode = useOrchestrationCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
@@ -201,12 +249,95 @@ export function useSubtask(input: {
     }
   };
 
+  const escalate = async (options?: {
+    readonly citation?: AssistantCitation | undefined;
+    readonly runId?: RunId | undefined;
+    readonly title?: string | undefined;
+  }): Promise<boolean> => {
+    const { threadRef } = input;
+    if (!threadRef || pendingRef.current) return false;
+    pendingRef.current = true;
+    try {
+      const citation = options?.citation;
+      const runId =
+        options?.runId ??
+        (citation ? input.resolveRunIdForMessage?.(citation.messageId) : undefined);
+      const key = splitIntentKey(threadRef, runId, citation);
+      const intent =
+        pendingEscalationIntentRef.current?.key === key
+          ? pendingEscalationIntentRef.current
+          : {
+              key,
+              requestId: SubtaskEscalationRequestId.make(`esc:user:${randomUUID()}`),
+              targetThreadId: newThreadId(),
+            };
+      pendingEscalationIntentRef.current = intent;
+      const excerpt = citation?.text.trim();
+      const { runtimeMode, modelSelection } = input.readSettings();
+      const created = await escalateSubtaskToRoot({
+        environmentId: threadRef.environmentId,
+        input: {
+          requestId: intent.requestId,
+          sourceThreadId: threadRef.threadId,
+          targetThreadId: intent.targetThreadId,
+          ...(runId === undefined ? {} : { sourceRunId: runId }),
+          ...(citation === undefined ? {} : { sourceMessageId: citation.messageId }),
+          ...(excerpt && excerpt.length > 0 ? { excerpt, task: excerpt } : {}),
+          ...(options?.title === undefined ? {} : { title: options.title }),
+        },
+      });
+      if (created._tag === "Failure") {
+        reportFailure(created, "Could not escalate subtask to root.");
+        return false;
+      }
+      const targetThreadId = created.value.childThreadId;
+      const targetRef = scopeThreadRef(threadRef.environmentId, targetThreadId);
+      if (modelSelection !== undefined) {
+        useComposerDraftStore.getState().setModelSelection(targetRef, modelSelection);
+      }
+      if (citation !== undefined) {
+        appendCitationDraft(targetRef, citation);
+      }
+      if (!(await waitForThreadShell(targetRef))) {
+        input.onError(
+          "The escalated L1 subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+        );
+        return false;
+      }
+      const escalatedShell = readThreadShell(targetRef);
+      if (escalatedShell !== null && runtimeMode !== escalatedShell.runtimeMode) {
+        await setThreadRuntimeMode({
+          environmentId: threadRef.environmentId,
+          input: {
+            threadId: targetThreadId,
+            runtimeMode,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
+      pendingEscalationIntentRef.current = null;
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(targetRef),
+      });
+      return true;
+    } finally {
+      pendingRef.current = false;
+    }
+  };
+
   const splitStable = useStableCallback(split);
   const splitFromCitation = useStableCallback((citation: AssistantCitation) => split({ citation }));
+  const escalateStable = useStableCallback(escalate);
+  const escalateFromCitation = useStableCallback((citation: AssistantCitation) =>
+    escalate({ citation }),
+  );
 
   return {
     available: input.threadRef !== null,
     split: splitStable,
     splitFromCitation,
+    escalate: escalateStable,
+    escalateFromCitation,
   };
 }

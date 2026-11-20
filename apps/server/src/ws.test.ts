@@ -133,6 +133,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as WorktreeApprovalService from "./orchestration-v2/WorktreeApprovalService.ts";
+import * as SubtaskEscalationService from "./orchestration-v2/SubtaskEscalationService.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -878,6 +879,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(WorkspaceFileSystem.WorkspaceFileSystem)({}),
   Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
   Layer.mock(WorktreeApprovalService.WorktreeApprovalService)({}),
+  Layer.mock(SubtaskEscalationService.SubtaskEscalationService)({}),
 );
 
 const layerConfigSources = Layer.mergeAll(

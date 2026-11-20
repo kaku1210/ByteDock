@@ -21,6 +21,8 @@ import {
   OrchestratorMcpListScheduledTasksResult,
   OrchestratorMcpSaveScheduledTaskInput,
   OrchestratorMcpScheduleTaskResult,
+  OrchestratorMcpSubtaskEscalateInput,
+  OrchestratorMcpSubtaskEscalateResult,
   OrchestratorMcpTaskCancelInput,
   OrchestratorMcpTaskCancelResult,
   OrchestratorMcpTaskStatusInput,
@@ -124,6 +126,19 @@ const TaskCancelTool = Tool.make("task_cancel", {
 })
   .annotate(Tool.Title, "Cancel delegated task")
   .annotate(Tool.Destructive, true);
+
+const SubtaskEscalateTool = Tool.make("t3_subtask_escalate", {
+  description:
+    "L1 subtasks only: submit an idempotent horizontal escalation request to the L0 root coordinator to create a sibling L1 subtask. Reuse `requestId` to retry safely. L0 accepts via `delegate_task` with `escalationRequestId`. Low-privilege L1 requests land in L0's held inbox without auto-waking L0.",
+  parameters: OrchestratorMcpSubtaskEscalateInput,
+  success: OrchestratorMcpSubtaskEscalateResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Escalate L1 task to root for sibling L1")
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
 
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
@@ -361,6 +376,7 @@ export const OrchestratorToolkit = Toolkit.make(
   DelegateTaskTool,
   TaskStatusTool,
   TaskCancelTool,
+  SubtaskEscalateTool,
   WorkflowStopTool,
   BackgroundWaitTool,
   ScheduleTaskTool,

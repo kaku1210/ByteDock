@@ -10,7 +10,9 @@ import * as Schema from "effect/Schema";
 export type TaskTreeDepthTarget = Pick<
   OrchestrationV2AppThread,
   "id" | "lineage" | "delegatedFrom" | "deletedAt"
->;
+> & {
+  readonly archivedAt?: OrchestrationV2AppThread["archivedAt"];
+};
 
 export class TaskTreeDepthError extends Schema.TaggedError<TaskTreeDepthError>()(
   "TaskTreeDepthError",
@@ -176,3 +178,143 @@ export const resolveTaskTreeRootThreadId = Effect.fn("TaskTreeDepth.resolveTaskT
     return current.id;
   },
 );
+
+export class HorizontalEscalationSourceError extends Schema.TaggedError<HorizontalEscalationSourceError>()(
+  "HorizontalEscalationSourceError",
+  {
+    sourceThreadId: Schema.String,
+    rootThreadId: Schema.optional(Schema.String),
+    reason: Schema.Literals([
+      "invalid_source",
+      "root_unreachable",
+      "root_deleted",
+      "root_archived",
+    ]),
+    message: Schema.String,
+  },
+) {}
+
+export interface ResolvedHorizontalEscalation<T extends TaskTreeDepthTarget> {
+  readonly sourceThread: T;
+  readonly rootThread: T;
+}
+
+/**
+ * Validates that `sourceThreadId` is an active L1 task child eligible to initiate horizontal
+ * escalation to its live, unarchived L0 root thread. Rejects L0, L2+, side chats, remote
+ * delegated threads, and unreachable/archived/deleted roots.
+ */
+export const validateHorizontalEscalationSource = Effect.fn(
+  "TaskTreeDepth.validateHorizontalEscalationSource",
+)(function* <T extends TaskTreeDepthTarget, E>(input: {
+  readonly sourceThreadId: ThreadId;
+  readonly loadThread: (threadId: ThreadId) => Effect.Effect<T | null, E>;
+}) {
+  const sourceThread = yield* input.loadThread(input.sourceThreadId);
+  if (sourceThread === null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      reason: "invalid_source",
+      message: `Source thread ${input.sourceThreadId} was not found.`,
+    });
+  }
+  if (sourceThread.lineage.sideChat === true) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      reason: "invalid_source",
+      message: `Side chat ${input.sourceThreadId} cannot initiate horizontal escalation.`,
+    });
+  }
+  if (sourceThread.delegatedFrom !== undefined) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      reason: "invalid_source",
+      message: `Remotely delegated thread ${input.sourceThreadId} cannot initiate local horizontal escalation.`,
+    });
+  }
+  if (!isTaskChildLineage(sourceThread.lineage) || sourceThread.lineage.parentThreadId === null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      reason: "invalid_source",
+      message: `Root thread ${input.sourceThreadId} is already at L0; create a subtask or delegate directly instead of escalating.`,
+    });
+  }
+
+  const parentThreadId = sourceThread.lineage.parentThreadId;
+  if (parentThreadId === sourceThread.id) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      reason: "invalid_source",
+      message: `Task lineage cycle detected at thread ${sourceThread.id}.`,
+    });
+  }
+
+  const parentThread = yield* input.loadThread(parentThreadId);
+  if (parentThread === null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThreadId,
+      reason: "root_unreachable",
+      message: `Root thread ${parentThreadId} could not be reached.`,
+    });
+  }
+  if (parentThread.lineage.sideChat === true) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.id,
+      reason: "invalid_source",
+      message: `Parent thread ${parentThread.id} is a side chat and cannot accept horizontal escalation.`,
+    });
+  }
+  // If the direct parent is itself a task child or remotely delegated, source is L2+ -> strictly forbidden.
+  if (
+    parentThread.delegatedFrom !== undefined ||
+    (isTaskChildLineage(parentThread.lineage) && parentThread.lineage.parentThreadId !== null)
+  ) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.lineage.rootThreadId,
+      reason: "invalid_source",
+      message: `L2 subtask ${input.sourceThreadId} cannot initiate horizontal escalation to L0.`,
+    });
+  }
+  // Check root deletion/archival before source deletion/archival because root archive/delete
+  // cascades down to L1 children, and callers expect explicit root_deleted / root_archived errors.
+  if (parentThread.deletedAt !== null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.id,
+      reason: "root_deleted",
+      message: `Root thread ${parentThread.id} was deleted and cannot accept new sibling L1 escalations.`,
+    });
+  }
+  if (parentThread.archivedAt != null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.id,
+      reason: "root_archived",
+      message: `Root thread ${parentThread.id} is archived and cannot accept new sibling L1 escalations.`,
+    });
+  }
+  if (sourceThread.deletedAt !== null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.id,
+      reason: "invalid_source",
+      message: `Source thread ${input.sourceThreadId} was deleted and cannot escalate.`,
+    });
+  }
+  if (sourceThread.archivedAt != null) {
+    return yield* new HorizontalEscalationSourceError({
+      sourceThreadId: input.sourceThreadId,
+      rootThreadId: parentThread.id,
+      reason: "invalid_source",
+      message: `Source thread ${input.sourceThreadId} is archived and cannot escalate.`,
+    });
+  }
+
+  return {
+    sourceThread,
+    rootThread: parentThread,
+  } satisfies ResolvedHorizontalEscalation<T>;
+});

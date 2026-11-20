@@ -62,6 +62,8 @@ import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
+import * as SubtaskEscalationService from "../SubtaskEscalationService.ts";
+import * as SubtaskEscalationStore from "../SubtaskEscalationStore.ts";
 import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
@@ -291,6 +293,8 @@ export function layerWithRegistry<Error>(
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
+  | SubtaskEscalationService.SubtaskEscalationService
+  | SubtaskEscalationStore.SubtaskEscalationStore
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
@@ -496,6 +500,9 @@ export function layerWithRegistry<Error>(
       }),
     }),
   );
+  const layerSubtaskEscalationStoreProvided = SubtaskEscalationStore.layer.pipe(
+    Layer.provide(layerDatabase),
+  );
   const layerOrchestratorProvided = Orchestrator.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -510,9 +517,16 @@ export function layerWithRegistry<Error>(
         layerProviderSwitchServiceProvided,
         layerRunExecutionServiceProvided,
         layerServerSettings,
+        layerSubtaskEscalationStoreProvided,
         ThreadForkService.layer,
       ),
     ),
+  );
+  const layerSubtaskEscalationServiceProvided = SubtaskEscalationService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(layerSubtaskEscalationStoreProvided, layerOrchestratorProvided, layerStores),
+    ),
+    Layer.provide(NodeCrypto.layer),
   );
   const layerThreadManagementProvided = Layer.unwrap(
     Effect.gen(function* () {
@@ -562,6 +576,8 @@ export function layerWithRegistry<Error>(
   const layerReplayRuntime = Layer.mergeAll(
     layerEffectOutboxProvided,
     layerOrchestratorProvided,
+    layerSubtaskEscalationStoreProvided,
+    layerSubtaskEscalationServiceProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
     layerEventSinkProvided,

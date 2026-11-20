@@ -303,7 +303,11 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useSideChat } from "./chat/useSideChat";
-import { useCanSplitSubtaskFromThread, useSubtask } from "./chat/useSubtask";
+import {
+  useCanEscalateSubtaskFromThread,
+  useCanSplitSubtaskFromThread,
+  useSubtask,
+} from "./chat/useSubtask";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
 import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
@@ -2882,17 +2886,19 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection?.runs ?? [],
   );
   const canSplitSubtask = useCanSplitSubtaskFromThread(activeThreadRef);
-  const subtasksOffered =
+  const canEscalateSubtask = useCanEscalateSubtaskFromThread(activeThreadRef);
+  const subtaskSurfaceEligible =
     !embedded &&
     canOperateThread &&
     isServerThread &&
     activeThread?.lineage.sideChat !== true &&
     delegatedFrom === null &&
     serverConfig?.environment.capabilities.subtasks === true &&
-    !subtaskWorktreePending &&
-    canSplitSubtask;
+    !subtaskWorktreePending;
+  const subtasksOffered = subtaskSurfaceEligible && canSplitSubtask;
+  const escalationOffered = subtaskSurfaceEligible && canEscalateSubtask;
   const subtask = useSubtask({
-    threadRef: subtasksOffered ? activeThreadRef : null,
+    threadRef: subtasksOffered || escalationOffered ? activeThreadRef : null,
     resolveRunIdForMessage: (messageId) =>
       serverProjection?.messages.find((candidate) => candidate.id === messageId)?.runId ??
       serverProjection?.turnItems.find(
@@ -3553,7 +3559,12 @@ export default function ChatView(props: ChatViewProps) {
                       : undefined
                   }
                   onSplitSubtaskAssistantText={
-                    subtask.available ? subtask.splitFromCitation : undefined
+                    subtasksOffered && subtask.available ? subtask.splitFromCitation : undefined
+                  }
+                  onEscalateSubtaskAssistantText={
+                    escalationOffered && subtask.available
+                      ? subtask.escalateFromCitation
+                      : undefined
                   }
                   onReplyToResponse={replyToResponseStable}
                   {...(activeProject

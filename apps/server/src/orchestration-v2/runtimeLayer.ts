@@ -57,6 +57,8 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./WorktreeApprovalService.ts";
+import * as SubtaskEscalationService from "./SubtaskEscalationService.ts";
+import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -220,6 +222,8 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
   Layer.provide(Layer.merge(layerCheckpointCaptureServiceProvided, ProjectionStore.layer)),
 );
 
+const layerSubtaskEscalationStoreProvided = SubtaskEscalationStore.layer;
+
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -239,7 +243,18 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerProviderSessionManagerProvided,
       layerProviderSwitchServiceProvided,
       layerRunExecutionServiceProvided,
+      layerSubtaskEscalationStoreProvided,
       ThreadForkService.layer,
+    ),
+  ),
+);
+
+const layerSubtaskEscalationProvided = SubtaskEscalationService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerSubtaskEscalationStoreProvided,
+      layerOrchestratorProvided,
+      ProjectionStore.layer,
     ),
   ),
 );
@@ -391,6 +406,8 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
+  layerSubtaskEscalationStoreProvided,
+  layerSubtaskEscalationProvided,
   layerMcpAppRequestsProvided,
   layerThreadManagementProvided,
   layerEffectWorkerProvided,

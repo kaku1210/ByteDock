@@ -122,6 +122,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as WorktreeApprovalService from "./orchestration-v2/WorktreeApprovalService.ts";
+import * as SubtaskEscalationService from "./orchestration-v2/SubtaskEscalationService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1506,6 +1507,7 @@ export const layerWsRpc = (
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const worktreeApprovals = yield* WorktreeApprovalService.WorktreeApprovalService;
+      const subtaskEscalations = yield* SubtaskEscalationService.SubtaskEscalationService;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -3140,6 +3142,22 @@ export const layerWsRpc = (
                 : Effect.void,
             ),
           ),
+        [WS_METHODS.subtaskEscalationCreateDraft]: (input) =>
+          Effect.annotateCurrentSpan({
+            "subtask_escalation.source_thread_id": input.sourceThreadId,
+            ...(input.requestId === undefined
+              ? {}
+              : { "subtask_escalation.request_id": input.requestId }),
+          }).pipe(Effect.andThen(subtaskEscalations.createHumanDraft(input))),
+        [WS_METHODS.subtaskEscalationList]: (input) =>
+          subtaskEscalations
+            .listForThread(input.threadId)
+            .pipe(Effect.map((requests) => ({ requests }))),
+        [WS_METHODS.subtaskEscalationResolve]: (input) =>
+          Effect.annotateCurrentSpan({
+            "subtask_escalation.request_id": input.requestId,
+            "subtask_escalation.decision": input.decision,
+          }).pipe(Effect.andThen(subtaskEscalations.resolveByHuman(input))),
         [WS_METHODS.vcsRefreshStatus]: (input) =>
           vcsStatusBroadcaster.refreshStatus(input.cwd, { localOnly: input.localOnly ?? false }),
         [WS_METHODS.vcsPull]: (input) =>

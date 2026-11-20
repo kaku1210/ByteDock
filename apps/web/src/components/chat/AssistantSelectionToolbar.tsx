@@ -4,7 +4,7 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { GitBranchPlusIcon, PanelRightIcon, QuoteIcon } from "lucide-react";
+import { ArrowUpRightIcon, GitBranchPlusIcon, PanelRightIcon, QuoteIcon } from "lucide-react";
 import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -26,12 +26,14 @@ export function AssistantSelectionToolbar({
   onCite,
   onSlidCite,
   onSplitSubtask,
+  onEscalateSubtask,
 }: {
   viewport: HTMLElement | null;
   threadRef: ScopedThreadRef;
   onCite: (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean;
   onSlidCite?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
   onSplitSubtask?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
+  onEscalateSubtask?: ((citation: AssistantCitation) => Promise<boolean>) | undefined;
 }) {
   const [selection, setSelection] = useState<{
     citation: AssistantCitation;
@@ -216,6 +218,17 @@ export function AssistantSelectionToolbar({
       })
       .finally(() => setIsCiting(false));
   };
+  const escalateSubtask = async () => {
+    if (tooLong || isCiting || !onEscalateSubtask) return;
+    setIsCiting(true);
+    await onEscalateSubtask(selection.citation)
+      .then((created) => {
+        if (!created) return;
+        window.getSelection()?.removeAllRanges();
+        dismiss();
+      })
+      .finally(() => setIsCiting(false));
+  };
   return createPortal(
     <div
       ref={toolbarRef}
@@ -267,6 +280,19 @@ export function AssistantSelectionToolbar({
         >
           <GitBranchPlusIcon aria-hidden="true" className="size-3.5" />
           Split subtask
+        </Button>
+      )}
+      {onEscalateSubtask && (
+        <Button
+          type="button"
+          size="xs"
+          variant="glass"
+          disabled={tooLong || isCiting}
+          aria-label="Escalate selection to new L1 under root"
+          onClick={escalateSubtask}
+        >
+          <ArrowUpRightIcon aria-hidden="true" className="size-3.5" />
+          Escalate to L1
         </Button>
       )}
     </div>,
