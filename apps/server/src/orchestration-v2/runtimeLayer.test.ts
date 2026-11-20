@@ -2549,7 +2549,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
-  it.effect("refuses busy merge-back targets without blocking the queue", () =>
+  it.effect("stages merge-back on busy targets idempotently without blocking the queue", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -2725,25 +2725,23 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
             },
           ],
         });
-        const error = yield* orchestrator
-          .dispatch({
-            type: "thread.merge_back",
-            createdBy: "user",
-            creationSource: "mobile",
-            commandId: CommandId.make(`runtime-layer-merge-refused-${status}`),
-            sourceThreadId,
-            targetThreadId,
-            sourcePoint: { type: "run", runId: sourceRunId },
-          })
-          .pipe(Effect.flip);
-        assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
-        assert.equal(
-          error.cause,
-          "Finish or stop the target thread's active work and clear its queue before merging back.",
+        yield* orchestrator.dispatch({
+          type: "thread.merge_back",
+          createdBy: "user",
+          creationSource: "mobile",
+          commandId: CommandId.make(`runtime-layer-merge-staged-${status}`),
+          sourceThreadId,
+          targetThreadId,
+          sourcePoint: { type: "run", runId: sourceRunId },
+          createdAt: now,
+        });
+        const stagedTarget = yield* orchestrator.getThreadProjection(targetThreadId);
+        const mergeBacks = stagedTarget.contextTransfers.filter(
+          (candidate) => candidate.type === "merge_back",
         );
-        const refusedTarget = yield* orchestrator.getThreadProjection(targetThreadId);
-        assert.deepEqual(refusedTarget.contextTransfers, activeTarget.contextTransfers);
-        assert.equal(refusedTarget.runs[0]?.status, status);
+        assert.equal(mergeBacks.length, 1);
+        assert.equal(mergeBacks[0]?.status, "pending");
+        assert.equal(stagedTarget.runs[0]?.status, status);
       }
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -2759,12 +2757,22 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const queuedTarget = yield* orchestrator.getThreadProjection(targetThreadId);
       const queuedRun = queuedTarget.runs.find((run) => run.status === "queued");
       assert.isDefined(queuedRun);
+      assert.equal(
+        queuedTarget.contextTransfers.find((candidate) => candidate.type === "merge_back")?.status,
+        "bound",
+      );
       yield* orchestrator.dispatch({
         type: "queued-run.cancel",
         commandId: CommandId.make("runtime-layer-merge-target-cancel-queue"),
         threadId: targetThreadId,
         runId: queuedRun.id,
       });
+      const afterCancelTarget = yield* orchestrator.getThreadProjection(targetThreadId);
+      assert.equal(
+        afterCancelTarget.contextTransfers.find((candidate) => candidate.type === "merge_back")
+          ?.status,
+        "pending",
+      );
       yield* eventSink.write({
         commandId: CommandId.make("runtime-layer-merge-target-complete"),
         events: [
@@ -6917,6 +6925,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.equal(task.origin, "app_owned");
       assert.equal(task.status, "running");
       assert.isNotNull(task.childThreadId);
+      const childThreadId = task.childThreadId!;
 
       // Archive must preserve the idle parent's path for receiving this child's result.
       const error = yield* orchestrator
@@ -6929,11 +6938,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
       assert.equal(
         error.cause,
-        `Thread ${threadId} has running delegated tasks. Wait for them or cancel them before archiving.`,
+        `Thread ${threadId} has active subtasks (${childThreadId}). Wait for them or stop them before archiving.`,
       );
       assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.archivedAt);
 
-      const childThreadId = task.childThreadId!;
       const childRun = (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]!;
       yield* sink.write({
         events: [

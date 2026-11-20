@@ -832,6 +832,8 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       updatedAt: now,
     }) as unknown as OrchestrationV2ThreadProjection;
 
+  let sentMessageId: string | undefined;
+
   const layer = layerOrchestratorService.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -865,11 +867,14 @@ it("readThread and sendToThread reach threads in other projects", async () => {
                     threadId: input.threadId,
                   }),
                 ),
-          sendToThread: () =>
-            Effect.succeed({
+          sendToThread: (input) => {
+            sentMessageId = input.messageId;
+            return Effect.succeed({
+              message: { id: input.messageId },
               run: { id: "run-foreign", status: "queued" },
               delivery: "started",
-            } as unknown as ThreadManagementService.ThreadManagementSendResult),
+            } as unknown as ThreadManagementService.ThreadManagementSendResult);
+          },
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
         ServerSettings.layerTest(),
         Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -911,6 +916,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       message: "hi",
     });
     expect(sent.threadId).toBe(foreignThreadId);
+    expect(sent.messageId).toBe(sentMessageId);
 
     parentRuns = [];
     yield* service.readThread(makeScope(), { threadId: foreignThreadId });
