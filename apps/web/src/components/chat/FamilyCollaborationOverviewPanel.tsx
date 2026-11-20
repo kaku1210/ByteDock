@@ -991,12 +991,17 @@ export function FamilyCollaborationOverviewPanel({
   const handleStopNode = async (node: FamilyCollaborationNode) => {
     if (stoppingThreadId !== null) return;
     setStoppingThreadId(node.threadId);
-    const input =
-      node.activeRunId !== null
-        ? { threadId: node.threadId, runId: node.activeRunId }
-        : node.delegatedTaskId !== null && node.parentThreadId !== null
-          ? { threadId: node.parentThreadId, subagentId: node.delegatedTaskId }
-          : { threadId: node.threadId };
+    const hasActiveTaskBeforeChildRun =
+      node.activeRunId === null &&
+      node.queuedMessageCount === 0 &&
+      node.delegatedTaskId !== null &&
+      node.parentThreadId !== null &&
+      (node.taskStatus === "queued" ||
+        node.taskStatus === "running" ||
+        node.taskStatus === "blocked");
+    const input = hasActiveTaskBeforeChildRun
+      ? { threadId: node.parentThreadId!, subagentId: node.delegatedTaskId! }
+      : { threadId: node.threadId };
     const result = await interruptTurn({
       environmentId: threadRef.environmentId,
       input,

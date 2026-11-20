@@ -16830,8 +16830,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           command.threadId,
           ...cascade.descendantIds,
         ]);
-      } else if (command.type === "run.interrupt") {
-        const releasedRunIds = new Set<RunId>([command.runId]);
+      } else if (command.type === "run.interrupt" || command.type === "thread.stop") {
+        const releasedRunIds = new Set<RunId>(
+          command.type === "run.interrupt" ? [command.runId] : [],
+        );
         for (const { event } of committed.storedEvents) {
           if (
             event.type === "run.updated" &&

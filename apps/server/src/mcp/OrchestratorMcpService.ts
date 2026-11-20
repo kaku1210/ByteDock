@@ -3342,6 +3342,34 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(threadManagementFailure));
         }
+        const parentTransfers = yield* threadManagement
+          .getThreadRecords(scope.thread.threadId, ["contextTransfers"])
+          .pipe(Effect.mapError(threadManagementFailure));
+        const cancelledSourceIds = new Set<ThreadId>(subtreeThreadIds);
+        for (const transfer of parentTransfers.contextTransfers ?? []) {
+          if (
+            transfer.type !== "merge_back" ||
+            transfer.targetThreadId !== scope.thread.threadId ||
+            transfer.status !== "pending" ||
+            !cancelledSourceIds.has(transfer.sourceThreadId)
+          ) {
+            continue;
+          }
+          yield* threadManagement
+            .dispatch({
+              type: "thread.merge_back.revoke",
+              commandId: stableCommandId({
+                scope,
+                requestKey: key,
+                operation: `cancel-task-merge-back:${transfer.id}`,
+              }),
+              threadId: scope.thread.threadId,
+              transferId: transfer.id,
+              createdBy: "agent",
+              creationSource: "mcp",
+            })
+            .pipe(Effect.ignore);
+        }
       });
       // Checked above; a user raising one of these threads meanwhile is
       // caught again under that thread's lock, which leaves it running.

@@ -237,7 +237,10 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
             runningTerminalIds,
             closingTerminalIds: activeThreadRef ? closingTerminalIds(activeThreadRef) : [],
           });
-    const targetWorktreePath = options?.worktreePath ?? activeThread.worktreePath ?? null;
+    const targetWorktreePath =
+      options?.worktreePath !== undefined
+        ? options.worktreePath
+        : (activeThread.worktreePath ?? null);
 
     setTerminalUiLaunchContext({
       threadId: activeThreadId,
@@ -318,7 +321,19 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   };
   const runProjectScriptStable = useStableCallback(runProjectScript);
 
-  const runShellCommand = (command: string) => {
+  const runShellCommand = (
+    command: string,
+    location?: {
+      readonly cwd?: string | undefined;
+      readonly worktreePath?: string | null | undefined;
+    },
+  ) => {
+    const currentCwd = gitCwd ?? activeProject?.workspaceRoot;
+    const currentWorktreePath = activeThread?.worktreePath ?? null;
+    const targetsDifferentLocation =
+      location !== undefined &&
+      ((location.cwd !== undefined && location.cwd !== currentCwd) ||
+        (location.worktreePath !== undefined && location.worktreePath !== currentWorktreePath));
     void runProjectScript(
       {
         id: "chat-code-block",
@@ -327,7 +342,13 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
         icon: "play",
         runOnWorktreeCreate: false,
       },
-      { rememberAsLastInvoked: false, shellHistory: "preserve" },
+      {
+        rememberAsLastInvoked: false,
+        shellHistory: "preserve",
+        ...(location?.cwd !== undefined ? { cwd: location.cwd } : {}),
+        ...(location?.worktreePath !== undefined ? { worktreePath: location.worktreePath } : {}),
+        ...(targetsDifferentLocation ? { preferNewTerminal: true } : {}),
+      },
     );
   };
   const runShellCommandStable = useStableCallback(runShellCommand);

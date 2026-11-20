@@ -19,15 +19,24 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
-function makeTestLayer(name: string) {
+interface CapturedTurn {
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly model: string;
+  readonly text: string;
+}
+
+function makeTestLayer(name: string, options?: { readonly runEffectWorker?: boolean }) {
   const driver = ProviderDriverKind.make("codex");
   const instanceId = ProviderInstanceId.make(driver);
   const modelSelection = { instanceId, model: "model-alpha" };
+  const startedTurns: Array<CapturedTurn> = [];
 
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
@@ -68,7 +77,15 @@ function makeTestLayer(name: string) {
             }),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           forkThread: () => Effect.die(new Error("forkThread not expected")),
-          startTurn: () => Effect.void,
+          startTurn: (turn) =>
+            Effect.sync(() => {
+              startedTurns.push({
+                threadId: turn.threadId,
+                runId: turn.runId,
+                model: turn.modelSelection.model,
+                text: turn.message.text,
+              });
+            }),
           steerTurn: () => Effect.void,
           interruptTurn: () => Effect.void,
           respondToRuntimeRequest: () => Effect.void,
@@ -82,9 +99,11 @@ function makeTestLayer(name: string) {
     driver,
     instanceId,
     modelSelection,
+    startedTurns,
     layer: ProviderReplayHarness.layerWithRegistry(
       { name },
       ProviderAdapterRegistry.layerFromAdapters([adapter]),
+      options,
     ),
   };
 }
@@ -776,9 +795,487 @@ describe("Subtask active reporting & delegation lifecycle (Acceptance Scenarios 
         assert.isDefined(postSettleRun);
         assert.isUndefined(postSettleRun!.delegatedTaskId);
 
+        // Complete the post-settlement human run in AA and run recovery + drain:
+        // parent A MUST NOT receive any new auto-wake run or follow-up subagent card!
+        const parentRunsBeforePostSettleComplete = (yield* orchestrator.getThreadProjection(
+          parentId,
+        )).runs.length;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:child-run-3-done"),
+              type: "run.updated",
+              threadId: childId,
+              runId: postSettleRun!.id,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                ...postSettleRun!,
+                status: "completed",
+                startedAt: now,
+                completedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:child-run-3-answer"),
+              type: "turn-item.updated",
+              threadId: childId,
+              runId: postSettleRun!.id,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: TurnItemId.make("ti:child-run-3-answer"),
+                threadId: childId,
+                runId: postSettleRun!.id,
+                nodeId: postSettleRun!.rootNodeId,
+                providerThreadId: childPtId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 20,
+                status: "completed",
+                title: null,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                type: "assistant_message",
+                messageId: MessageId.make("msg:child-run-3-answer"),
+                text: "Post-settlement human follow-up findings.",
+                streaming: false,
+              },
+            },
+          ],
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+
         const parentAfterPostSettle = yield* orchestrator.getThreadProjection(parentId);
-        // No new follow-up subagent card was created on parent A!
         assert.equal(parentAfterPostSettle.subagents.length, 1);
+        assert.equal(parentAfterPostSettle.runs.length, parentRunsBeforePostSettleComplete);
+
+        // Explicit report and explicit Bring back from that post-settlement run DO flow back to A.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:post-settlement-explicit-report-s7"),
+          threadId: parentId,
+          senderThreadId: childId,
+          childReport: {
+            childThreadId: childId,
+            childRunId: postSettleRun!.id,
+            reportKind: "final",
+            resultVersion: 1,
+          },
+          messageId: MessageId.make("msg:post-settlement-explicit-report-s7"),
+          text: "Explicit report from post-settlement follow-up",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.merge_back",
+          commandId: CommandId.make("cmd:post-settlement-bring-back-s7"),
+          sourceThreadId: childId,
+          targetThreadId: parentId,
+          sourcePoint: { type: "run", runId: postSettleRun!.id },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        const parentAfterExplicitFlowBack = yield* orchestrator.getThreadProjection(parentId);
+        assert.equal(
+          parentAfterExplicitFlowBack.runs.length,
+          parentRunsBeforePostSettleComplete + 1,
+        );
+        assert.isDefined(
+          parentAfterExplicitFlowBack.messages.find(
+            (m) => m.id === MessageId.make("msg:post-settlement-explicit-report-s7"),
+          ),
+        );
+        assert.isDefined(
+          parentAfterExplicitFlowBack.contextTransfers.find(
+            (t) =>
+              t.type === "merge_back" &&
+              t.sourceThreadId === childId &&
+              t.sourcePoint.runId === postSettleRun!.id &&
+              t.status === "pending",
+          ),
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "dequeues queued A -> B child reports using parent's newly switched model when parent becomes idle (Scenario 2)",
+    () => {
+      const { instanceId, modelSelection, startedTurns, layer } = makeTestLayer(
+        "subtask-reporting-model-switch-dequeue",
+        { runEffectWorker: false },
+      );
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projectId = ProjectId.make("project:report-s2-model");
+        const parentId = ThreadId.make("thread:parent-s2-model");
+        const childAId = ThreadId.make("thread:child-a-s2-model");
+        const childBId = ThreadId.make("thread:child-b-s2-model");
+        const switchedModel = { instanceId, model: "model-beta" };
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:s2m:create-parent"),
+          threadId: parentId,
+          projectId,
+          title: "Coordinator Model Switch",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // Start active run 1 on parent so incoming reports queue behind it.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:s2m:parent-run-1"),
+          threadId: parentId,
+          messageId: MessageId.make("msg:s2m:parent-run-1"),
+          text: "Parent initial busy turn",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        assert.equal(startedTurns.length, 1);
+        assert.equal(startedTurns[0]!.model, "model-alpha");
+
+        for (const [key, childId] of [
+          ["a", childAId],
+          ["b", childBId],
+        ] as const) {
+          yield* orchestrator.dispatch({
+            type: "thread.fork",
+            commandId: CommandId.make(`cmd:s2m:fork-${key}`),
+            sourceThreadId: parentId,
+            targetThreadId: childId,
+            sourcePoint: { type: "latest_stable" },
+            subtask: true,
+            title: `Child ${key.toUpperCase()}`,
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+
+        // Queue report A then report B while parent is busy.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:s2m:report-a"),
+          threadId: parentId,
+          senderThreadId: childAId,
+          childReport: {
+            childThreadId: childAId,
+            childRunId: RunId.make("run:s2m:child-a-1"),
+            reportKind: "final",
+            resultVersion: 0,
+          },
+          messageId: MessageId.make("msg:s2m:report-a"),
+          text: "REPORT_A_AFTER_SWITCH",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:s2m:report-b"),
+          threadId: parentId,
+          senderThreadId: childBId,
+          childReport: {
+            childThreadId: childBId,
+            childRunId: RunId.make("run:s2m:child-b-1"),
+            reportKind: "final",
+            resultVersion: 0,
+          },
+          messageId: MessageId.make("msg:s2m:report-b"),
+          text: "REPORT_B_AFTER_SWITCH",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // Switch parent thread's model BEFORE the queued reports dequeue.
+        yield* orchestrator.dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make("cmd:s2m:switch-model"),
+          threadId: parentId,
+          modelSelection: switchedModel,
+        });
+
+        const completeActiveRun = (evPrefix: string) =>
+          Effect.gen(function* () {
+            const proj = yield* orchestrator.getThreadProjection(parentId);
+            const active = proj.runs.find(
+              (r) => r.status === "running" || r.status === "starting" || r.status === "waiting",
+            );
+            assert.isDefined(active);
+            const attempt = proj.attempts.find((a) => a.id === active!.activeAttemptId);
+            const node = proj.nodes.find((n) => n.id === active!.rootNodeId);
+            assert.isDefined(attempt);
+            assert.isDefined(node);
+            const doneAt = yield* DateTime.now;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`ev:s2m:${evPrefix}:run`),
+                  type: "run.updated",
+                  threadId: parentId,
+                  runId: active!.id,
+                  nodeId: node!.id,
+                  providerInstanceId: active!.providerInstanceId,
+                  occurredAt: doneAt,
+                  payload: { ...active!, status: "completed", completedAt: doneAt },
+                },
+                {
+                  id: EventId.make(`ev:s2m:${evPrefix}:att`),
+                  type: "run-attempt.updated",
+                  threadId: parentId,
+                  runId: active!.id,
+                  nodeId: node!.id,
+                  providerInstanceId: active!.providerInstanceId,
+                  occurredAt: doneAt,
+                  payload: { ...attempt!, status: "completed", completedAt: doneAt },
+                },
+                {
+                  id: EventId.make(`ev:s2m:${evPrefix}:node`),
+                  type: "node.updated",
+                  threadId: parentId,
+                  runId: active!.id,
+                  nodeId: node!.id,
+                  providerInstanceId: active!.providerInstanceId,
+                  occurredAt: doneAt,
+                  payload: { ...node!, status: "completed", completedAt: doneAt },
+                },
+              ],
+            });
+            yield* orchestrator.resumeQueuedRuns;
+            yield* worker.drain();
+          });
+
+        // Finish parent run 1 -> report A dequeues with switched model-beta!
+        yield* completeActiveRun("r1");
+        assert.equal(startedTurns.length, 2);
+        assert.include(startedTurns[1]!.text, "REPORT_A_AFTER_SWITCH");
+        assert.equal(startedTurns[1]!.model, "model-beta");
+
+        // Finish report A run -> report B dequeues with switched model-beta!
+        yield* completeActiveRun("r2");
+        assert.equal(startedTurns.length, 3);
+        assert.include(startedTurns[2]!.text, "REPORT_B_AFTER_SWITCH");
+        assert.equal(startedTurns[2]!.model, "model-beta");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "suppresses pending delegated completion auto-wake when an explicit final child report arrives first (Scenario 2 reverse dedup)",
+    () => {
+      const { driver, instanceId, modelSelection, startedTurns, layer } = makeTestLayer(
+        "subtask-reporting-reverse-dedup",
+        { runEffectWorker: false },
+      );
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const projectId = ProjectId.make("project:report-s2-rev");
+        const parentId = ThreadId.make("thread:parent-s2-rev");
+        const childId = ThreadId.make("thread:child-s2-rev");
+        const parentRun1 = RunId.make("run:parent-s2-rev-1");
+        const parentRootNodeId = NodeId.make("node:parent-s2-rev-root");
+        const taskId = NodeId.make("node:del-task-s2-rev");
+        const parentPtId = ProviderThreadId.make("pt:parent-s2-rev");
+        const childPtId = ProviderThreadId.make("pt:child-s2-rev");
+        const childRun1 = RunId.make("run:child-s2-rev-1");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:s2r:create-parent"),
+          threadId: parentId,
+          projectId,
+          title: "Parent Reverse Dedup",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // Seed parent with a completed AI delegated task whose completionDelivery is still pending.
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:s2r:parent-pt"),
+              type: "provider-thread.updated",
+              threadId: parentId,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: parentPtId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: parentId,
+                ownerNodeId: parentRootNodeId,
+                nativeThreadRef: { driver, nativeId: "native:parent-s2-rev", strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:s2r:parent-run"),
+              type: "run.created",
+              threadId: parentId,
+              runId: parentRun1,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: parentRun1,
+                threadId: parentId,
+                ordinal: 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: parentPtId,
+                userMessageId: MessageId.make("msg:s2r:parent-1"),
+                rootNodeId: parentRootNodeId,
+                activeAttemptId: RunAttemptId.make("att:s2r:parent-1"),
+                status: "completed",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("ev:s2r:subagent"),
+              type: "subagent.updated",
+              threadId: parentId,
+              runId: parentRun1,
+              nodeId: taskId,
+              driver,
+              occurredAt: now,
+              payload: {
+                id: taskId,
+                threadId: parentId,
+                runId: parentRun1,
+                parentNodeId: parentRootNodeId,
+                origin: "app_owned",
+                createdBy: "agent",
+                driver,
+                providerInstanceId: instanceId,
+                providerThreadId: childPtId,
+                childThreadId: childId,
+                nativeTaskRef: null,
+                model: modelSelection.model,
+                modelSelection,
+                prompt: "Delegated task A",
+                title: "Delegated A",
+                completionWake: "always",
+                completionDelivery: { state: "pending", observedByRunId: null },
+                status: "completed",
+                result: "Delegated task A completed result",
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:s2r:child-thread"),
+              type: "thread.created",
+              threadId: childId,
+              occurredAt: now,
+              payload: {
+                id: childId,
+                projectId,
+                title: "Delegated A",
+                providerInstanceId: instanceId,
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: childPtId,
+                lineage: {
+                  parentThreadId: parentId,
+                  relationshipToParent: "subagent",
+                  rootThreadId: parentId,
+                },
+                forkedFrom: { type: "node", nodeId: taskId },
+                createdBy: "agent",
+                creationSource: "mcp",
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+                snoozedUntil: null,
+                snoozedAt: null,
+                deletedAt: null,
+              },
+            },
+          ],
+        });
+
+        // Explicit final child report arrives BEFORE delegated completion auto-wake fires.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:s2r:explicit-final-first"),
+          threadId: parentId,
+          senderThreadId: childId,
+          childReport: {
+            childThreadId: childId,
+            childRunId: childRun1,
+            reportKind: "final",
+            resultVersion: 0,
+          },
+          messageId: MessageId.make("msg:s2r:explicit-final-first"),
+          text: "Explicit final report for Delegated A",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // Now run delegated recovery + worker drain (which would otherwise fire an auto-wake).
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* worker.drain();
+
+        const parentAfter = yield* orchestrator.getThreadProjection(parentId);
+        const taskAfter = parentAfter.subagents.find((s) => s.id === taskId);
+        assert.equal(taskAfter?.completionDelivery?.state, "acknowledged");
+        assert.isNotNull(taskAfter?.completionDelivery?.observedByRunId);
+
+        // Parent only processed that result version ONCE (run 1 initial + 1 explicit report run = 2 total runs;
+        // 1 started turn total, zero duplicate auto-wake!).
+        assert.equal(parentAfter.runs.length, 2);
+        assert.equal(startedTurns.length, 1);
+        assert.include(startedTurns[0]!.text, "Explicit final report for Delegated A");
       }).pipe(Effect.provide(layer));
     },
   );

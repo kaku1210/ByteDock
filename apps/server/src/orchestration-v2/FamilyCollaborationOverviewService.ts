@@ -1,6 +1,7 @@
 import {
   FamilyCollaborationOverviewError,
   IsoDateTime,
+  isOrchestrationV2WorkActive,
   isTaskChildLineage,
   type FamilyCollaborationBlockingKind,
   type FamilyCollaborationDeliveryStatus,
@@ -1006,9 +1007,15 @@ export const layer: Layer.Layer<
               ? checkoutKey === effectiveCheckoutKey(parentShell.worktreePath)
               : false;
 
+        const hasActiveDelegation =
+          parentSubagent !== null && isOrchestrationV2WorkActive(parentSubagent.status);
+        const hasUnheldQueuedRun = queuedRuns.some((run) => run.queueHeld !== true);
         const canStop =
           shell.archivedAt === null &&
-          (activeRun !== null || queuedRuns.length > 0 || shell.activityRunStatus !== null);
+          (activeRun !== null ||
+            hasUnheldQueuedRun ||
+            shell.activityRunStatus !== null ||
+            hasActiveDelegation);
 
         const settled = shell.settledOverride === "settled" || shell.settledAt !== null;
 

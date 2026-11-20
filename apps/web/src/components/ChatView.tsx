@@ -213,7 +213,11 @@ import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { toastManager } from "./ui/toast";
 import { projectScriptIdFromCommand } from "~/projectScripts";
 import { newMessageId } from "~/lib/utils";
-import { isInSideChatPane, type SideChatParentPanel } from "~/lib/sideChatPane";
+import {
+  isInSideChatPane,
+  type SideChatParentPanel,
+  type SideChatShellLocation,
+} from "~/lib/sideChatPane";
 import {
   NO_PROVIDER_MODEL_SELECTION,
   providerInstanceEntriesFor,
@@ -2918,10 +2922,12 @@ export default function ChatView(props: ChatViewProps) {
     },
   });
   // A maximized panel covers the terminal drawer the command runs in.
-  const runSideChatShellCommandStable = useStableCallback((command: string) => {
-    if (activeThreadRef) useRightPanelStore.getState().setMaximized(activeThreadRef, false);
-    runShellCommandStable(command);
-  });
+  const runSideChatShellCommandStable = useStableCallback(
+    (command: string, location?: SideChatShellLocation) => {
+      if (activeThreadRef) useRightPanelStore.getState().setMaximized(activeThreadRef, false);
+      runShellCommandStable(command, location);
+    },
+  );
   // Main-thread surfaces show this reason; `/side` sent anyway gets it as a toast.
   const sideChatDisabledReason =
     activeThread?.lineage.sideChat === true
@@ -3570,7 +3576,15 @@ export default function ChatView(props: ChatViewProps) {
                   }
                   onReplyToResponse={replyToResponseStable}
                   {...(activeProject
-                    ? { onRunShellCommand: parentPanel?.runShellCommand ?? runShellCommandStable }
+                    ? {
+                        onRunShellCommand: parentPanel
+                          ? (command: string) =>
+                              parentPanel.runShellCommand(command, {
+                                cwd: gitCwd ?? activeProject.workspaceRoot,
+                                worktreePath: activeThread.worktreePath ?? null,
+                              })
+                          : runShellCommandStable,
+                      }
                     : {})}
                   isWorking={isWorking}
                   runlessWorkActive={runlessWorkStartedAt !== null}

@@ -35,6 +35,8 @@ import {
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadStreamItem,
   type OrchestrationV2TurnItem,
+  type FamilyCollaborationGetOverviewInput,
+  type FamilyCollaborationOverview,
   type SubtaskEscalationCreateDraftInput,
   type SubtaskEscalationCreateDraftResult,
   type TerminalMetadataStreamEvent,
@@ -246,8 +248,11 @@ export interface FakeThread {
   readonly modelSelection?: ModelSelection;
   /** The first is the thread's active provider thread. */
   readonly providerThreads?: ReadonlyArray<OrchestrationV2ProviderThread>;
+  readonly worktreePath?: string | null;
+  readonly branch?: string | null;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly subagents?: OrchestrationV2ThreadProjection["subagents"];
   readonly runtimeRequests?: OrchestrationV2ThreadProjection["runtimeRequests"];
   readonly contextTransfers?: OrchestrationV2ThreadProjection["contextTransfers"];
 }
@@ -333,8 +338,8 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     modelSelection,
     runtimeMode: "full-access",
     interactionMode: "default",
-    branch: "main",
-    worktreePath: null,
+    branch: thread.branch ?? "main",
+    worktreePath: thread.worktreePath ?? null,
     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
     lineage: {
       rootThreadId,
@@ -404,7 +409,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
     runs: [...thread.runs],
     attempts: [],
     nodes: [],
-    subagents: [],
+    subagents: [...(thread.subagents ?? [])],
     providerSessions: [],
     providerThreads: [...(thread.providerThreads ?? [])],
     providerTurns: [],
@@ -649,6 +654,10 @@ export function installFakeEnvironment(
     readonly holdCommand?: (command: OrchestrationV2Command) => boolean;
     readonly providers?: ReadonlyArray<unknown>;
     readonly providerInstances?: ServerConfig["settings"]["providerInstances"];
+    readonly familyCollaborationOverview?: (
+      input: FamilyCollaborationGetOverviewInput,
+    ) => Effect.Effect<FamilyCollaborationOverview>;
+    readonly rpcHandlers?: Readonly<Record<string, (input: never) => unknown>>;
   },
 ): Disposable {
   threads = fixtures;
@@ -701,6 +710,16 @@ export function installFakeEnvironment(
     };
     handlers[WS_METHODS.threadPromptSuggestion] = suggestPrompt;
   }
+  if (options?.familyCollaborationOverview) {
+    handlers[WS_METHODS.familyCollaborationGetOverview] = options.familyCollaborationOverview;
+  }
+  const registeredExtraHandlers: Array<string> = [];
+  if (options?.rpcHandlers) {
+    for (const [method, handler] of Object.entries(options.rpcHandlers)) {
+      handlers[method] = handler as (...args: ReadonlyArray<never>) => unknown;
+      registeredExtraHandlers.push(method);
+    }
+  }
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
     if (url.origin !== window.location.origin) return realFetch(input, init);
@@ -731,6 +750,10 @@ export function installFakeEnvironment(
       pendingDispatches = [];
       pendingAssetUrls = [];
       delete handlers[WS_METHODS.threadPromptSuggestion];
+      delete handlers[WS_METHODS.familyCollaborationGetOverview];
+      for (const method of registeredExtraHandlers) {
+        delete handlers[method];
+      }
     },
   };
 }

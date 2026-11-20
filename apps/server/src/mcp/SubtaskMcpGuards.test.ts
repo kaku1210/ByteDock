@@ -26,6 +26,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -41,6 +42,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as SharedWorktreeCoordinationService from "../orchestration-v2/SharedWorktreeCoordinationService.ts";
+import * as SubtaskEscalationStore from "../orchestration-v2/SubtaskEscalationStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -1517,5 +1519,249 @@ describe("Subtask MCP guards, children scope, privilege-safe inbox, and causatio
           }).pipe(Effect.provide(env.layer));
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "allows AI-delegated L1 to delegate L2 via MCP delegate_task and hard-rejects L2 -> L3 delegation (Scenario 1)",
+    () => {
+      const projectId = ProjectId.make("project:mcp-depth-cap");
+      const capturedTurns: Array<CapturedTurn> = [];
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const l0 = ThreadId.make("thread:mcp-depth-l0");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:depth:l0"),
+          projectId,
+          threadId: l0,
+          title: "Depth Cap L0",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:depth:l0-run"),
+          threadId: l0,
+          messageId: MessageId.make("msg:depth:l0-run"),
+          text: "Delegate AI L1",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // L0 -> AI L1 via delegate_task succeeds.
+        const delL1Raw = yield* callTool(l0, "delegate_task", {
+          task: "Work on L1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1Raw.isError, true);
+        const delL1 = yield* decodeDelegateTaskResult(delL1Raw.structuredContent);
+        if (delL1.childThreadId === null) {
+          assert.fail("Expected AI L1 childThreadId");
+        }
+        yield* worker.drain();
+
+        // AI L1 -> AI L2 via delegate_task succeeds with parentThreadId=AI L1, rootThreadId=L0.
+        const delL2Raw = yield* callTool(delL1.childThreadId, "delegate_task", {
+          task: "Work on L2",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL2Raw.isError, true);
+        const delL2 = yield* decodeDelegateTaskResult(delL2Raw.structuredContent);
+        if (delL2.childThreadId === null) {
+          assert.fail("Expected AI L2 childThreadId");
+        }
+        yield* worker.drain();
+
+        const l2Proj = yield* orchestrator.getThreadProjection(delL2.childThreadId);
+        assert.equal(l2Proj.thread.lineage.parentThreadId, delL1.childThreadId);
+        assert.equal(l2Proj.thread.lineage.rootThreadId, l0);
+        assert.equal(l2Proj.thread.lineage.relationshipToParent, "subagent");
+
+        // AI L2 -> L3 via delegate_task MUST be hard-rejected by server!
+        const delL3Raw = yield* callTool(delL2.childThreadId, "delegate_task", {
+          task: "Illegal L3 delegation",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.equal(delL3Raw.isError, true);
+        const errText = String(declaredFailure(delL3Raw)?.message ?? "");
+        assert.isTrue(
+          errText.toLowerCase().includes("depth") || errText.includes("L2"),
+          `Expected depth cap error message, got: ${errText}`,
+        );
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "task_cancel synchronously revokes pending merge_back, cancels pending escalation, disposes delivery, and clears parent wait without deadlock (Scenario 6)",
+    () => {
+      const projectId = ProjectId.make("project:mcp-cancel-cleanup");
+      const capturedTurns: Array<CapturedTurn> = [];
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const escalationStore = yield* SubtaskEscalationStore.SubtaskEscalationStore;
+        const l0 = ThreadId.make("thread:mcp-cancel-l0");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:cancel:l0"),
+          projectId,
+          threadId: l0,
+          title: "Cancel Cleanup L0",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:cancel:l0-run"),
+          threadId: l0,
+          messageId: MessageId.make("msg:cancel:l0-run"),
+          text: "Delegate running child",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // L0 delegates running AI L1.
+        const delRaw = yield* callTool(l0, "delegate_task", {
+          task: "Long running child task",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delRaw.isError, true);
+        const del = yield* decodeDelegateTaskResult(delRaw.structuredContent);
+        if (del.childThreadId === null) {
+          assert.fail("Expected childThreadId");
+        }
+        const childId = del.childThreadId;
+        yield* worker.drain();
+
+        // Queue a mid-task adjustment (run 2) on the child so the delegation stays open & running
+        // after run 1 completes, then stage a pending merge_back from completed run 1 onto L0
+        // and raise a pending escalation onto L0.
+        const childProjBefore = yield* orchestrator.getThreadProjection(childId);
+        const childRun1 = childProjBefore.runs[0]!;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:cancel:child-run-2"),
+          threadId: childId,
+          messageId: MessageId.make("msg:cancel:child-run-2"),
+          text: "Continue with step 2",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* completeRun({
+          threadId: childId,
+          runId: childRun1.id,
+          replyText: "Step 1 partial conclusion.",
+        });
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        yield* orchestrator.dispatch({
+          type: "thread.merge_back",
+          commandId: CommandId.make("cmd:cancel:stage-merge-back"),
+          sourceThreadId: childId,
+          targetThreadId: l0,
+          sourcePoint: { type: "run", runId: childRun1.id },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        const escReqId = SubtaskEscalationRequestId.make("esc:cancel:pending-1");
+        const escRaw = yield* callTool(childId, "t3_subtask_escalate", {
+          requestId: escReqId,
+          task: "Pending sibling request before cancel",
+        });
+        assert.notEqual(escRaw.isError, true);
+
+        const escBefore = yield* escalationStore.getById(escReqId);
+        assert.isTrue(Option.isSome(escBefore) && escBefore.value.status === "pending");
+        const l0BeforeCancel = yield* orchestrator.getThreadProjection(l0);
+        assert.equal(
+          l0BeforeCancel.contextTransfers.filter(
+            (t) =>
+              t.type === "merge_back" && t.sourceThreadId === childId && t.status === "pending",
+          ).length,
+          1,
+        );
+
+        // Parent cancels the running delegated task via MCP task_cancel.
+        const cancelRaw = yield* callTool(l0, "task_cancel", {
+          taskId: del.taskId,
+          reason: "Parent no longer needs this subtask",
+        });
+        assert.notEqual(cancelRaw.isError, true);
+        yield* worker.drain();
+
+        // 1. Pending escalation from cancelled child is synchronously cancelled.
+        const escAfter = yield* escalationStore.getById(escReqId);
+        assert.isTrue(Option.isSome(escAfter) && escAfter.value.status === "cancelled");
+
+        // 2. Pending merge_back from cancelled child on L0 is synchronously revoked/superseded.
+        const l0AfterCancel = yield* orchestrator.getThreadProjection(l0);
+        const remainingPendingMergeBacks = l0AfterCancel.contextTransfers.filter(
+          (t) => t.type === "merge_back" && t.sourceThreadId === childId && t.status === "pending",
+        );
+        assert.equal(remainingPendingMergeBacks.length, 0);
+
+        // 3. Delegated task completionDelivery is disposed so parent does not deadlock/re-wake on it.
+        const cancelledTask = l0AfterCancel.subagents.find((s) => s.id === del.taskId);
+        assert.isDefined(cancelledTask);
+        assert.equal(cancelledTask!.completionDelivery?.state, "disposed");
+
+        // 4. task_status confirms terminal cancellation and parent has no lingering delegated wake wait.
+        const statusRaw = yield* callTool(l0, "task_status", {
+          taskId: del.taskId,
+        });
+        assert.notEqual(statusRaw.isError, true);
+        const statusText = JSON.stringify(statusRaw.structuredContent ?? statusRaw.content);
+        assert.isTrue(
+          statusText.includes("cancelled") || statusText.includes("interrupted"),
+          `Expected cancelled/interrupted status, got: ${statusText}`,
+        );
+        assert.isTrue(
+          l0AfterCancel.runs.every((r) => r.delegatedCompletion?.delivery == null),
+          "Parent should have no pending delegated completion delivery after task_cancel",
+        );
+      }).pipe(Effect.provide(env.layer));
+    },
   );
 });

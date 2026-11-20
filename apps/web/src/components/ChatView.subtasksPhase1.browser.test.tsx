@@ -2,10 +2,18 @@ import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
-import { ContextTransferId, RunId } from "@t3tools/contracts";
+import {
+  ContextTransferId,
+  ORCHESTRATION_V2_WS_METHODS,
+  RunId,
+  TurnItemId,
+  WS_METHODS,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -21,6 +29,7 @@ import {
   type FakeDriver,
   type FakeThread,
   addEnvironmentThread,
+  assistantItem,
   dispatchedCommands,
   installFakeEnvironment,
   threadWithHistory,
@@ -458,4 +467,231 @@ it("warns about subtasks, side chats, and pending bring-backs before cascade-del
     expect(useComposerDraftStore.getState().getComposerDraft(l1Ref)).toBeNull();
     expect(useComposerDraftStore.getState().getComposerDraft(l2Ref)).toBeNull();
   });
+});
+
+it("opens L0 root-scoped side chat from an isolated-worktree L2, blocks nesting, and targets Side Chat checkout for terminal and tool diff (Scenario 4)", async () => {
+  using _details = pinThreadDetailsOpen();
+  const l0: FakeThread = {
+    ...threadWithHistory("s4-l0", 1),
+    title: "Root Checkout Task",
+    worktreePath: null,
+  };
+  const l1: FakeThread = {
+    ...threadWithHistory("s4-l1", 1),
+    subtaskOf: l0.id,
+    rootThreadId: l0.id,
+  };
+  const l2: FakeThread = {
+    ...threadWithHistory("s4-l2", 1),
+    subtaskOf: l1.id,
+    rootThreadId: l0.id,
+    worktreePath: "/workspace/wt-l2",
+    branch: "feat/l2-isolated",
+  };
+
+  const baseSideChat = threadWithHistory("s4-side-chat", 1);
+  const sideRunId = RunId.make(`${baseSideChat.id}-run-0`);
+  const sideFileChangeId = TurnItemId.make(`${baseSideChat.id}-file-change-0`);
+  const sideFileChangeItem: OrchestrationV2TurnItem = {
+    id: sideFileChangeId,
+    threadId: baseSideChat.id,
+    runId: sideRunId,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 2,
+    status: "completed",
+    title: null,
+    startedAt: AT,
+    completedAt: AT,
+    updatedAt: AT,
+    type: "file_change",
+    fileName: "/workspace/render/src/root-helper.ts",
+    additions: 1,
+    deletions: 1,
+    oldStr: "export const a = 1;\n",
+    newStr: "export const a = 2;\n",
+    diffStr:
+      "diff --git a/src/root-helper.ts b/src/root-helper.ts\n--- a/src/root-helper.ts\n+++ b/src/root-helper.ts\n@@ -1 +1 @@\n-export const a = 1;\n+export const a = 2;\n",
+  };
+  const rootSideChat: FakeThread = {
+    ...baseSideChat,
+    title: "Root Side Chat",
+    sideChatOf: l0.id,
+    rootThreadId: l0.id,
+    worktreePath: null,
+    items: [
+      baseSideChat.items[0]!,
+      assistantItem(
+        baseSideChat.id,
+        sideRunId,
+        `${baseSideChat.id}-assistant-0`,
+        1,
+        "Side chat root insight.\n\n```sh\necho side-chat-check\n```",
+      ),
+      sideFileChangeItem,
+    ],
+  };
+
+  const terminalOpenCalls: Array<{
+    readonly threadId: string;
+    readonly cwd: string;
+    readonly worktreePath?: string | null;
+  }> = [];
+  const getTurnItemCalls: Array<{
+    readonly threadId: string;
+    readonly itemId: string;
+  }> = [];
+
+  using _environment = installFakeEnvironment([l0, l1, l2, rootSideChat], {
+    acceptCommands: true,
+    rpcHandlers: {
+      [WS_METHODS.terminalOpen]: (input: {
+        readonly threadId: string;
+        readonly terminalId: string;
+        readonly cwd: string;
+        readonly worktreePath?: string | null;
+      }) => {
+        terminalOpenCalls.push({
+          threadId: input.threadId,
+          cwd: input.cwd,
+          worktreePath: input.worktreePath ?? null,
+        });
+        return Effect.succeed({
+          threadId: input.threadId,
+          terminalId: input.terminalId,
+          cwd: input.cwd,
+          worktreePath: input.worktreePath ?? null,
+          status: "running",
+          pid: 4242,
+          history: "",
+          exitCode: null,
+          exitSignal: null,
+          label: "Terminal",
+          updatedAt: "2026-03-17T19:15:00.000Z",
+        });
+      },
+      [WS_METHODS.terminalWrite]: () => Effect.void,
+      [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input: {
+        readonly threadId: string;
+        readonly itemId: string;
+      }) => {
+        getTurnItemCalls.push({ threadId: input.threadId, itemId: input.itemId });
+        return Effect.succeed({
+          item: sideFileChangeItem,
+        });
+      },
+    },
+  });
+  enableTestSettings();
+  await page.viewport(1400, 900);
+
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${l2.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, { router: false });
+
+  await expect.element(screen.getByText(`Answer 0 for ${l2.id}.`, { exact: true })).toBeVisible();
+
+  // 1. From L2, L0's root-scoped Side Chat appears identically to L0/L1 and opens in the right panel.
+  const sideChatRow = page.getByRole("button", { name: new RegExp(rootSideChat.title) });
+  await expect.element(sideChatRow).toBeVisible();
+  await sideChatRow.click();
+
+  const sideChatPane = document.querySelector(`[data-side-chat-pane="${rootSideChat.id}"]`);
+  expect(sideChatPane).not.toBeNull();
+  await expect.element(screen.getByText("Side chat root insight.", { exact: true })).toBeVisible();
+
+  // 2. Bring back button explicitly indicates targeting L0's next message and dispatches merge_back -> L0.
+  const bringBackButton = screen.getByRole("button", { name: "Bring back", exact: true });
+  await expect.element(bringBackButton).toBeVisible();
+  await userEvent.hover(bringBackButton);
+  await expect
+    .element(
+      page.getByText(`Adds this side chat to "${l0.title}"'s next message.`, { exact: true }),
+    )
+    .toBeVisible();
+
+  await bringBackButton.click();
+  await vi.waitFor(() =>
+    expect(
+      dispatchedCommands().filter((command) => command.type === "thread.merge_back"),
+    ).toHaveLength(1),
+  );
+  expect(
+    dispatchedCommands().find((command) => command.type === "thread.merge_back"),
+  ).toMatchObject({
+    sourceThreadId: rootSideChat.id,
+    targetThreadId: l0.id,
+  });
+
+  // 3. Inside Side Chat: cannot split a nested subtask or open a nested Side Chat.
+  await userEvent.tripleClick(screen.getByText("Side chat root insight.", { exact: true }));
+  await expect
+    .element(page.getByRole("button", { name: "Cite selection in composer" }))
+    .toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: "Split selection into subtask" }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("button", { name: "Ask in side chat" }))
+    .not.toBeInTheDocument();
+
+  // 4. Running a shell command from inside Side Chat targets Side Chat's checkout (/workspace/render),
+  // NOT L2's isolated worktree (/workspace/wt-l2).
+  const runTerminalButton = page.getByRole("button", { name: "Run in terminal" }).first();
+  await expect.element(runTerminalButton).toBeVisible();
+  await runTerminalButton.click();
+
+  await vi.waitFor(() => {
+    expect(terminalOpenCalls.length).toBeGreaterThanOrEqual(1);
+  });
+  expect(terminalOpenCalls[0]).toMatchObject({
+    cwd: "/workspace/render",
+    worktreePath: null,
+  });
+
+  // 5. Opening Side Chat's file_change diff from inside L2 resolves diff paths against Side Chat's checkout
+  // (/workspace/render/src/root-helper.ts), NOT L2's isolated worktree (/workspace/wt-l2/...).
+  const clipboardSpy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+  try {
+    const workGroupToggle = page.getByRole("button", { name: /^Worked for/ }).first();
+    await expect.element(workGroupToggle).toBeVisible();
+    await workGroupToggle.click();
+
+    const fileChangeTrigger = page.getByRole("button", { name: /Changed 1 file/ }).first();
+    await expect.element(fileChangeTrigger).toBeVisible();
+    await fileChangeTrigger.click();
+
+    // V2ItemInspector formats against Side Chat's checkout (/workspace/render -> render/src/root-helper.ts),
+    // NOT L2's isolated worktree (/workspace/wt-l2).
+    await expect
+      .element(page.getByText("render/src/root-helper.ts", { exact: true }).first())
+      .toBeVisible();
+
+    const openDiffButton = page.getByRole("button", { name: "Open diff", exact: true }).first();
+    await expect.element(openDiffButton).toBeVisible();
+    await openDiffButton.click();
+
+    await vi.waitFor(() => {
+      expect(getTurnItemCalls).toContainEqual({
+        threadId: rootSideChat.id,
+        itemId: sideFileChangeId,
+      });
+    });
+
+    const copyPathButton = page.getByRole("button", { name: "Copy file path" }).first();
+    await expect.element(copyPathButton).toBeVisible();
+    await copyPathButton.click();
+
+    await vi.waitFor(() => {
+      expect(clipboardSpy).toHaveBeenCalledWith("src/root-helper.ts");
+    });
+  } finally {
+    clipboardSpy.mockRestore();
+    useRightPanelStore.getState().close(scopeThreadRef(ENVIRONMENT_ID, l2.id));
+  }
 });

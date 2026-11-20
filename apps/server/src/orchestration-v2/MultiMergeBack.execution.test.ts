@@ -1088,4 +1088,284 @@ describe("Multi-attachment passive Bring back pool (Acceptance Scenario 3)", () 
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect(
+    "does not let an AI delegated completion auto-wake consume pending merge_back attachments in the pool",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const { driver, instanceId, modelSelection, layer } = makeControlledAdapterLayer({
+        name: "multi-merge-back-auto-wake-isolation",
+        capturedTurns,
+      });
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const projectId = ProjectId.make("project:mmb-autowake");
+        const parentId = ThreadId.make("thread:parent-mmb-autowake");
+        const sideChildId = ThreadId.make("thread:side-mmb-autowake");
+        const delegatedChildId = ThreadId.make("thread:del-mmb-autowake");
+        const parentRun1 = RunId.make("run:parent-mmb-aw-1");
+        const sideRun1 = RunId.make("run:side-mmb-aw-1");
+        const delegatedTaskId = NodeId.make("node:del-task-mmb-aw");
+        const delegatedChildPtId = ProviderThreadId.make("pt:del-mmb-autowake");
+        const delegatedChildRun1 = RunId.make("run:del-child-mmb-aw-1");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:aw:create-parent"),
+          threadId: parentId,
+          projectId,
+          title: "Parent AutoWake Pool",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* writeCompletedRun({
+          driver,
+          instanceId,
+          modelSelection,
+          threadId: parentId,
+          runId: parentRun1,
+          ordinal: 1,
+          userText: "Initial parent turn",
+          assistantText: "Initial parent reply",
+        });
+
+        // Create Side Chat and stage a pending passive merge_back onto parent.
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:aw:fork-side"),
+          sourceThreadId: parentId,
+          targetThreadId: sideChildId,
+          sourcePoint: { type: "run", runId: parentRun1 },
+          title: "Side Chat Pending Pool",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* writeCompletedRun({
+          driver,
+          instanceId,
+          modelSelection,
+          threadId: sideChildId,
+          runId: sideRun1,
+          ordinal: 1,
+          userText: "Side chat question",
+          assistantText: "SIDE_POOL_MUST_SURVIVE_AUTOWAKE",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.merge_back",
+          commandId: CommandId.make("cmd:aw:stage-merge-back"),
+          sourceThreadId: sideChildId,
+          targetThreadId: parentId,
+          sourcePoint: { type: "run", runId: sideRun1 },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // Seed an AI delegated task on parentRun1 whose child run just completed with completionWake: "always".
+        const parentProj = yield* orchestrator.getThreadProjection(parentId);
+        const parentRootNodeId = parentProj.runs.find((r) => r.id === parentRun1)!.rootNodeId!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:aw:parent-subagent"),
+              type: "subagent.updated",
+              threadId: parentId,
+              runId: parentRun1,
+              nodeId: delegatedTaskId,
+              driver,
+              occurredAt: now,
+              payload: {
+                id: delegatedTaskId,
+                threadId: parentId,
+                runId: parentRun1,
+                parentNodeId: parentRootNodeId,
+                origin: "app_owned",
+                createdBy: "agent",
+                driver,
+                providerInstanceId: instanceId,
+                providerThreadId: delegatedChildPtId,
+                childThreadId: delegatedChildId,
+                nativeTaskRef: null,
+                model: modelSelection.model,
+                modelSelection,
+                prompt: "Background delegated task",
+                title: "Delegated Worker",
+                completionWake: "always",
+                completionDelivery: { state: "pending", observedByRunId: null },
+                status: "running",
+                result: null,
+                startedAt: now,
+                completedAt: null,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:aw:del-thread"),
+              type: "thread.created",
+              threadId: delegatedChildId,
+              occurredAt: now,
+              payload: {
+                id: delegatedChildId,
+                projectId,
+                title: "Delegated Worker",
+                providerInstanceId: instanceId,
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: delegatedChildPtId,
+                lineage: {
+                  parentThreadId: parentId,
+                  relationshipToParent: "subagent",
+                  rootThreadId: parentId,
+                },
+                forkedFrom: { type: "node", nodeId: delegatedTaskId },
+                createdBy: "agent",
+                creationSource: "mcp",
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+                snoozedUntil: null,
+                snoozedAt: null,
+                deletedAt: null,
+              },
+            },
+            {
+              id: EventId.make("ev:aw:del-pt"),
+              type: "provider-thread.updated",
+              threadId: delegatedChildId,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: delegatedChildPtId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: delegatedChildId,
+                ownerNodeId: null,
+                nativeThreadRef: { driver, nativeId: "native:del-aw", strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:aw:del-run"),
+              type: "run.created",
+              threadId: delegatedChildId,
+              runId: delegatedChildRun1,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: delegatedChildRun1,
+                threadId: delegatedChildId,
+                ordinal: 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: delegatedChildPtId,
+                userMessageId: MessageId.make("msg:del-aw-1"),
+                rootNodeId: NodeId.make("node:del-aw-1"),
+                activeAttemptId: RunAttemptId.make("att:del-aw-1"),
+                delegatedTaskId,
+                status: "completed",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("ev:aw:del-answer"),
+              type: "turn-item.updated",
+              threadId: delegatedChildId,
+              runId: delegatedChildRun1,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                id: TurnItemId.make("ti:del-aw-answer"),
+                threadId: delegatedChildId,
+                runId: delegatedChildRun1,
+                nodeId: NodeId.make("node:del-aw-1"),
+                providerThreadId: delegatedChildPtId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 2,
+                status: "completed",
+                title: null,
+                type: "assistant_message",
+                messageId: MessageId.make("msg:del-aw-answer"),
+                text: "Delegated task finished cleanly.",
+                streaming: false,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            },
+          ],
+        });
+
+        // Settle delegated task so parentRun1 gets a delegatedCompletion delivery plan,
+        // then dispatch the actual auto-wake message just as ProviderContinuationService does.
+        yield* orchestrator.recoverDelegatedTasks;
+        const parentBeforeWake = yield* orchestrator.getThreadProjection(parentId);
+        const delivery = parentBeforeWake.runs.find((r) => r.id === parentRun1)?.delegatedCompletion
+          ?.delivery;
+        assert.isNotNull(delivery);
+        assert.isDefined(delivery);
+
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:aw:delegated-wake"),
+          threadId: parentId,
+          messageId: delivery!.messageId,
+          text: "Delegated task finished cleanly.",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+          delegatedCompletion: {
+            parentRunId: parentRun1,
+            generation: delivery!.generation,
+            taskIds: delivery!.taskIds,
+          },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        yield* worker.drain();
+
+        const parentAfterWake = yield* orchestrator.getThreadProjection(parentId);
+        // Auto-wake turn actually started on parent, and did NOT inject the pending merge-back!
+        const autoWakeTurn = capturedTurns.find((t) => t.threadId === parentId);
+        assert.isDefined(autoWakeTurn);
+        assert.notInclude(autoWakeTurn!.text, "SIDE_POOL_MUST_SURVIVE_AUTOWAKE");
+
+        // Pending merge_back from Side Chat MUST remain pending & unbound!
+        const pendingMergeBack = parentAfterWake.contextTransfers.find(
+          (t) => t.type === "merge_back" && t.sourceThreadId === sideChildId,
+        );
+        assert.isDefined(pendingMergeBack);
+        assert.equal(pendingMergeBack!.status, "pending");
+        assert.isNull(pendingMergeBack!.targetRunId);
+        assert.isNull(pendingMergeBack!.consumedAt);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });

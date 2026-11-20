@@ -393,6 +393,81 @@ describe("Subtask execution lifecycle (Acceptance Scenario 1)", () => {
           }),
         );
         assert.isTrue(Exit.isFailure(l3Exit));
+
+        // Creating an L2 subtask from an AI-delegated L1 (relationshipToParent: "subagent") also succeeds,
+        // and attempting L3 from that L2 is hard rejected.
+        const aiL1Id = ThreadId.make("subtask-ai-l1");
+        const aiL1ProviderThreadId = ProviderThreadId.make("pt:ai-l1");
+        const aiL2Id = ThreadId.make("subtask-ai-l2");
+        const aiL3Id = ThreadId.make("subtask-ai-l3");
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("ev:ai-l1-thread"),
+              type: "thread.created",
+              threadId: aiL1Id,
+              occurredAt: now,
+              payload: {
+                id: aiL1Id,
+                projectId: ProjectId.make("proj:subtask"),
+                title: "AI Delegated L1",
+                providerInstanceId: instanceId,
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: aiL1ProviderThreadId,
+                lineage: {
+                  parentThreadId: rootId,
+                  relationshipToParent: "subagent",
+                  rootThreadId: rootId,
+                },
+                forkedFrom: null,
+                createdBy: "agent",
+                creationSource: "mcp",
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+                snoozedUntil: null,
+                snoozedAt: null,
+                deletedAt: null,
+              },
+            },
+          ],
+        });
+
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:split-l2-from-ai-l1"),
+          sourceThreadId: aiL1Id,
+          targetThreadId: aiL2Id,
+          sourcePoint: { type: "latest_stable" },
+          subtask: true,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const aiL2Projection = yield* orchestrator.getThreadProjection(aiL2Id);
+        assert.equal(aiL2Projection.thread.lineage.relationshipToParent, "subtask");
+        assert.equal(aiL2Projection.thread.lineage.parentThreadId, aiL1Id);
+        assert.equal(aiL2Projection.thread.lineage.rootThreadId, rootId);
+
+        const aiL3Exit = yield* Effect.exit(
+          orchestrator.dispatch({
+            type: "thread.fork",
+            commandId: CommandId.make("cmd:split-l3-from-ai-l2-rejected"),
+            sourceThreadId: aiL2Id,
+            targetThreadId: aiL3Id,
+            sourcePoint: { type: "latest_stable" },
+            subtask: true,
+            createdBy: "user",
+            creationSource: "web",
+          }),
+        );
+        assert.isTrue(Exit.isFailure(aiL3Exit));
       }).pipe(Effect.provide(layer));
     },
   );

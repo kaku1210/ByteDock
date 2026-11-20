@@ -13,9 +13,14 @@ export function isInSideChatPane(target: EventTarget | null): boolean {
  * in the parent's terminal drawer, since the embedded view hides its own. Other panel actions reach
  * the parent through `hostRightPanel`; diff selection and the drawer are not panel state.
  */
+export interface SideChatShellLocation {
+  readonly cwd?: string | undefined;
+  readonly worktreePath?: string | null | undefined;
+}
+
 export interface SideChatParentPanel {
   readonly openToolDiff: (target: ToolCallDiffTarget) => void;
-  readonly runShellCommand: (command: string) => void;
+  readonly runShellCommand: (command: string, location?: SideChatShellLocation) => void;
 }
 
 /** Opens `thread` in its tab when it is a side chat of `parentRef` or its task-tree root; false otherwise. */

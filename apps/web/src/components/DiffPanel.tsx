@@ -1,6 +1,7 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -280,11 +281,26 @@ export default function DiffPanel({
     selectThreadBranchBaseRef(state, routeThreadRef),
   );
   const toolCallSelection = diffSelection.kind === "tool-call" ? diffSelection : null;
+  const toolCallThreadRef =
+    toolCallSelection && routeThreadRef
+      ? scopeThreadRef(routeThreadRef.environmentId, toolCallSelection.threadId)
+      : null;
+  const toolCallThread = useQuietThreadShell(toolCallThreadRef);
+  const effectiveDiffCwd =
+    toolCallSelection !== null
+      ? (toolCallThread?.worktreePath ?? activeProject?.workspaceRoot ?? activeCwd)
+      : activeCwd;
+  const effectiveDiffRepositoryRoot =
+    toolCallSelection !== null && toolCallThread !== null && toolCallThread.id !== activeThread?.id
+      ? toolCallThread.worktreePath
+        ? undefined
+        : activeProject?.repositoryIdentity?.rootPath
+      : activeRepositoryRoot;
   const isGitSelection =
     diffSelection.kind === "branch" ||
     diffSelection.kind === "unstaged" ||
     diffSelection.kind === "commit";
-  const toolCallItems = useQuietThreadVisibleTurnItems(toolCallSelection ? routeThreadRef : null);
+  const toolCallItems = useQuietThreadVisibleTurnItems(toolCallThreadRef);
   const toolCallDetail = useTurnItemDetail(
     toolCallSelection && routeThreadRef
       ? {
@@ -742,8 +758,8 @@ export default function DiffPanel({
     openDiffFilePrimaryAction({
       threadRef: routeThreadRef,
       filePath,
-      activeCwd,
-      repositoryRoot: activeRepositoryRoot,
+      activeCwd: effectiveDiffCwd,
+      repositoryRoot: effectiveDiffRepositoryRoot,
       openInEditor: (targetPath) => {
         void (async () => {
           const result = await openInPreferredEditor(targetPath);
@@ -1409,8 +1425,8 @@ export default function DiffPanel({
                       {
                         environmentId: activeThread?.environmentId ?? null,
                         filePath,
-                        workspaceRoot: activeCwd,
-                        repositoryRoot: activeRepositoryRoot,
+                        workspaceRoot: effectiveDiffCwd,
+                        repositoryRoot: effectiveDiffRepositoryRoot,
                       },
                       event,
                     );
@@ -1436,7 +1452,7 @@ export default function DiffPanel({
                       return (
                         <DiffFileHeaderSuffix
                           filePath={path}
-                          workspaceRoot={activeCwd}
+                          workspaceRoot={effectiveDiffCwd}
                           hasStat={fileStats.has(path)}
                           error={state?.error ?? false}
                           truncated={state?.truncated ?? false}
