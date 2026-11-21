@@ -299,6 +299,25 @@ export const SETTINGS_SEARCH_ITEMS = [
     environmentOnly: true,
   },
   {
+    id: "coordinator-role-templates",
+    title: "Coordinator role templates",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: [
+      "l0 coordinator mode delegation tiered models role template preview 协调器 角色模板 分层模型 分层预览",
+    ],
+    environmentOnly: true,
+  },
+  {
+    id: "default-coordinator-role-template",
+    title: "Default coordinator template",
+    to: "/settings/threads",
+    targetId: "coordinator-role-templates",
+    scope: "environment-defaults",
+    searchTerms: ["l0 coordinator default role template 协调器默认模板"],
+    environmentOnly: true,
+  },
+  {
     id: "default-permissions",
     title: "Permissions",
     to: "/settings/threads",

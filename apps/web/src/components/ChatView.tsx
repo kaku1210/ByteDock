@@ -50,7 +50,7 @@ import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { pendingMergeBackTransfersForThread } from "@t3tools/client-runtime/state/thread-relationships";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
-import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
+import type { ThreadCoordinatorMode, UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { freshSessionBannerItem } from "./chat/ComposerFreshSession";
 import { pendingMergeBacksBannerItem } from "./chat/ComposerPendingMergeBacks";
@@ -58,6 +58,7 @@ import { armFreshSession, disarmFreshSession, useFreshSessionArmed } from "./cha
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
 import { SharedWorktreeCoordinationBanner } from "./chat/SharedWorktreeCoordinationBanner";
+import { isThreadCoordinatorControlVisible } from "./chat/coordinatorModeControl.logic";
 import { WorktreeApprovalBanner } from "./chat/WorktreeApprovalBanner";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
@@ -486,6 +487,9 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
+    reportFailure: false,
+  });
+  const setThreadCoordinatorMode = useOrchestrationCommand(threadEnvironment.setCoordinatorMode, {
     reportFailure: false,
   });
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
@@ -3003,6 +3007,41 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus: scheduleComposerFocusStable,
   });
+  const coordinatorControlVisible = isThreadCoordinatorControlVisible({
+    routeKind,
+    thread: activeThreadShell,
+  });
+  const activeCoordinatorMode = isServerThread
+    ? (activeThreadShell?.coordinatorMode ?? null)
+    : (draftThread?.coordinatorMode ?? null);
+  const handleCoordinatorModeChangeStable = useStableCallback((next: ThreadCoordinatorMode) => {
+    if (!canOperateThread) return;
+    if (!isServerThread) {
+      useComposerDraftStore
+        .getState()
+        .setDraftThreadContext(composerDraftTarget, { coordinatorMode: next });
+      return;
+    }
+    if (activeThreadId === null) return;
+    void setThreadCoordinatorMode({
+      environmentId,
+      input: {
+        threadId: activeThreadId,
+        coordinatorMode: next,
+        createdAt: new Date().toISOString(),
+      },
+    }).then((result) => {
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const failure = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not update coordinator mode",
+          description:
+            failure instanceof Error ? failure.message : "Failed to update coordinator mode.",
+        });
+      }
+    });
+  });
   const { onResume, isResuming } = useComposerResume({
     environmentId,
     routeThreadKey,
@@ -3857,6 +3896,9 @@ export default function ChatView(props: ChatViewProps) {
                                 respondingRequestIds={respondingRequestIds}
                                 runtimeMode={runtimeMode}
                                 defaultRuntimeMode={defaultRuntimeMode}
+                                coordinatorControlVisible={coordinatorControlVisible}
+                                coordinatorMode={activeCoordinatorMode}
+                                onCoordinatorModeChange={handleCoordinatorModeChangeStable}
                                 lockedProvider={modelPickerLockedProvider}
                                 providerStatuses={providerStatuses as ServerProvider[]}
                                 providerCatalogKnown={serverConfig !== null}

@@ -80,6 +80,13 @@ describe("searchSettings", () => {
     ] as const) {
       expect(searchSettings(query)[0]).toMatchObject({ id, to: "/settings/chat" });
     }
+    for (const query of ["coordinator role templates", "协调器", "分层预览"]) {
+      expect(searchSettings(query)[0]).toMatchObject({
+        id: "coordinator-role-templates",
+        to: "/settings/threads",
+        scope: "environment-defaults",
+      });
+    }
   });
 
   it("hides the Secrets page from nav and search while the secrets feature is disabled", () => {

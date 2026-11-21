@@ -1256,6 +1256,13 @@ export function useComposerSend(input: ComposerSendInput) {
     let backgroundDraftOpened = false;
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
+      const liveDraftSession = isLocalDraftThread
+        ? draftId === null
+          ? null
+          : useComposerDraftStore.getState().getDraftSession(draftId)
+        : null;
+      const draftCoordinatorMode =
+        liveDraftSession?.coordinatorMode ?? draftThread?.coordinatorMode ?? undefined;
       const bootstrap =
         isLocalDraftThread || baseBranchForWorktree
           ? {
@@ -1267,6 +1274,7 @@ export function useComposerSend(input: ComposerSendInput) {
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
                       interactionMode: DEFAULT_INTERACTION_MODE,
+                      ...(draftCoordinatorMode ? { coordinatorMode: draftCoordinatorMode } : {}),
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
@@ -1292,9 +1300,7 @@ export function useComposerSend(input: ComposerSendInput) {
       // Read the live session, not the render snapshot: the draft is finalized away once the
       // thread exists.
       const checkoutPullRequestUrl = isLocalDraftThread
-        ? checkoutPullRequestUrlToLink(
-            draftId === null ? null : useComposerDraftStore.getState().getDraftSession(draftId),
-          )
+        ? checkoutPullRequestUrlToLink(liveDraftSession)
         : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       const startPromise = startThreadTurn({

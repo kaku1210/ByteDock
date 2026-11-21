@@ -23,6 +23,7 @@ import {
   type PreviewAnnotationPayload,
   RuntimeMode,
   ThreadContextRecord,
+  ThreadCoordinatorMode,
   EnvironmentContextRecord,
   type ServerProvider,
   type ScopedProjectRef,
@@ -114,6 +115,7 @@ const isEnvironmentContextRecord = Schema.is(EnvironmentContextRecord);
 const isSnapShotSource = Schema.is(SnapShotSource);
 const isPreviewAnnotationPayload = Schema.is(PreviewAnnotationPayloadSchema);
 const isResponseContextRecord = Schema.is(ResponseContextRecord);
+const isThreadCoordinatorMode = Schema.is(ThreadCoordinatorMode);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 9;
@@ -416,6 +418,7 @@ const PersistedDraftThreadState = Schema.Struct({
   createdAt: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  coordinatorMode: Schema.optionalKey(Schema.NullOr(ThreadCoordinatorMode)),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   envMode: DraftThreadEnvModeSchema,
@@ -515,6 +518,7 @@ export interface DraftSessionState {
   createdAt: string;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
+  coordinatorMode?: ThreadCoordinatorMode | null;
   branch: string | null;
   worktreePath: string | null;
   envMode: DraftThreadEnvMode;
@@ -591,6 +595,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      coordinatorMode?: ThreadCoordinatorMode | null;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       checkoutPullRequest?: DraftCheckoutPullRequest | null;
@@ -608,6 +613,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      coordinatorMode?: ThreadCoordinatorMode | null;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       checkoutPullRequest?: DraftCheckoutPullRequest | null;
@@ -624,6 +630,7 @@ interface ComposerDraftStoreState {
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
+      coordinatorMode?: ThreadCoordinatorMode | null;
       environmentSelection?: "auto" | "manual";
       loadBalancedEnvironmentId?: EnvironmentId | null;
       checkoutPullRequest?: DraftCheckoutPullRequest | null;
@@ -1664,6 +1671,7 @@ function createDraftThreadState(
     startFromOrigin?: boolean;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
+    coordinatorMode?: ThreadCoordinatorMode | null;
     environmentSelection?: "auto" | "manual";
     loadBalancedEnvironmentId?: EnvironmentId | null;
     checkoutPullRequest?: DraftCheckoutPullRequest | null;
@@ -1696,6 +1704,10 @@ function createDraftThreadState(
     options?.checkoutPullRequest,
     projectChanged,
   );
+  const nextCoordinatorMode =
+    options?.coordinatorMode === undefined
+      ? existingThread?.coordinatorMode
+      : options.coordinatorMode;
   return {
     threadId,
     environmentId: projectRef.environmentId,
@@ -1715,6 +1727,7 @@ function createDraftThreadState(
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
       options?.interactionMode ?? existingThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
+    ...(nextCoordinatorMode !== undefined ? { coordinatorMode: nextCoordinatorMode } : {}),
     branch: nextBranch,
     worktreePath: nextWorktreePath,
     envMode:
@@ -1740,6 +1753,16 @@ function checkoutPullRequestsEqual(
   right: DraftCheckoutPullRequest | undefined,
 ): boolean {
   return left === right || (left?.url === right?.url && left?.branch === right?.branch);
+}
+
+function coordinatorModesEqual(
+  left: ThreadCoordinatorMode | null | undefined,
+  right: ThreadCoordinatorMode | null | undefined,
+): boolean {
+  if (left == null || right == null) {
+    return (left ?? null) === (right ?? null);
+  }
+  return left.enabled === right.enabled && left.templateId === right.templateId;
 }
 
 function scopedThreadRefsEqual(
@@ -1768,6 +1791,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.createdAt === right.createdAt &&
     left.runtimeMode === right.runtimeMode &&
     left.interactionMode === right.interactionMode &&
+    coordinatorModesEqual(left.coordinatorMode, right.coordinatorMode) &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
     left.envMode === right.envMode &&
@@ -1931,6 +1955,9 @@ function normalizePersistedDraftThreads(
           candidateDraftThread.interactionMode === "default"
             ? candidateDraftThread.interactionMode
             : DEFAULT_INTERACTION_MODE,
+        ...(isThreadCoordinatorMode(candidateDraftThread.coordinatorMode)
+          ? { coordinatorMode: candidateDraftThread.coordinatorMode }
+          : {}),
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
@@ -2705,6 +2732,9 @@ function toHydratedDraftThreadState(
     createdAt: persistedDraftThread.createdAt,
     runtimeMode: persistedDraftThread.runtimeMode,
     interactionMode: persistedDraftThread.interactionMode,
+    ...(persistedDraftThread.coordinatorMode !== undefined
+      ? { coordinatorMode: persistedDraftThread.coordinatorMode }
+      : {}),
     branch: persistedDraftThread.branch,
     worktreePath: persistedDraftThread.worktreePath,
     envMode: persistedDraftThread.envMode,
@@ -2985,6 +3015,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               options.checkoutPullRequest,
               projectChanged,
             );
+            const nextCoordinatorMode =
+              options.coordinatorMode === undefined
+                ? existing.coordinatorMode
+                : options.coordinatorMode;
             const nextDraftThread: DraftThreadState = {
               threadId: existing.threadId,
               environmentId: nextProjectRef.environmentId,
@@ -3003,6 +3037,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   : options.createdAt || existing.createdAt,
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
+              ...(nextCoordinatorMode !== undefined
+                ? { coordinatorMode: nextCoordinatorMode }
+                : {}),
               branch: nextBranch,
               worktreePath: nextWorktreePath,
               envMode:
@@ -3020,6 +3057,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftThread.createdAt === existing.createdAt &&
               nextDraftThread.runtimeMode === existing.runtimeMode &&
               nextDraftThread.interactionMode === existing.interactionMode &&
+              coordinatorModesEqual(nextDraftThread.coordinatorMode, existing.coordinatorMode) &&
               nextDraftThread.branch === existing.branch &&
               nextDraftThread.worktreePath === existing.worktreePath &&
               nextDraftThread.envMode === existing.envMode &&

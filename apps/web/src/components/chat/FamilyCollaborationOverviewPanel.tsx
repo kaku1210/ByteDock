@@ -31,6 +31,7 @@ import {
   GitBranchIcon,
   GitForkIcon,
   GlobeIcon,
+  LayersIcon,
   LockIcon,
   MessagesSquareIcon,
   NetworkIcon,
@@ -603,6 +604,15 @@ function FamilyCollaborationOverviewView({
                             <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-3xs font-semibold text-foreground">
                               L{node.depth}
                             </span>
+                            {node.depth === 0 && node.coordinatorMode?.enabled ? (
+                              <span
+                                data-testid={`collaboration-node-coordinator-${node.threadId}`}
+                                className="inline-flex items-center gap-1 rounded border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-3xs font-medium text-primary"
+                              >
+                                <LayersIcon className="size-2.5" aria-hidden />
+                                {uiText("Coordinator")}: {node.coordinatorMode.templateId}
+                              </span>
+                            ) : null}
                             {node.createdBy === "agent" ? (
                               <BotIcon
                                 className="size-3.5 shrink-0 text-muted-foreground"

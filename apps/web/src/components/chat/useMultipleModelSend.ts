@@ -148,6 +148,11 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
           clearedDraftSnapshot &&
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
+      const draftCoordinatorMode =
+        draftId === null
+          ? undefined
+          : (useComposerDraftStore.getState().getDraftSession(draftId)?.coordinatorMode ??
+            undefined);
       const starts = Promise.all(
         targets.map(async (target) => {
           const started = await startFanoutThread({
@@ -183,6 +188,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                       modelSelection: target.selection,
                       runtimeMode,
                       interactionMode: DEFAULT_INTERACTION_MODE,
+                      ...(draftCoordinatorMode ? { coordinatorMode: draftCoordinatorMode } : {}),
                       branch,
                       worktreePath: null,
                       createdAt: createdAt,

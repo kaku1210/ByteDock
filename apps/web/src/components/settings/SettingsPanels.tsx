@@ -64,6 +64,7 @@ import {
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { scopedIdleCompaction } from "./scopedSettings";
+import { CoordinatorRoleTemplatesSettings } from "./CoordinatorRoleTemplatesSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { NextPromptSuggestionSettings } from "./NextPromptSuggestionSettings";
@@ -1968,6 +1969,8 @@ export function ThreadsSettingsPanel() {
       </SettingsSection>
 
       <ProjectDefaultsSettings category="general" />
+
+      {!isProjectScope ? <CoordinatorRoleTemplatesSettings /> : null}
 
       {!isProjectScope ? (
         <SettingsSection id="snooze" title={uiText("Snooze")}>

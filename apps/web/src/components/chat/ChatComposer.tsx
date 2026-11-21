@@ -36,6 +36,7 @@ import type {
   RunId,
   ScopedThreadRef,
   ServerProvider,
+  ThreadCoordinatorMode,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -290,6 +291,7 @@ import {
 } from "./preparingComposerImages";
 import { ComposerControlsBar } from "./ComposerControlsBar";
 import { ComposerControl } from "./ComposerControl";
+import { CoordinatorModeControl } from "./CoordinatorModeControl";
 import { Kbd } from "../ui/kbd";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { usePromptSuggestion } from "./usePromptSuggestion";
@@ -433,6 +435,9 @@ export interface ChatComposerProps {
 
   runtimeMode: RuntimeMode;
   defaultRuntimeMode?: RuntimeMode;
+  coordinatorControlVisible?: boolean;
+  coordinatorMode?: ThreadCoordinatorMode | null;
+  onCoordinatorModeChange?: (next: ThreadCoordinatorMode) => void;
 
   lockedProvider: ProviderDriverKind | null;
   providerStatuses: ServerProvider[];
@@ -2503,6 +2508,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     <ComposerControlsBar
       leadingControls={
         <div data-composer-status-controls="true" className="flex shrink-0 items-center gap-0.5">
+          {props.coordinatorControlVisible && props.onCoordinatorModeChange ? (
+            <CoordinatorModeControl
+              coordinatorMode={props.coordinatorMode}
+              settings={settings}
+              providers={providerStatuses}
+              projectId={activeProjectId}
+              rootModelSelection={selectedModelSelection}
+              size={composerControlsCollapsed ? "xs" : "sm"}
+              compact={composerControlsCollapsed}
+              disabled={!canOperateThread || isSendBusy}
+              onChange={props.onCoordinatorModeChange}
+            />
+          ) : null}
           <PromptSuggestionControl
             state={promptSuggestionState}
             onRegenerate={generateWithPreference}
