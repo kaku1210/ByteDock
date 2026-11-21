@@ -135,10 +135,12 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           cause: forkableSourceRunStatusError(sourceRun),
         });
       }
-      // The remote parent delegated the source thread, not its forks.
+      // The remote parent delegated the source thread, not its forks, and L0 coordinator mode is
+      // never inherited by subtasks, side chats, or forked threads.
       const {
         delegatedFrom: _delegatedFrom,
         sourceAnchor: _sourceAnchor,
+        coordinatorMode: _coordinatorMode,
         ...inherited
       } = input.sourceProjection.thread;
       const resolvedSourceAnchor: OrchestrationV2SubtaskSourceAnchor | undefined =

@@ -6,6 +6,7 @@ import type {
   OrchestrationV2ThreadHistoryPage,
   ProjectId,
 } from "@t3tools/contracts";
+import { hasCoordinatorRoleTemplate } from "@t3tools/shared/coordinator";
 import {
   latestExecutedRun,
   latestRootProviderFailure,
@@ -27,6 +28,7 @@ import {
   CommandId,
   type GuestMessageId,
   isCompactionCommandMessage,
+  isCoordinatorEligibleThread,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   isTaskChildLineage,
@@ -662,6 +664,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.project.adopt-folder":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
+    case "thread.coordinator-mode.set":
     case "thread.model-selection.set":
     case "provider-session.detach":
     case "message.dispatch":
@@ -705,6 +708,27 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.merge_back":
       return command.targetThreadId;
   }
+}
+
+function coordinatorIneligibilityReason(
+  thread: Pick<OrchestrationV2AppThread, "id" | "lineage" | "delegatedFrom">,
+): string {
+  if (thread.lineage.sideChat === true) {
+    return `Thread ${thread.id} is a side chat and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+  }
+  if (thread.lineage.relationshipToParent === "subtask") {
+    return `Thread ${thread.id} is a subtask and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+  }
+  if (thread.lineage.relationshipToParent === "subagent") {
+    return `Thread ${thread.id} is a subagent thread and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+  }
+  if (thread.lineage.temporary === true) {
+    return `Thread ${thread.id} is a temporary thread and cannot enable coordinator mode; only persistent L0 root threads can act as coordinators.`;
+  }
+  if (thread.delegatedFrom !== undefined) {
+    return `Thread ${thread.id} is a remotely delegated thread and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+  }
+  return `Thread ${thread.id} is not an eligible L0 root thread and cannot enable coordinator mode.`;
 }
 
 // Validate before resolving the request: adapters may otherwise coerce unusable answers.
@@ -4196,6 +4220,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
 
+    if (command.coordinatorMode !== undefined && command.coordinatorMode !== null) {
+      if (command.delegatedFrom !== undefined) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} is a remotely delegated thread and cannot enable coordinator mode; only L0 root threads can act as coordinators.`,
+        });
+      }
+      if (command.coordinatorMode.enabled) {
+        const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+        if (!hasCoordinatorRoleTemplate(settings, command.coordinatorMode.templateId)) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Coordinator role template "${command.coordinatorMode.templateId}" does not exist.`,
+          });
+        }
+      }
+    }
+
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
@@ -4208,6 +4252,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       modelSelection: command.modelSelection,
       runtimeMode: command.runtimeMode,
       interactionMode: command.interactionMode,
+      ...(command.coordinatorMode === undefined
+        ? {}
+        : { coordinatorMode: command.coordinatorMode }),
       branch: command.branch,
       worktreePath: command.worktreePath,
       activeProviderThreadId: null,
@@ -4556,6 +4603,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.title.regeneration.complete"
           | "thread.runtime-mode.set"
           | "thread.interaction-mode.set"
+          | "thread.coordinator-mode.set"
           | "thread.model-selection.set"
           | "provider.switch";
       }
@@ -4578,6 +4626,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} is deleted.`,
       });
+    }
+    if (command.type === "thread.coordinator-mode.set") {
+      if (isProviderNativeSubagentThread(thread)) {
+        return yield* new OrchestratorSubagentThreadReadOnlyError({
+          commandId: command.commandId,
+          threadId: command.threadId,
+        });
+      }
+      if (command.coordinatorMode !== null) {
+        if (!isCoordinatorEligibleThread(thread)) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: coordinatorIneligibilityReason(thread),
+          });
+        }
+        if (command.coordinatorMode.enabled) {
+          const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+          if (!hasCoordinatorRoleTemplate(settings, command.coordinatorMode.templateId)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Coordinator role template "${command.coordinatorMode.templateId}" does not exist.`,
+            });
+          }
+        }
+      }
     }
     if (
       command.type === "thread.pull-request.watch" &&
@@ -5587,6 +5662,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return { ...thread, runtimeMode: command.runtimeMode, updatedAt: now };
         case "thread.interaction-mode.set":
           return { ...thread, interactionMode: command.interactionMode, updatedAt: now };
+        case "thread.coordinator-mode.set":
+          return { ...thread, coordinatorMode: command.coordinatorMode, updatedAt: now };
         case "thread.model-selection.set":
         case "provider.switch":
           return {
@@ -5672,6 +5749,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.runtime-mode-updated" as const;
         case "thread.interaction-mode.set":
           return "thread.interaction-mode-updated" as const;
+        case "thread.coordinator-mode.set":
+          return "thread.coordinator-mode-updated" as const;
         case "thread.model-selection.set":
           return thread.providerInstanceId === command.modelSelection.instanceId
             ? ("thread.model-selection-updated" as const)
@@ -16226,6 +16305,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.title.regeneration.complete":
       case "thread.runtime-mode.set":
       case "thread.interaction-mode.set":
+      case "thread.coordinator-mode.set":
       case "thread.model-selection.set":
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);

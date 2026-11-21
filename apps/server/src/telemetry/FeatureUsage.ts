@@ -41,6 +41,8 @@ const COMMAND_FEATURES: {
   "thread.runtime-mode.set": (command) => use("thread.runtime_mode.set", command.runtimeMode),
   "thread.interaction-mode.set": (command) =>
     use("thread.interaction_mode.set", command.interactionMode),
+  "thread.coordinator-mode.set": (command) =>
+    use("thread.coordinator_mode.set", command.coordinatorMode?.enabled ? "on" : "off"),
   "run.interrupt": () => ({ feature: "run.interrupt" }),
   "queued-message.promote-to-steer": () => ({ feature: "queue.steer" }),
   "queued-run.edit": () => ({ feature: "queue.edit" }),

@@ -76,6 +76,10 @@
       "types": "./src/model.ts",
       "import": "./src/model.ts"
     },
+    "./coordinator": {
+      "types": "./src/coordinator.ts",
+      "import": "./src/coordinator.ts"
+    },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",
       "import": "./src/advertisedEndpoint.ts"

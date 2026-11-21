@@ -35,6 +35,12 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import {
+  CoordinatorRoleTemplateConfig,
+  CoordinatorRoleTemplateId,
+  CoordinatorRoleTemplatesMap,
+  DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+} from "./coordinator.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
@@ -1610,6 +1616,15 @@ export const ServerSettings = Schema.Struct({
 
   /** Sent by the Usage tab with each summary request to this environment; edit in settings.json. Invalid values are ignored. */
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
+
+  /** Reusable L0 coordinator role templates keyed by template id; built-in "default" is always available. */
+  coordinatorRoleTemplates: CoordinatorRoleTemplatesMap.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  /** Default coordinator role template id applied when enabling L0 coordinator mode. */
+  defaultCoordinatorRoleTemplateId: CoordinatorRoleTemplateId.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1997,6 +2012,12 @@ export const ServerSettingsPatch = Schema.Struct({
   usageModelAliases: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(TrimmedNonEmptyString)),
   ),
+
+  // Merge per template id; null removes a custom template (or resets built-in "default").
+  coordinatorRoleTemplates: Schema.optionalKey(
+    Schema.Record(CoordinatorRoleTemplateId, Schema.NullOr(CoordinatorRoleTemplateConfig)),
+  ),
+  defaultCoordinatorRoleTemplateId: Schema.optionalKey(CoordinatorRoleTemplateId),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

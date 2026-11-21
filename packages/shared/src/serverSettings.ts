@@ -1,5 +1,6 @@
 import type { ModelPreferences } from "@t3tools/contracts/settings";
 import {
+  DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
@@ -407,6 +408,7 @@ export function applyServerSettingsPatch(
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
+    coordinatorRoleTemplates: coordinatorRoleTemplatesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -642,6 +644,14 @@ export function applyServerSettingsPatch(
           ),
         }
       : {}),
+    ...(coordinatorRoleTemplatesPatch !== undefined
+      ? {
+          coordinatorRoleTemplates: mergeSettingsEntries(
+            current.coordinatorRoleTemplates,
+            coordinatorRoleTemplatesPatch,
+          ),
+        }
+      : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }
       : {}),
@@ -651,6 +661,15 @@ export function applyServerSettingsPatch(
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
     ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),
   };
+  const nextDefaultCoordinatorRoleTemplateId =
+    nextWithReplacementsBase.defaultCoordinatorRoleTemplateId ===
+      DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID ||
+    Object.hasOwn(
+      nextWithReplacementsBase.coordinatorRoleTemplates,
+      nextWithReplacementsBase.defaultCoordinatorRoleTemplateId,
+    )
+      ? nextWithReplacementsBase.defaultCoordinatorRoleTemplateId
+      : DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID;
   const normalizedBackgroundActivity = normalizeBackgroundActivitySettings(
     nextWithReplacementsBase.backgroundActivity,
   );
@@ -660,6 +679,7 @@ export function applyServerSettingsPatch(
   const nextWithReplacements = {
     ...withIdleCompaction(nextWithReplacementsBase, patchedIdleCompaction(current, patch)),
     ...deriveLegacyProjectOverrides(nextWithReplacementsBase),
+    defaultCoordinatorRoleTemplateId: nextDefaultCoordinatorRoleTemplateId,
     backgroundActivity: normalizedBackgroundActivity,
     automaticGitFetchInterval: resolvedBackgroundActivity.automaticGitFetchInterval,
     providerHealthRefreshInterval: resolvedBackgroundActivity.providerHealthRefreshInterval,

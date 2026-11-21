@@ -1030,6 +1030,9 @@ export const layer: Layer.Layer<
           modelSelection: shell.modelSelection,
           runtimeMode: shell.runtimeMode,
           interactionMode: shell.interactionMode,
+          ...(shell.coordinatorMode === undefined
+            ? {}
+            : { coordinatorMode: shell.coordinatorMode }),
           worktreePath: shell.worktreePath,
           branch: shell.branch,
           usesSharedWorktree,

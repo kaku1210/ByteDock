@@ -27,6 +27,7 @@ import {
   type RuntimeMode,
   type RuntimeRequestId,
   type SubtaskEscalationCreateDraftInput,
+  type ThreadCoordinatorMode,
   type ThreadId,
   type ThreadEnvMode,
   type UploadChatAttachment,
@@ -91,6 +92,7 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly coordinatorMode?: ThreadCoordinatorMode | null;
   readonly branch: string | null;
   readonly worktreePath: string | null;
 }
@@ -161,6 +163,10 @@ export interface SetThreadInteractionModeInput extends ThreadCommandInput {
   readonly interactionMode: ProviderInteractionMode;
 }
 
+export interface SetThreadCoordinatorModeInput extends ThreadCommandInput {
+  readonly coordinatorMode: ThreadCoordinatorMode | null;
+}
+
 interface StartThreadBootstrap {
   readonly createThread?: {
     readonly projectId: ProjectId;
@@ -168,6 +174,7 @@ interface StartThreadBootstrap {
     readonly modelSelection: ModelSelection;
     readonly runtimeMode: RuntimeMode;
     readonly interactionMode: ProviderInteractionMode;
+    readonly coordinatorMode?: ThreadCoordinatorMode | null;
     readonly branch: string | null;
     readonly worktreePath: string | null;
     readonly createdAt: string;
@@ -196,6 +203,7 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
   readonly titleSeed?: string;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly coordinatorMode?: ThreadCoordinatorMode | null;
   readonly bootstrap?: StartThreadBootstrap;
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: PlanId };
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
@@ -506,6 +514,7 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
+    ...(input.coordinatorMode === undefined ? {} : { coordinatorMode: input.coordinatorMode }),
     branch: input.branch,
     worktreePath: input.worktreePath,
   });
@@ -769,6 +778,17 @@ export const setThreadInteractionMode = Effect.fn("EnvironmentCommands.setThread
   },
 );
 
+export const setThreadCoordinatorMode = Effect.fn("EnvironmentCommands.setThreadCoordinatorMode")(
+  function* (input: SetThreadCoordinatorModeInput) {
+    return yield* dispatch({
+      type: "thread.coordinator-mode.set",
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+      coordinatorMode: input.coordinatorMode,
+    });
+  },
+);
+
 export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
   input: StartThreadTurnInput,
 ) {
@@ -789,6 +809,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
+    const coordinatorMode = input.coordinatorMode ?? bootstrap?.coordinatorMode;
     const workspaceStrategy =
       prepareWorktree !== undefined
         ? {
@@ -822,6 +843,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       modelSelection: input.modelSelection ?? thread.modelSelection,
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
+      ...(coordinatorMode === undefined ? {} : { coordinatorMode }),
       workspaceStrategy,
       initialMessage: {
         messageId: input.message.messageId,

@@ -43,6 +43,7 @@ import {
 } from "./baseSchemas.ts";
 import { AuthMcpClientAccess } from "./auth.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
+import { ThreadCoordinatorMode } from "./coordinator.ts";
 import { ThreadGuestShare } from "./guestShare.ts";
 import { StoredThreadTags, ThreadTag } from "./threadTags.ts";
 import { ThreadTitleRegenerationOutcome } from "./threadTitle.ts";
@@ -200,6 +201,15 @@ export const isTaskChildLineage = (lineage: OrchestrationV2AppThreadLineage): bo
 /** Subagents, subtasks, and side chats live inside their parent's view, never in thread lists. */
 export const isListedThreadLineage = (lineage: OrchestrationV2AppThreadLineage): boolean =>
   !isTaskChildLineage(lineage) && lineage.sideChat !== true;
+
+/** Only persistent L0 root threads (never subtasks, subagents, side chats, temporary, or remotely delegated threads) may enable coordinator mode. */
+export const isCoordinatorEligibleThread = (thread: {
+  readonly lineage: OrchestrationV2AppThreadLineage;
+  readonly delegatedFrom?: OrchestrationV2DelegatedFrom | undefined;
+}): boolean =>
+  isListedThreadLineage(thread.lineage) &&
+  thread.lineage.temporary !== true &&
+  thread.delegatedFrom === undefined;
 
 export const OrchestrationV2ContextTransferType = Schema.Literals([
   "fork",
@@ -517,6 +527,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  coordinatorMode: Schema.optional(Schema.NullOr(ThreadCoordinatorMode)),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -2050,6 +2061,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.pull-request-synced",
       "thread.runtime-mode-updated",
       "thread.interaction-mode-updated",
+      "thread.coordinator-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
@@ -2246,6 +2258,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  coordinatorMode: Schema.optional(Schema.NullOr(ThreadCoordinatorMode)),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
@@ -2994,6 +3007,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.metadata-updated",
       "thread.runtime-mode-updated",
       "thread.interaction-mode-updated",
+      "thread.coordinator-mode-updated",
       "thread.model-selection-updated",
       "thread.provider-switched",
       "thread.guest-share-updated",
@@ -3140,6 +3154,7 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    coordinatorMode: Schema.optional(Schema.NullOr(ThreadCoordinatorMode)),
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
     /** Only the server sets this; a client's thread.create never carries one. */
@@ -3377,6 +3392,12 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     interactionMode: ProviderInteractionMode,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.coordinator-mode.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    coordinatorMode: Schema.NullOr(ThreadCoordinatorMode),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.model-selection.set"),
@@ -3960,6 +3981,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  coordinatorMode: Schema.optional(Schema.NullOr(ThreadCoordinatorMode)),
   workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy,
   initialMessage: Schema.optional(
     Schema.Struct({

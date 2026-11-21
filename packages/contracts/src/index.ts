@@ -71,6 +71,7 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./sharedWorktreeCoordination.ts";
+export * from "./coordinator.ts";
 export * from "./familyCollaborationOverview.ts";
 export * from "./subtaskEscalation.ts";
 export * from "./worktreeApproval.ts";
