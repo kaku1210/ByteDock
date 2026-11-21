@@ -10,12 +10,13 @@ import {
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
-import type { ProviderTextGeneration } from "./textGeneration.ts";
+import type { ProviderTextGeneration, SubtaskSummaryGenerationResult } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildReviewGuidePrompt,
+  buildSubtaskSummaryPrompt,
   buildThreadTitlePrompt,
 } from "./textGenerationPrompts.ts";
 import {
@@ -87,6 +88,49 @@ export const generatedThreadTitle = (raw: string) => {
         }),
       )
     : Effect.succeed(title);
+};
+
+const normalizeSummaryList = (items: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const seen = new Set<string>();
+  const normalized: Array<string> = [];
+  for (const item of items) {
+    const trimmed = item.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+};
+
+export const generatedSubtaskSummary = (
+  raw: SubtaskSummaryGenerationResult,
+): Effect.Effect<SubtaskSummaryGenerationResult, TextGenerationError> => {
+  const goal = raw.goal.trim();
+  const summary = raw.summary.trim();
+  if (goal.length === 0 || summary.length === 0) {
+    return Effect.fail(
+      new TextGenerationError({
+        operation: "generateSubtaskSummary",
+        detail: "The model returned an empty goal or summary for the subtask handoff.",
+      }),
+    );
+  }
+  if (goal.toLowerCase() === "goal" && summary.toLowerCase() === "summary") {
+    return Effect.fail(
+      new TextGenerationError({
+        operation: "generateSubtaskSummary",
+        detail: "The model returned placeholder schema keys instead of a subtask summary.",
+      }),
+    );
+  }
+  return Effect.succeed({
+    goal,
+    constraints: normalizeSummaryList(raw.constraints),
+    decisions: normalizeSummaryList(raw.decisions),
+    openQuestions: normalizeSummaryList(raw.openQuestions),
+    keyAnchors: normalizeSummaryList(raw.keyAnchors),
+    summary,
+  });
 };
 
 export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
@@ -212,12 +256,34 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateSubtaskSummary: ProviderTextGeneration["generateSubtaskSummary"] = Effect.fn(
+    `${name}.generateSubtaskSummary`,
+  )(function* (input) {
+    const generated = yield* run({
+      operation: "generateSubtaskSummary",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildSubtaskSummaryPrompt({
+        parentThreadId: input.parentThreadId,
+        parentTitle: input.parentTitle,
+        parentGoal: input.parentGoal,
+        sourceCutoff: input.sourceCutoff,
+        selectedExcerpt: input.selectedExcerpt,
+        conversationExcerpt: input.conversationExcerpt,
+        maxSummaryChars: input.maxSummaryChars,
+        strategyVersion: input.strategyVersion,
+      }),
+    });
+    return yield* generatedSubtaskSummary(generated);
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateSubtaskSummary,
     generateTranscriptionPostProcessing,
     generatePromptSuggestion,
   } satisfies ProviderTextGeneration;

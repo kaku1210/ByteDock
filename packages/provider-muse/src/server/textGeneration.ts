@@ -23,6 +23,7 @@ import {
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import {
+  generatedSubtaskSummary,
   generatedThreadTitle,
   investigationUnsupported,
   TranscriptionPostProcessingOutput,
@@ -32,6 +33,7 @@ import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
+  buildSubtaskSummaryPrompt,
   buildThreadTitlePrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
@@ -362,6 +364,25 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const generateSubtaskSummary: ProviderTextGeneration["generateSubtaskSummary"] = Effect.fn(
+    "MuseTextGeneration.generateSubtaskSummary",
+  )(function* (input) {
+    const generated = yield* runMuseJson({
+      operation: "generateSubtaskSummary",
+      ...buildSubtaskSummaryPrompt({
+        parentThreadId: input.parentThreadId,
+        parentTitle: input.parentTitle,
+        parentGoal: input.parentGoal,
+        sourceCutoff: input.sourceCutoff,
+        selectedExcerpt: input.selectedExcerpt,
+        conversationExcerpt: input.conversationExcerpt,
+        maxSummaryChars: input.maxSummaryChars,
+        strategyVersion: input.strategyVersion,
+      }),
+      modelSelection: input.modelSelection,
+    });
+    return yield* generatedSubtaskSummary(generated);
+  });
   const generatePromptSuggestion: ProviderTextGeneration["generatePromptSuggestion"] = Effect.fn(
     "MuseTextGeneration.generatePromptSuggestion",
   )(function (input) {
@@ -378,6 +399,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateSubtaskSummary,
     generateTranscriptionPostProcessing,
     generatePromptSuggestion,
   } satisfies ProviderTextGeneration;

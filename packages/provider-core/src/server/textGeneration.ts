@@ -122,6 +122,29 @@ export interface PromptSuggestionGenerationInput {
   readonly modelSelection: ModelSelection;
 }
 
+export interface SubtaskSummaryGenerationInput {
+  readonly cwd: string;
+  readonly parentThreadId: string;
+  readonly parentTitle: string;
+  readonly parentGoal?: string | null | undefined;
+  readonly sourceCutoff?: string | undefined;
+  readonly selectedExcerpt?: string | undefined;
+  readonly conversationExcerpt: string;
+  readonly maxSummaryChars?: number | undefined;
+  readonly strategyVersion?: string | undefined;
+  readonly modelSelection: ModelSelection;
+  readonly projectId?: ProjectId | null | undefined;
+}
+
+export interface SubtaskSummaryGenerationResult {
+  readonly goal: string;
+  readonly constraints: ReadonlyArray<string>;
+  readonly decisions: ReadonlyArray<string>;
+  readonly openQuestions: ReadonlyArray<string>;
+  readonly keyAnchors: ReadonlyArray<string>;
+  readonly summary: string;
+}
+
 export interface ProviderTextGeneration {
   readonly generatePromptSuggestion: (
     input: PromptSuggestionGenerationInput,
@@ -146,6 +169,10 @@ export interface ProviderTextGeneration {
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
   ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+  readonly generateSubtaskSummary: (
+    input: SubtaskSummaryGenerationInput,
+  ) => Effect.Effect<SubtaskSummaryGenerationResult, TextGenerationError>;
 
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,

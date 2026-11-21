@@ -221,6 +221,11 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateThreadTitle(input),
         v2: v2.generateThreadTitle(input),
       }),
+    generateSubtaskSummary: (input) =>
+      byOpenCodeRuntime(resolve, {
+        v1: v1.generateSubtaskSummary(input),
+        v2: v2.generateSubtaskSummary(input),
+      }),
     generateReviewGuide: (input) =>
       byOpenCodeRuntime(resolve, {
         v1: v1.generateReviewGuide(input),

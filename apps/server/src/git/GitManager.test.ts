@@ -317,6 +317,15 @@ function createTextGeneration(
         title: "Update workflow",
       }),
     generateReviewGuide: () => Effect.succeed({ stops: [] }),
+    generateSubtaskSummary: () =>
+      Effect.succeed({
+        goal: "Ship subtask summary",
+        constraints: [],
+        decisions: [],
+        openQuestions: [],
+        keyAnchors: [],
+        summary: "Summary for subtask handoff.",
+      }),
     generatePromptSuggestion: () => Effect.die("unused"),
     generateTranscriptionPostProcessing: () =>
       Effect.succeed({ transcription: "processed transcript" }),
@@ -369,6 +378,7 @@ function createTextGeneration(
         ),
       ),
     generateReviewGuide: (input) => implementation.generateReviewGuide(input),
+    generateSubtaskSummary: (input) => implementation.generateSubtaskSummary(input),
     generatePromptSuggestion: (input) => implementation.generatePromptSuggestion(input),
     generateTranscriptionPostProcessing: (input) =>
       implementation.generateTranscriptionPostProcessing(input),

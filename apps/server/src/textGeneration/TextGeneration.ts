@@ -31,6 +31,8 @@ export type {
   PrContentGenerationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
+  SubtaskSummaryGenerationInput,
+  SubtaskSummaryGenerationResult,
   ThreadTitleGenerationInput,
   ThreadTitleGenerationResult,
   TranscriptionPostProcessingInput,
@@ -47,6 +49,7 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
+  | "generateSubtaskSummary"
   | "generateTranscriptionPostProcessing";
 
 const resolveInstance = (
@@ -210,6 +213,14 @@ export const make = Effect.gen(function* () {
         input.modelSelection,
         input.projectId,
         (service, modelSelection) => service.generateReviewGuide({ ...input, modelSelection }),
+      );
+    }),
+    generateSubtaskSummary: Effect.fn("TextGeneration.generateSubtaskSummary")(function (input) {
+      return generate(
+        "generateSubtaskSummary",
+        input.modelSelection,
+        input.projectId,
+        (service, modelSelection) => service.generateSubtaskSummary({ ...input, modelSelection }),
       );
     }),
     generateTranscriptionPostProcessing: Effect.fn(

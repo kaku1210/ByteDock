@@ -1033,6 +1033,7 @@ describe("providerMaintenanceRunner", () => {
           generatePrContent: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
           generateReviewGuide: () => Effect.die("unused"),
+          generateSubtaskSummary: () => Effect.die("unused"),
           generatePromptSuggestion: () => Effect.die("unused"),
           generateTranscriptionPostProcessing: () => Effect.die("unused"),
           generateThreadTitle: () =>
