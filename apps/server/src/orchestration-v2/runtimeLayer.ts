@@ -61,6 +61,8 @@ import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordination
 import * as FamilyCollaborationOverviewService from "./FamilyCollaborationOverviewService.ts";
 import * as SubtaskEscalationService from "./SubtaskEscalationService.ts";
 import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
+import * as SubtaskSummaryCache from "../persistence/SubtaskSummaryCache.ts";
+import * as SubtaskSummaryCacheService from "./SubtaskSummaryCacheService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -422,6 +424,10 @@ const layerFamilyCollaborationOverviewProvided = FamilyCollaborationOverviewServ
   ),
 );
 
+const layerSubtaskSummaryCacheProvided = SubtaskSummaryCacheService.layer.pipe(
+  Layer.provide(SubtaskSummaryCache.layer),
+);
+
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
@@ -429,6 +435,7 @@ export const layer = Layer.mergeAll(
   layerFamilyCollaborationOverviewProvided,
   layerSubtaskEscalationStoreProvided,
   layerSubtaskEscalationProvided,
+  layerSubtaskSummaryCacheProvided,
   layerMcpAppRequestsProvided,
   layerThreadManagementProvided,
   layerEffectWorkerProvided,
