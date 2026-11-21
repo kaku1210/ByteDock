@@ -1,4 +1,8 @@
-import type { ProviderInteractionMode } from "@t3tools/contracts";
+import type {
+  ProviderInteractionMode,
+  ResolvedCoordinatorConfiguration,
+  ResolvedCoordinatorTierModel,
+} from "@t3tools/contracts";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
 export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
@@ -28,6 +32,106 @@ export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
 
 ${T3_CODE_ORCHESTRATION_SECTIONS.join("\n\n")}
 `;
+
+/** Keep coordinator instructions safely under Codex's 4,000-byte per-entry cap. */
+export const COORDINATOR_INSTRUCTIONS_MAX_BYTES = 3_600;
+
+const utf8Encoder = new TextEncoder();
+
+function utf8ByteLength(text: string): number {
+  return utf8Encoder.encode(text).length;
+}
+
+function clampUtf8(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (utf8ByteLength(text) <= maxBytes) return text;
+  const suffix = "…";
+  const suffixBytes = utf8ByteLength(suffix);
+  if (maxBytes <= suffixBytes) return "";
+  const budget = maxBytes - suffixBytes;
+  let used = 0;
+  let out = "";
+  for (const ch of text) {
+    const chBytes = utf8ByteLength(ch);
+    if (used + chBytes > budget) break;
+    out += ch;
+    used += chBytes;
+  }
+  return `${out.trimEnd()}${suffix}`;
+}
+
+function sanitizeInlineLine(text: string, maxBytes: number): string {
+  return clampUtf8(text.replace(/\s+/g, " ").trim(), maxBytes);
+}
+
+function formatCoordinatorTierLine(label: string, tier: ResolvedCoordinatorTierModel): string {
+  if (tier.modelSelection === null) {
+    const reason = tier.fallbackReason ? ` (${sanitizeInlineLine(tier.fallbackReason, 160)})` : "";
+    return `- ${tier.tier} (${label}): unavailable${reason}`;
+  }
+  const target = `\`${tier.modelSelection.instanceId}/${tier.modelSelection.model}\``;
+  const fallbackNote =
+    tier.fallbackUsed && tier.fallbackReason
+      ? `; fallback: ${sanitizeInlineLine(tier.fallbackReason, 160)}`
+      : "";
+  return `- ${tier.tier} (${label}): ${target} [${tier.source}${fallbackNote}]`;
+}
+
+/**
+ * Renders dynamic L0 coordinator mode instructions guaranteed to fit below Codex's 4,000-byte
+ * per-entry cap without hardcoding concrete model names.
+ */
+export function buildCoordinatorInstructions(config: ResolvedCoordinatorConfiguration): string {
+  const { template, tiers } = config;
+  const templateName = sanitizeInlineLine(template.name, 120) || "Coordinator";
+  const description = sanitizeInlineLine(template.description, 240);
+  const delegationLine = template.preferDelegation
+    ? "- Prefer delegating research, implementation, tests, and bulk edits to L1/L2 subtasks via `delegate_task` instead of executing low-level work directly in this root context."
+    : "- Delegate subtasks via `delegate_task` when parallelization or specialization helps; direct execution is acceptable for small focused tasks.";
+  const strategyLine =
+    template.delegationStrategy === "inherit_root"
+      ? "- Delegation strategy: `inherit_root` (keep delegated subtasks aligned with the resolved L0 model unless explicitly overridden)."
+      : "- Delegation strategy: `tiered` (use the resolved L1 lead and L2 worker targets below when delegating).";
+
+  const baseLines = [
+    `## T3 Code L0 Coordinator Mode (${templateName})`,
+    ...(description ? [description] : []),
+    "- You are the L0 root coordinator for this task tree. Focus on requirement breakdown, task decomposition, tiered delegation (`L0 -> L1 -> L2`, max depth 2), progress verification, integration, and final closure.",
+    delegationLine,
+    strategyLine,
+    '- Call `orchestrator_capabilities` once per thread to verify live availability and read `coordinator.tiers`; pass `plannedPaths` when delegating in the shared checkout and use `t3_worktree_coordinate` for overlapping edits (`isolation: "worktree"` requires human approval).',
+    "- Use `t3_thread_list` (children) and `t3_thread_read` to inspect subtask progress/results, and fulfill L1 horizontal escalations via `delegate_task` with `escalationRequestId`.",
+    ...(config.templateFallbackUsed
+      ? [
+          `- Note: requested template \`${sanitizeInlineLine(config.requestedTemplateId, 80)}\` was unavailable; using \`${sanitizeInlineLine(template.id, 80)}\`.`,
+        ]
+      : []),
+    "Resolved tier models (dynamic from live environment):",
+    formatCoordinatorTierLine("root coordinator", tiers.L0),
+    formatCoordinatorTierLine("task lead", tiers.L1),
+    formatCoordinatorTierLine("worker", tiers.L2),
+  ];
+
+  const baseText = baseLines.join("\n");
+  const customInstructions = template.instructions.trim();
+  if (customInstructions === "") {
+    return clampUtf8(baseText, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
+  }
+  const guidancePrefix = "\n\nTemplate guidance:\n";
+  const remainingBytes =
+    COORDINATOR_INSTRUCTIONS_MAX_BYTES - utf8ByteLength(baseText) - utf8ByteLength(guidancePrefix);
+  if (remainingBytes <= 24) {
+    return clampUtf8(baseText, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
+  }
+  return clampUtf8(
+    `${baseText}${guidancePrefix}${clampUtf8(customInstructions, remainingBytes)}`,
+    COORDINATOR_INSTRUCTIONS_MAX_BYTES,
+  );
+}
+
+export function wrapInlineCoordinatorInstructions(instructions: string): string {
+  return `<t3_code_coordinator_instructions>\n${instructions.trim()}\n</t3_code_coordinator_instructions>`;
+}
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 

@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   ContextTransferId,
+  CoordinatorRoleTemplateId,
   EnvironmentId,
   GitCommandError,
   MessageId,
@@ -5003,5 +5004,269 @@ describe("OrchestratorMcpService thread stop", () => {
         assert.deepEqual(yield* interruptMessages(childThreadId), [stop.message]);
       }).pipe(Effect.provide(layerTest));
     }),
+  );
+});
+
+describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
+  it.effect(
+    "exposes resolved coordinator tiers in capabilities for L0 coordinators and L1/L2 children, pins recommended models, and omits coordinator for non-coordinator or side-chat threads",
+    () =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make("project:coord-capabilities");
+        const l0PlainId = ThreadId.make("thread:coord-cap-plain");
+        const l0CoordId = ThreadId.make("thread:coord-cap-l0");
+        const l1SubtaskId = ThreadId.make("thread:coord-cap-l1");
+        const l2SubtaskId = ThreadId.make("thread:coord-cap-l2");
+        const sideChatId = ThreadId.make("thread:coord-cap-side");
+        const codexInstanceId = ProviderInstanceId.make("codex");
+        const workerInstanceId = ProviderInstanceId.make("opencode");
+        const templateId = CoordinatorRoleTemplateId.make("tiered-coord");
+        const adapterIds = [codexInstanceId, workerInstanceId] as const;
+
+        const extraModels = Array.from({ length: 12 }, (_, index) => ({
+          slug: `worker-model-${index + 1}`,
+          name: `Worker Model ${index + 1}`,
+          isCustom: false,
+          capabilities:
+            index === 11
+              ? {
+                  optionDescriptors: [
+                    {
+                      id: "reasoningEffort",
+                      label: "Reasoning",
+                      type: "select" as const,
+                      currentValue: "medium",
+                      options: [
+                        { id: "low", label: "Low" },
+                        { id: "medium", label: "Medium" },
+                        { id: "high", label: "High" },
+                      ],
+                    },
+                  ],
+                }
+              : null,
+        }));
+
+        const providers: ReadonlyArray<ServerProvider> = [
+          {
+            driver: ProviderDriverKind.make("codex"),
+            instanceId: codexInstanceId,
+            displayName: "Codex",
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-11-21T00:00:00.000Z",
+            models: [
+              { slug: "root-model", name: "Root Model", isCustom: false, capabilities: null },
+              { slug: "lead-model", name: "Lead Model", isCustom: false, capabilities: null },
+            ],
+            slashCommands: [],
+            skills: [],
+          },
+          {
+            driver: ProviderDriverKind.make("opencode"),
+            instanceId: workerInstanceId,
+            displayName: "OpenCode",
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-11-21T00:00:00.000Z",
+            models: extraModels,
+            slashCommands: [],
+            skills: [],
+          },
+        ];
+
+        const makeThreadRecord = (
+          id: ThreadId,
+          overrides: Partial<OrchestrationV2ThreadProjection["thread"]>,
+        ): OrchestrationV2ThreadProjection => {
+          const base = idleThreadProjection(liveThreadShell(id));
+          return {
+            ...base,
+            thread: {
+              ...base.thread,
+              projectId,
+              providerInstanceId: codexInstanceId,
+              modelSelection: { instanceId: codexInstanceId, model: "root-model" },
+              ...overrides,
+            },
+          };
+        };
+
+        const recordsById = new Map<ThreadId, OrchestrationV2ThreadProjection>([
+          [l0PlainId, makeThreadRecord(l0PlainId, {})],
+          [
+            l0CoordId,
+            makeThreadRecord(l0CoordId, {
+              coordinatorMode: { enabled: true, templateId },
+            }),
+          ],
+          [
+            l1SubtaskId,
+            makeThreadRecord(l1SubtaskId, {
+              modelSelection: { instanceId: codexInstanceId, model: "lead-model" },
+              lineage: {
+                parentThreadId: l0CoordId,
+                relationshipToParent: "subtask",
+                rootThreadId: l0CoordId,
+              },
+            }),
+          ],
+          [
+            l2SubtaskId,
+            makeThreadRecord(l2SubtaskId, {
+              modelSelection: { instanceId: workerInstanceId, model: "worker-model-12" },
+              lineage: {
+                parentThreadId: l1SubtaskId,
+                relationshipToParent: "subagent",
+                rootThreadId: l0CoordId,
+              },
+            }),
+          ],
+          [
+            sideChatId,
+            makeThreadRecord(sideChatId, {
+              lineage: {
+                parentThreadId: l0CoordId,
+                relationshipToParent: "subtask",
+                rootThreadId: l0CoordId,
+                sideChat: true,
+              },
+            }),
+          ],
+        ]);
+
+        const scopeFor = (
+          threadId: ThreadId,
+          providerInstanceId = codexInstanceId,
+        ): McpInvocationScope => ({
+          environmentId: EnvironmentId.make("environment:coord-cap"),
+          requestNamespace: `coord-cap:${threadId}`,
+          capabilities: new Set(["orchestration"]),
+          thread: {
+            threadId,
+            providerSessionId: `provider-session:${threadId}`,
+            providerInstanceId,
+          },
+          client: undefined,
+          issuedAt: 1,
+        });
+
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: (threadId) => Effect.succeed(recordsById.get(threadId)!),
+          }),
+          ServerSettings.layerTest({
+            providerInstances: {
+              [codexInstanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+              [workerInstanceId]: { driver: ProviderDriverKind.make("opencode"), enabled: true },
+            },
+            coordinatorRoleTemplates: {
+              [templateId]: {
+                name: "Tiered Coordinator",
+                description: "Three-tier delegation.",
+                tierModels: {
+                  L0: null,
+                  L1: { instanceId: codexInstanceId, model: "lead-model" },
+                  L2: {
+                    instanceId: workerInstanceId,
+                    model: "worker-model-12",
+                    options: [
+                      { id: "reasoningEffort", value: "high" },
+                      { id: "unknownOption", value: "ignored" },
+                    ],
+                  },
+                },
+                preferDelegation: true,
+                delegationStrategy: "tiered",
+                instructions: "Delegate cleanly.",
+              },
+            },
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed(providers),
+          }),
+          Layer.succeed(
+            ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+            ProviderAdapterRegistry.ProviderAdapterRegistryV2.of({
+              list: () => Effect.succeed(adapterIds),
+              get: (instanceId) =>
+                adapterIds.includes(instanceId)
+                  ? Effect.succeed({
+                      instanceId,
+                    } as unknown as ProviderAdapter.ProviderAdapterV2["Service"])
+                  : Effect.fail(
+                      new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
+                        instanceId,
+                      }),
+                    ),
+            }),
+          ),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+
+          // 1. Plain thread omits coordinator block completely.
+          const plain = yield* service.capabilities(scopeFor(l0PlainId));
+          assert.isUndefined(plain.coordinator);
+
+          // 2. Active L0 coordinator exposes L0/L1/L2 targets, sanitizes options, and pins L2's 12th model.
+          const l0 = yield* service.capabilities(scopeFor(l0CoordId));
+          assert.isDefined(l0.coordinator);
+          assert.strictEqual(l0.coordinator!.enabled, true);
+          assert.strictEqual(l0.coordinator!.callerTier, "L0");
+          assert.strictEqual(l0.coordinator!.templateId, templateId);
+          assert.strictEqual(l0.coordinator!.templateName, "Tiered Coordinator");
+          assert.strictEqual(l0.coordinator!.preferDelegation, true);
+          assert.strictEqual(l0.coordinator!.delegationStrategy, "tiered");
+          assert.strictEqual(l0.coordinator!.tiers.L0.providerInstanceId, codexInstanceId);
+          assert.strictEqual(l0.coordinator!.tiers.L0.model, "root-model");
+          assert.strictEqual(l0.coordinator!.tiers.L0.source, "root_thread");
+          assert.strictEqual(l0.coordinator!.tiers.L1.providerInstanceId, codexInstanceId);
+          assert.strictEqual(l0.coordinator!.tiers.L1.model, "lead-model");
+          assert.strictEqual(l0.coordinator!.tiers.L1.source, "template_configured");
+          assert.strictEqual(l0.coordinator!.tiers.L2.providerInstanceId, workerInstanceId);
+          assert.strictEqual(l0.coordinator!.tiers.L2.model, "worker-model-12");
+          assert.deepEqual(l0.coordinator!.tiers.L2.options, [
+            { id: "reasoningEffort", value: "high" },
+          ]);
+
+          const opencodeProvider = l0.providers.find(
+            (provider) => provider.providerInstanceId === workerInstanceId,
+          );
+          assert.isDefined(opencodeProvider);
+          assert.include(
+            opencodeProvider!.models.map((model) => model.id),
+            "worker-model-12",
+          );
+
+          // 3. L1 and L2 children inherit the root coordinator's tiered targets with accurate callerTier.
+          const l1 = yield* service.capabilities(scopeFor(l1SubtaskId));
+          assert.isDefined(l1.coordinator);
+          assert.strictEqual(l1.coordinator!.callerTier, "L1");
+          assert.strictEqual(l1.coordinator!.tiers.L2.model, "worker-model-12");
+
+          const l2 = yield* service.capabilities(scopeFor(l2SubtaskId, workerInstanceId));
+          assert.isDefined(l2.coordinator);
+          assert.strictEqual(l2.coordinator!.callerTier, "L2");
+          assert.strictEqual(l2.coordinator!.tiers.L1.model, "lead-model");
+
+          // 4. Side chat never receives coordinator capabilities.
+          const sideChat = yield* service.capabilities(scopeFor(sideChatId));
+          assert.isUndefined(sideChat.coordinator);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
   );
 });

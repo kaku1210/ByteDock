@@ -1,12 +1,20 @@
 import { assert, describe, it } from "@effect/vitest";
+import {
+  CoordinatorRoleTemplateId,
+  ProviderInstanceId,
+  type ResolvedCoordinatorConfiguration,
+} from "@t3tools/contracts";
 
 import {
+  buildCoordinatorInstructions,
+  COORDINATOR_INSTRUCTIONS_MAX_BYTES,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS,
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   t3AcpPromptWithInstructions,
   t3OrchestrationPrompt,
   t3OrchestrationSystemPrompt,
+  wrapInlineCoordinatorInstructions,
 } from "./orchestrationInstructions.ts";
 
 describe("T3 device instructions", () => {
@@ -81,5 +89,140 @@ describe("T3 device instructions", () => {
       "Again.",
     );
     assert.notInclude(t3AcpPromptWithInstructions({ prompt: "Hi.", state }), "## T3 Code devices");
+  });
+});
+
+function makeCoordinatorConfig(
+  overrides?: Partial<ResolvedCoordinatorConfiguration>,
+): ResolvedCoordinatorConfiguration {
+  const providerA = ProviderInstanceId.make("provider-alpha");
+  const providerB = ProviderInstanceId.make("provider-beta");
+  const templateId = CoordinatorRoleTemplateId.make("default");
+  return {
+    template: {
+      id: templateId,
+      builtIn: true,
+      name: "Default Coordinator",
+      description: "Break work down and delegate.",
+      tierModels: { L0: null, L1: null, L2: null },
+      preferDelegation: true,
+      delegationStrategy: "tiered",
+      instructions: "Always verify tests before reporting back.",
+    },
+    requestedTemplateId: templateId,
+    templateFallbackUsed: false,
+    templateFallbackReason: null,
+    tiers: {
+      L0: {
+        tier: "L0",
+        modelSelection: { instanceId: providerA, model: "custom-root-model" },
+        configuredModelSelection: null,
+        source: "root_thread",
+        fallbackUsed: false,
+        fallbackReason: null,
+      },
+      L1: {
+        tier: "L1",
+        modelSelection: { instanceId: providerB, model: "custom-lead-model" },
+        configuredModelSelection: null,
+        source: "dynamic_available",
+        fallbackUsed: false,
+        fallbackReason: null,
+      },
+      L2: {
+        tier: "L2",
+        modelSelection: { instanceId: providerB, model: "custom-worker-model" },
+        configuredModelSelection: { instanceId: providerA, model: "offline-model" },
+        source: "fallback_available",
+        fallbackUsed: true,
+        fallbackReason: "Configured provider is disabled.",
+      },
+    },
+    ...overrides,
+  };
+}
+
+describe("L0 coordinator instructions", () => {
+  it("renders dynamic tier models, strategies, and fallback notes without hardcoded models", () => {
+    const config = makeCoordinatorConfig({
+      requestedTemplateId: CoordinatorRoleTemplateId.make("deleted-template"),
+      templateFallbackUsed: true,
+      templateFallbackReason: "Template was deleted.",
+    });
+    const rendered = buildCoordinatorInstructions(config);
+
+    assert.include(rendered, "## T3 Code L0 Coordinator Mode (Default Coordinator)");
+    assert.include(rendered, "Prefer delegating research, implementation, tests, and bulk edits");
+    assert.include(rendered, "Delegation strategy: `tiered`");
+    assert.include(rendered, "`provider-alpha/custom-root-model` [root_thread]");
+    assert.include(rendered, "`provider-beta/custom-lead-model` [dynamic_available]");
+    assert.include(
+      rendered,
+      "`provider-beta/custom-worker-model` [fallback_available; fallback: Configured provider is disabled.]",
+    );
+    assert.include(rendered, "requested template `deleted-template` was unavailable");
+    assert.include(rendered, "Always verify tests before reporting back.");
+    assert.isAtMost(new TextEncoder().encode(rendered).length, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
+  });
+
+  it("adapts copy for preferDelegation=false, inherit_root strategy, and unavailable tiers", () => {
+    const base = makeCoordinatorConfig();
+    const rendered = buildCoordinatorInstructions({
+      ...base,
+      template: {
+        ...base.template,
+        preferDelegation: false,
+        delegationStrategy: "inherit_root",
+        instructions: "",
+      },
+      tiers: {
+        ...base.tiers,
+        L2: {
+          tier: "L2",
+          modelSelection: null,
+          configuredModelSelection: null,
+          source: "unavailable",
+          fallbackUsed: true,
+          fallbackReason: "No orchestration-capable provider available.",
+        },
+      },
+    });
+
+    assert.include(rendered, "direct execution is acceptable for small focused tasks");
+    assert.include(rendered, "Delegation strategy: `inherit_root`");
+    assert.include(
+      rendered,
+      "- L2 (worker): unavailable (No orchestration-capable provider available.)",
+    );
+    assert.notInclude(rendered, "Template guidance:");
+  });
+
+  it("clamps long CJK custom instructions safely within COORDINATOR_INSTRUCTIONS_MAX_BYTES", () => {
+    const base = makeCoordinatorConfig();
+    const longCjk = "协调器模板自定义指令：拆分任务并委派给合适层级。".repeat(200);
+    const rendered = buildCoordinatorInstructions({
+      ...base,
+      template: {
+        ...base.template,
+        instructions: longCjk,
+      },
+    });
+    const bytes = new TextEncoder().encode(rendered).length;
+
+    assert.isAtMost(bytes, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
+    assert.isTrue(rendered.endsWith("…"));
+    // Verify valid UTF-16 (no unpaired surrogates).
+    assert.equal(
+      new TextDecoder("utf-8", { fatal: true }).decode(new TextEncoder().encode(rendered)),
+      rendered,
+    );
+  });
+
+  it("wraps inline coordinator instructions in a dedicated tag", () => {
+    const wrapped = wrapInlineCoordinatorInstructions("  ## Title\nBody  ");
+    assert.equal(
+      wrapped,
+      "<t3_code_coordinator_instructions>\n## Title\nBody\n</t3_code_coordinator_instructions>",
+    );
   });
 });

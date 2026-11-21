@@ -16,6 +16,8 @@ import {
   OrchestratorMcpFailure,
   type OrchestratorMcpCapabilitiesInput,
   type OrchestratorMcpCapabilitiesResult,
+  type OrchestratorMcpCoordinatorCapabilities,
+  type OrchestratorMcpCoordinatorTierTarget,
   type OrchestratorMcpModelOption,
   type OrchestratorMcpCreateThreadsInput,
   type OrchestratorMcpCreateThreadsResult,
@@ -54,10 +56,12 @@ import {
   type OrchestratorMcpThreadWaitResult,
   type OrchestratorMcpWorktreeCoordinateInput,
   type OrchestratorMcpWorktreeCoordinateResult,
+  type CoordinatorTier,
   type ProviderInteractionMode,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   ProviderRequestKind,
+  type ResolvedCoordinatorTierModel,
   type RuntimeMode,
   type ScheduledTask,
   type ScheduledTaskUpsertInput,
@@ -68,12 +72,14 @@ import {
   type SubtaskEscalationError,
   SubtaskEscalationRequestId,
   ThreadId,
+  isCoordinatorEligibleThread,
   isOrchestrationV2WorkActive,
   isTaskChildLineage,
   latestProviderTurnForAttempt,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
+import { resolveCoordinatorModels } from "@t3tools/shared/coordinator";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -411,6 +417,29 @@ function capabilityModelOption(descriptor: ProviderOptionDescriptor): Orchestrat
     values:
       descriptor.type === "boolean" ? [false, true] : descriptor.options.map((choice) => choice.id),
     ...(defaultValue === undefined ? {} : { default: defaultValue }),
+  };
+}
+
+function toCapabilityCoordinatorTierTarget(
+  tier: ResolvedCoordinatorTierModel,
+  providers: ReadonlyArray<ServerProvider>,
+): OrchestratorMcpCoordinatorTierTarget {
+  const selection = tier.modelSelection;
+  const descriptors =
+    selection === null
+      ? undefined
+      : providers
+          .find((provider) => provider.instanceId === selection.instanceId)
+          ?.models.find((model) => model.slug === selection.model)?.capabilities?.optionDescriptors;
+  const options = selection === null ? undefined : knownOptions(selection.options, descriptors);
+  return {
+    tier: tier.tier,
+    providerInstanceId: selection?.instanceId ?? null,
+    model: selection?.model ?? null,
+    ...(options === undefined || options.length === 0 ? {} : { options }),
+    source: tier.source,
+    fallbackUsed: tier.fallbackUsed,
+    fallbackReason: tier.fallbackReason,
   };
 }
 
@@ -2611,6 +2640,77 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
+      let coordinatorRoot: OrchestrationV2ThreadProjection["thread"] | undefined;
+      let callerTier: CoordinatorTier | undefined;
+      if (parent !== undefined && parent.thread.lineage !== undefined) {
+        if (
+          parent.thread.coordinatorMode?.enabled === true &&
+          isCoordinatorEligibleThread(parent.thread)
+        ) {
+          coordinatorRoot = parent.thread;
+          callerTier = "L0";
+        } else if (
+          isTaskChildLineage(parent.thread.lineage) &&
+          parent.thread.lineage.sideChat !== true &&
+          parent.thread.lineage.temporary !== true &&
+          parent.thread.lineage.rootThreadId !== parent.thread.id
+        ) {
+          const root = yield* threadManagement
+            .getThreadRecords(parent.thread.lineage.rootThreadId, [])
+            .pipe(Effect.option);
+          if (
+            Option.isSome(root) &&
+            root.value.thread.deletedAt === null &&
+            root.value.thread.lineage !== undefined &&
+            root.value.thread.coordinatorMode?.enabled === true &&
+            isCoordinatorEligibleThread(root.value.thread)
+          ) {
+            coordinatorRoot = root.value.thread;
+            callerTier =
+              parent.thread.lineage.parentThreadId === root.value.thread.id ? "L1" : "L2";
+          }
+        }
+      }
+      const coordinator: OrchestratorMcpCoordinatorCapabilities | undefined =
+        coordinatorRoot === undefined || callerTier === undefined
+          ? undefined
+          : (() => {
+              const resolved = resolveCoordinatorModels({
+                settings,
+                providers,
+                projectId: coordinatorRoot.projectId,
+                templateId: coordinatorRoot.coordinatorMode?.templateId,
+                rootModelSelection: coordinatorRoot.modelSelection,
+                orchestrationCapableInstanceIds,
+              });
+              return {
+                enabled: true,
+                callerTier,
+                templateId: resolved.template.id,
+                requestedTemplateId: resolved.requestedTemplateId,
+                templateName: resolved.template.name,
+                templateFallbackUsed: resolved.templateFallbackUsed,
+                preferDelegation: resolved.template.preferDelegation,
+                delegationStrategy: resolved.template.delegationStrategy,
+                tiers: {
+                  L0: toCapabilityCoordinatorTierTarget(resolved.tiers.L0, providers),
+                  L1: toCapabilityCoordinatorTierTarget(resolved.tiers.L1, providers),
+                  L2: toCapabilityCoordinatorTierTarget(resolved.tiers.L2, providers),
+                },
+              };
+            })();
+      const pinnedCoordinatorModels = new Set<string>();
+      if (coordinator !== undefined) {
+        for (const tierTarget of [
+          coordinator.tiers.L0,
+          coordinator.tiers.L1,
+          coordinator.tiers.L2,
+        ]) {
+          if (tierTarget.providerInstanceId !== null && tierTarget.model !== null) {
+            pinnedCoordinatorModels.add(`${tierTarget.providerInstanceId}\0${tierTarget.model}`);
+          }
+        }
+      }
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
       return {
@@ -2647,6 +2747,7 @@ const make = Effect.gen(function* () {
             isPinned: (model) =>
               model.isCustom ||
               (inherited?.instanceId === provider.instanceId && inherited.model === model.slug) ||
+              pinnedCoordinatorModels.has(`${provider.instanceId}\0${model.slug}`) ||
               (settings.favorites ?? []).some(
                 (favorite) =>
                   favorite.provider === provider.instanceId && favorite.model === model.slug,
@@ -2676,6 +2777,7 @@ const make = Effect.gen(function* () {
             constraints: [...constraints],
           };
         }),
+        ...(coordinator === undefined ? {} : { coordinator }),
         features: {
           appOwnedSubagents: true,
           asyncPolling: true,

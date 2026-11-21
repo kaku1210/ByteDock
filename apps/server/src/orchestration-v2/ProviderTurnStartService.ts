@@ -1,7 +1,9 @@
+import { resolveCoordinatorModels } from "@t3tools/shared/coordinator";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
+  isCoordinatorEligibleThread,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ContextHandoff,
@@ -38,6 +40,7 @@ import { withTurnStartReservation, withWorkspaceLease } from "../workspace/works
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeRestoreMissingWorktree } from "../workspace/restoreMissingWorktree.ts";
 import * as EventSink from "./EventSink.ts";
@@ -54,11 +57,16 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
+import {
+  buildCoordinatorInstructions,
+  wrapInlineCoordinatorInstructions,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { unsentManualContinuationSource } from "./manualContinuation.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
@@ -194,6 +202,11 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const providerRegistryOption = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+    const providerAdaptersOption = yield* Effect.serviceOption(
+      ProviderAdapterRegistry.ProviderAdapterRegistryV2,
+    );
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
@@ -1778,6 +1791,40 @@ export const layer: Layer.Layer<
           events,
         });
       });
+      const coordinatorInstructions =
+        projection.thread.coordinatorMode?.enabled === true &&
+        projection.thread.lineage !== undefined &&
+        isCoordinatorEligibleThread(projection.thread)
+          ? yield* Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const providers = Option.isSome(providerRegistryOption)
+                ? yield* providerRegistryOption.value.getProviders
+                : [];
+              const orchestrationCapableInstanceIds = Option.isSome(providerAdaptersOption)
+                ? new Set(yield* providerAdaptersOption.value.list())
+                : undefined;
+              return buildCoordinatorInstructions(
+                resolveCoordinatorModels({
+                  settings,
+                  providers,
+                  projectId: projection.thread.projectId,
+                  templateId: projection.thread.coordinatorMode!.templateId,
+                  rootModelSelection: run.modelSelection,
+                  ...(orchestrationCapableInstanceIds === undefined
+                    ? {}
+                    : { orchestrationCapableInstanceIds }),
+                }),
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Failed to resolve coordinator mode instructions", {
+                  threadId: projection.thread.id,
+                  runId: run.id,
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            )
+          : undefined;
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
@@ -1813,7 +1860,16 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const inlineCoordinatorContext =
+            coordinatorInstructions === undefined ||
+            session.supportsNativeCoordinatorInstructions === true ||
+            compact ||
+            goalCommand ||
+            turnInput.resume === true ||
+            userText.trimStart().startsWith("/")
+              ? ""
+              : wrapInlineCoordinatorInstructions(coordinatorInstructions);
+          const context = [delivery.context, sideChatContext, restartNote, inlineCoordinatorContext]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1898,13 +1954,20 @@ export const layer: Layer.Layer<
               }),
         ),
       );
+      const needsInlineCoordinatorContext =
+        coordinatorInstructions !== undefined &&
+        session.supportsNativeCoordinatorInstructions !== true &&
+        !goalCommand &&
+        !(manualResume && unsentResumeMessage === undefined) &&
+        !userText.trimStart().startsWith("/");
       const deliverySession =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         boundMergeBackTransfers.length === 0 &&
         restartNote === "" &&
-        !noteContinuation
+        !noteContinuation &&
+        !needsInlineCoordinatorContext
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       return runExecution.startRootRun({
@@ -1959,6 +2022,7 @@ export const layer: Layer.Layer<
         },
         modelSelection: run.modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
+        ...(coordinatorInstructions === undefined ? {} : { coordinatorInstructions }),
       });
     });
 

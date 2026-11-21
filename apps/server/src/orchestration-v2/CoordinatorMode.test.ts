@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -13,6 +14,7 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2AppThread,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
@@ -21,8 +23,14 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES } from "../provider/CodexDeveloperInstructions.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import {
+  buildCodexTurnStartParams,
+  CodexProviderCapabilitiesV2,
+} from "./Adapters/CodexAdapterV2.ts";
+import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as FamilyCollaborationOverviewService from "./FamilyCollaborationOverviewService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -31,7 +39,14 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
-function makeCoordinatorTestLayer(name: string) {
+function makeCoordinatorTestLayer(
+  name: string,
+  options?: {
+    readonly supportsNativeCoordinatorInstructions?: true;
+    readonly capturedTurns?: Array<ProviderAdapter.ProviderAdapterV2TurnInput>;
+    readonly providers?: ReadonlyArray<ServerProvider>;
+  },
+) {
   const driver = ProviderDriverKind.make("codex");
   const instanceId = ProviderInstanceId.make(driver);
   const modelSelection = { instanceId, model: "model-alpha" };
@@ -61,6 +76,9 @@ function makeCoordinatorTestLayer(name: string) {
             lastError: null,
           },
           events: Stream.never,
+          ...(options?.supportsNativeCoordinatorInstructions === true
+            ? { supportsNativeCoordinatorInstructions: true as const }
+            : {}),
           ensureThread: ({ threadId, existingProviderThread }) =>
             Effect.succeed({
               ...existingProviderThread!,
@@ -96,7 +114,10 @@ function makeCoordinatorTestLayer(name: string) {
               createdAt: now,
               updatedAt: now,
             }),
-          startTurn: () => Effect.void,
+          startTurn: (input) =>
+            Effect.sync(() => {
+              options?.capturedTurns?.push(input);
+            }),
           steerTurn: () => Effect.void,
           interruptTurn: () => Effect.void,
           respondToRuntimeRequest: () => Effect.void,
@@ -110,6 +131,12 @@ function makeCoordinatorTestLayer(name: string) {
   const layerServerSettings = ServerSettings.layerTest({ responseStreamingMode: "turn" }).pipe(
     Layer.orDie,
   );
+  const layerProviderRegistry =
+    options?.providers === undefined
+      ? Layer.empty
+      : Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(options.providers),
+        });
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
@@ -118,7 +145,7 @@ function makeCoordinatorTestLayer(name: string) {
       serverSettingsLayer: layerServerSettings,
       runEffectWorker: false,
     },
-  );
+  ).pipe(Layer.provide(layerProviderRegistry));
   const layerProjection = ProjectionStore.layer.pipe(Layer.provide(layerDb));
   const layerSharedWorktreeMock = Layer.mock(
     SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
@@ -697,6 +724,337 @@ describe("Orchestrator L0 coordinator mode (P3-B1)", () => {
           enabled: true,
           templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
         });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+});
+
+describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
+  const sampleProviders = (instanceId: ProviderInstanceId): ReadonlyArray<ServerProvider> => [
+    {
+      driver: ProviderDriverKind.make("codex"),
+      instanceId,
+      displayName: "Codex Test",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-11-21T00:00:00.000Z",
+      models: [
+        { slug: "model-alpha", name: "Model Alpha", isCustom: false, capabilities: null },
+        { slug: "model-beta", name: "Model Beta", isCustom: false, capabilities: null },
+        { slug: "model-gamma", name: "Model Gamma", isCustom: false, capabilities: null },
+      ],
+      slashCommands: [],
+      skills: [],
+    },
+  ];
+
+  const drainWorker = Effect.gen(function* () {
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    for (let i = 0; i < 8; i += 1) {
+      const worked = yield* worker.runOnce();
+      if (!worked) break;
+    }
+  });
+
+  it.effect(
+    "injects dynamic inline coordinator instructions on L0 turns, stops when disabled, skips slash commands, and never injects on L1 subtasks",
+    () => {
+      const capturedTurns: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+      const instanceId = ProviderInstanceId.make("codex");
+      const { modelSelection, layer } = makeCoordinatorTestLayer("coordinator-inline-injection", {
+        capturedTurns,
+        providers: sampleProviders(instanceId),
+      });
+      const existingWorktreePath = NodeOS.tmpdir();
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const serverSettings = yield* ServerSettings.ServerSettingsService;
+        const projectId = ProjectId.make("proj:coord-inline");
+        const templateId = CoordinatorRoleTemplateId.make("tiered-team");
+
+        yield* serverSettings.updateSettings({
+          coordinatorRoleTemplates: {
+            [templateId]: {
+              name: "Tiered Team",
+              description: "Coordinate L1/L2 dynamically.",
+              tierModels: {
+                L0: null,
+                L1: { instanceId, model: "model-beta" },
+                L2: { instanceId, model: "model-gamma" },
+              },
+              preferDelegation: true,
+              delegationStrategy: "tiered",
+              instructions: "Keep L0 focused on orchestration.",
+            },
+          },
+        });
+
+        // 1. Enabled L0 coordinator thread gets dynamic instructions both on turnInput and inline.
+        const enabledThreadId = ThreadId.make("thread:coord-inline-on");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:create-inline-on"),
+          threadId: enabledThreadId,
+          projectId,
+          title: "Inline L0 Enabled",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          coordinatorMode: { enabled: true, templateId },
+          branch: "main",
+          worktreePath: existingWorktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-inline-on"),
+          threadId: enabledThreadId,
+          messageId: MessageId.make("msg:inline-on"),
+          text: "Build feature X",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 1);
+        const firstTurn = capturedTurns[0]!;
+        assert.isDefined(firstTurn.coordinatorInstructions);
+        assert.include(
+          firstTurn.coordinatorInstructions!,
+          "## T3 Code L0 Coordinator Mode (Tiered Team)",
+        );
+        assert.include(firstTurn.coordinatorInstructions!, "`codex/model-alpha` [root_thread]");
+        assert.include(
+          firstTurn.coordinatorInstructions!,
+          "`codex/model-beta` [template_configured]",
+        );
+        assert.include(
+          firstTurn.coordinatorInstructions!,
+          "`codex/model-gamma` [template_configured]",
+        );
+        assert.include(firstTurn.message.text, "<t3_code_coordinator_instructions>");
+        assert.include(firstTurn.message.text, "Build feature X");
+
+        // 2. Disabled L0 thread receives zero coordinator instructions or inline wrapper.
+        const disabledThreadId = ThreadId.make("thread:coord-inline-off");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:create-inline-off"),
+          threadId: disabledThreadId,
+          projectId,
+          title: "Inline L0 Disabled",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          coordinatorMode: { enabled: true, templateId },
+          branch: "main",
+          worktreePath: existingWorktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:disable-inline"),
+          threadId: disabledThreadId,
+          coordinatorMode: { enabled: false, templateId },
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-inline-off"),
+          threadId: disabledThreadId,
+          messageId: MessageId.make("msg:inline-off"),
+          text: "Normal request",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 2);
+        const disabledTurn = capturedTurns[1]!;
+        assert.isUndefined(disabledTurn.coordinatorInstructions);
+        assert.strictEqual(disabledTurn.message.text, "Normal request");
+
+        // 3. Slash command preserves leading "/" without inline coordinator wrapping.
+        const slashThreadId = ThreadId.make("thread:coord-inline-slash");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:create-inline-slash"),
+          threadId: slashThreadId,
+          projectId,
+          title: "Inline L0 Slash",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          coordinatorMode: { enabled: true, templateId },
+          branch: "main",
+          worktreePath: existingWorktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-inline-slash"),
+          threadId: slashThreadId,
+          messageId: MessageId.make("msg:inline-slash"),
+          text: "/review src/index.ts",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 3);
+        const slashTurn = capturedTurns[2]!;
+        assert.isDefined(slashTurn.coordinatorInstructions);
+        assert.strictEqual(slashTurn.message.text, "/review src/index.ts");
+
+        // 4. L1 subtask under an active L0 coordinator never gets L0 coordinator instructions.
+        const sink = yield* EventSink.EventSinkV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const l0BaseThread = yield* projectionStore.getThread(enabledThreadId);
+        const now = yield* DateTime.now;
+        const l1SubtaskId = ThreadId.make("thread:coord-inline-l1");
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:seed-inline-l1"),
+              type: "thread.created",
+              threadId: l1SubtaskId,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                ...l0BaseThread,
+                id: l1SubtaskId,
+                title: "L1 Subtask",
+                coordinatorMode: undefined,
+                lineage: {
+                  parentThreadId: enabledThreadId,
+                  relationshipToParent: "subtask",
+                  rootThreadId: enabledThreadId,
+                },
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-inline-l1"),
+          threadId: l1SubtaskId,
+          messageId: MessageId.make("msg:inline-l1"),
+          text: "Execute subtask work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 4);
+        const l1Turn = capturedTurns[3]!;
+        assert.isUndefined(l1Turn.coordinatorInstructions);
+        assert.strictEqual(l1Turn.message.text, "Execute subtask work");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "delivers coordinatorInstructions natively for Codex-style sessions without duplicating inline text and maps into buildCodexTurnStartParams",
+    () => {
+      const capturedTurns: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+      const instanceId = ProviderInstanceId.make("codex");
+      const { modelSelection, layer } = makeCoordinatorTestLayer("coordinator-native-injection", {
+        supportsNativeCoordinatorInstructions: true,
+        capturedTurns,
+        providers: sampleProviders(instanceId),
+      });
+      const existingWorktreePath = NodeOS.tmpdir();
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectId = ProjectId.make("proj:coord-native");
+        const threadId = ThreadId.make("thread:coord-native-l0");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:create-native-l0"),
+          threadId,
+          projectId,
+          title: "Native Codex L0",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          coordinatorMode: {
+            enabled: true,
+            templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+          },
+          branch: "main",
+          worktreePath: existingWorktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-native-l0"),
+          threadId,
+          messageId: MessageId.make("msg:native-l0"),
+          text: "Plan and delegate work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 1);
+        const turn = capturedTurns[0]!;
+        assert.isDefined(turn.coordinatorInstructions);
+        assert.strictEqual(turn.message.text, "Plan and delegate work");
+
+        const withMcp = yield* buildCodexTurnStartParams({
+          nativeThreadId: "native:thread:coord-native-l0",
+          codexInput: [{ type: "text", text: turn.message.text, text_elements: [] }],
+          runtimePolicy: {
+            cwd: existingWorktreePath,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          modelSelection,
+          hasT3Mcp: true,
+          coordinatorInstructions: turn.coordinatorInstructions,
+        });
+        const withoutMcp = yield* buildCodexTurnStartParams({
+          nativeThreadId: "native:thread:coord-native-l0",
+          codexInput: [{ type: "text", text: turn.message.text, text_elements: [] }],
+          runtimePolicy: {
+            cwd: existingWorktreePath,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+          },
+          modelSelection,
+          hasT3Mcp: false,
+          coordinatorInstructions: turn.coordinatorInstructions,
+        });
+
+        for (const params of [withMcp, withoutMcp]) {
+          const entry = params.additionalContext?.t3_code_coordinator;
+          assert.isDefined(entry);
+          assert.strictEqual(entry!.kind, "application");
+          assert.include(entry!.value, "## T3 Code L0 Coordinator Mode");
+          assert.isAtMost(
+            Buffer.byteLength(entry!.value, "utf8"),
+            CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+          );
+        }
       }).pipe(Effect.provide(layer));
     },
   );

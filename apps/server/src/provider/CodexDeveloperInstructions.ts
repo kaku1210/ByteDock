@@ -37,10 +37,45 @@ export interface CodexRuntimeInfo {
   readonly reasoningEffort?: string | undefined;
 }
 
+const utf8Encoder = new TextEncoder();
+
+function clampCodexContextValue(text: string): string {
+  const trimmed = text.trim();
+  if (utf8Encoder.encode(trimmed).length <= CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES) {
+    return trimmed;
+  }
+  const suffix = "…";
+  const budget = CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES - utf8Encoder.encode(suffix).length;
+  let used = 0;
+  let out = "";
+  for (const ch of trimmed) {
+    const chBytes = utf8Encoder.encode(ch).length;
+    if (used + chBytes > budget) break;
+    out += ch;
+    used += chBytes;
+  }
+  return `${out.trimEnd()}${suffix}`;
+}
+
+export function buildCodexCoordinatorAdditionalContextEntry(
+  coordinatorInstructions?: string,
+): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+  if (coordinatorInstructions === undefined || coordinatorInstructions.trim() === "") {
+    return {};
+  }
+  return {
+    t3_code_coordinator: {
+      kind: "application",
+      value: clampCodexContextValue(coordinatorInstructions),
+    },
+  };
+}
+
 /** Keep this outside collaboration mode; model-catalog mode text overrides client developer_instructions. */
 export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   toolsAvailable: boolean | T3CodeToolAvailability = true,
+  coordinatorInstructions?: string,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
   const tools = toolInstructions(toolsAvailable);
   // Split values to fit per-entry caps; number keys because Codex emits them in key order.
@@ -51,6 +86,7 @@ export function buildCodexAdditionalContext(
         { kind: "application" as const, value: section },
       ]),
     ),
+    ...buildCodexCoordinatorAdditionalContextEntry(coordinatorInstructions),
     t3_code_runtime: {
       kind: "application",
       value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),

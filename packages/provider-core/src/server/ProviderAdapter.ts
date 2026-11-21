@@ -553,6 +553,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** L0 coordinator mode instructions for providers that deliver them natively (e.g. Codex additionalContext). */
+  readonly coordinatorInstructions?: string;
 }
 
 export type ProviderAdapterV2ResumeTurnInput = Omit<
@@ -711,6 +713,8 @@ export interface ProviderAdapterV2SessionRuntime {
    * must keep Waiting.
    */
   readonly backgroundTasksEndWithProcess?: true;
+  /** Set when the adapter natively delivers `turnInput.coordinatorInstructions` outside `message.text`. */
+  readonly supportsNativeCoordinatorInstructions?: true;
   readonly getModelContextWindow?: (
     modelSelection: ModelSelection,
     cwd?: string | null,

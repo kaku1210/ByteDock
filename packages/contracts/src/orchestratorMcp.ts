@@ -57,6 +57,12 @@ import {
   SubtaskEscalationRequestId,
   SubtaskEscalationStatus,
 } from "./subtaskEscalation.ts";
+import {
+  CoordinatorDelegationStrategy,
+  CoordinatorRoleTemplateId,
+  CoordinatorTier,
+  CoordinatorTierResolutionSource,
+} from "./coordinator.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -722,6 +728,35 @@ export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
 export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
+export const OrchestratorMcpCoordinatorTierTarget = Schema.Struct({
+  tier: CoordinatorTier,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  model: Schema.NullOr(Schema.String),
+  options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+  source: CoordinatorTierResolutionSource,
+  fallbackUsed: Schema.Boolean,
+  fallbackReason: Schema.NullOr(Schema.String),
+});
+export type OrchestratorMcpCoordinatorTierTarget = typeof OrchestratorMcpCoordinatorTierTarget.Type;
+
+export const OrchestratorMcpCoordinatorCapabilities = Schema.Struct({
+  enabled: Schema.Boolean,
+  callerTier: CoordinatorTier,
+  templateId: CoordinatorRoleTemplateId,
+  requestedTemplateId: CoordinatorRoleTemplateId,
+  templateName: Schema.String,
+  templateFallbackUsed: Schema.Boolean,
+  preferDelegation: Schema.Boolean,
+  delegationStrategy: CoordinatorDelegationStrategy,
+  tiers: Schema.Struct({
+    L0: OrchestratorMcpCoordinatorTierTarget,
+    L1: OrchestratorMcpCoordinatorTierTarget,
+    L2: OrchestratorMcpCoordinatorTierTarget,
+  }),
+});
+export type OrchestratorMcpCoordinatorCapabilities =
+  typeof OrchestratorMcpCoordinatorCapabilities.Type;
+
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),
@@ -730,6 +765,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  coordinator: Schema.optional(OrchestratorMcpCoordinatorCapabilities),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,

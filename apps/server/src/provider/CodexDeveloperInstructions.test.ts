@@ -5,6 +5,7 @@ import { describe, it } from "vite-plus/test";
 
 import {
   buildCodexAdditionalContext,
+  buildCodexCoordinatorAdditionalContextEntry,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
 } from "./CodexDeveloperInstructions.ts";
 
@@ -76,6 +77,33 @@ describe("Codex device context", () => {
     NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
     NodeAssert.ok(!tools(true).includes("ToolSearch"));
     NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
+  });
+});
+
+describe("Codex coordinator context", () => {
+  it("omits t3_code_coordinator when instructions are absent or blank", () => {
+    const base = buildCodexAdditionalContext({ model: "gpt-6.1-sol" });
+    NodeAssert.equal(base.t3_code_coordinator, undefined);
+    NodeAssert.deepStrictEqual(buildCodexCoordinatorAdditionalContextEntry(undefined), {});
+    NodeAssert.deepStrictEqual(buildCodexCoordinatorAdditionalContextEntry("   \n\t "), {});
+  });
+
+  it("emits t3_code_coordinator and clamps oversized CJK instructions to Codex's 4,000-byte cap", () => {
+    const longInstructions = `## T3 Code L0 Coordinator Mode\n${"委派给子任务执行并核对结果。".repeat(300)}`;
+    const context = buildCodexAdditionalContext(
+      { model: "gpt-6.1-sol" },
+      { browser: true, device: false },
+      longInstructions,
+    );
+
+    NodeAssert.ok(context.t3_code_coordinator !== undefined);
+    NodeAssert.equal(context.t3_code_coordinator.kind, "application");
+    NodeAssert.ok(context.t3_code_coordinator.value.startsWith("## T3 Code L0 Coordinator Mode"));
+    const bytes = Buffer.byteLength(context.t3_code_coordinator.value, "utf8");
+    NodeAssert.ok(
+      bytes <= CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+      `t3_code_coordinator (${bytes} bytes) exceeded ${CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES}-byte limit`,
+    );
   });
 });
 

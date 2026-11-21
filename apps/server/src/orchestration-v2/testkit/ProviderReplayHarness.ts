@@ -467,6 +467,7 @@ export function layerWithRegistry<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         layerStores,
+        layerProvidedRegistry,
         layerProviderSessionManagerProvided,
         Layer.mock(ProviderAuthService.ProviderAuthService)({
           tryHandlePromptCommand: () => Effect.succeed(false),
