@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import {
   ContextTransferId,
   MessageId,
@@ -6,18 +6,31 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
+  TextGenerationError,
   ThreadId,
   TurnItemId,
   type OrchestrationV2AppThread,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import type {
+  SubtaskSummaryGenerationInput,
+  SubtaskSummaryGenerationResult,
+} from "@t3tools/provider-core/server/textGeneration";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as SubtaskSummaryCache from "../persistence/SubtaskSummaryCache.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
+import * as SubtaskSummaryCacheService from "./SubtaskSummaryCacheService.ts";
 
 const layerTest = ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer));
 
@@ -351,3 +364,394 @@ it.effect("builds a budgeted subtask skeleton without side chat framing", () =>
     assert.include(handoff.summaryText, `t3_thread_read({ threadId: "${parentThreadId}"`);
   }).pipe(Effect.provide(layerTest)),
 );
+
+describe("Subtask cached semantic summary & fallback (P3-A3)", () => {
+  const makeSemanticLayer = (
+    generateSubtaskSummary: (
+      input: SubtaskSummaryGenerationInput,
+    ) => Effect.Effect<SubtaskSummaryGenerationResult, TextGenerationError>,
+  ) => {
+    const cacheRepoLayer = SubtaskSummaryCache.layer.pipe(
+      Layer.provide(SqlitePersistence.layerMemory),
+    );
+    const cacheServiceLayer = SubtaskSummaryCacheService.layer.pipe(
+      Layer.provideMerge(cacheRepoLayer),
+    );
+    const textGenerationLayer = Layer.mock(TextGeneration.TextGeneration)({
+      generateSubtaskSummary,
+    });
+    const handoffLayer = ContextHandoffService.layer.pipe(
+      Layer.provide(Layer.mergeAll(IdAllocator.layer, cacheServiceLayer, textGenerationLayer)),
+    );
+    return Layer.mergeAll(handoffLayer, cacheServiceLayer);
+  };
+
+  const baseSubtaskInput = (
+    parentThreadId: ThreadId,
+    childSuffix: string,
+    parentItems: ReadonlyArray<OrchestrationV2TurnItem>,
+  ) => ({
+    parentThreadId,
+    parentTitle: "Main refactor thread",
+    parentGoal: "Ship unified subtask orchestration",
+    sourceAnchor: {
+      sourceThreadId: parentThreadId,
+      sourceRunId: RunId.make("run:cutoff-semantic-1"),
+      sourceOrdinal: 1,
+      sourceTurnItemId: parentItems.at(-1)?.id,
+      excerpt: "Keep t3_thread_read back-references intact",
+    },
+    threadId: ThreadId.make(`thread:subtask-${childSuffix}`),
+    targetRunId: RunId.make(`run:subtask-${childSuffix}`),
+    transferId: ContextTransferId.make(`transfer:subtask-${childSuffix}`),
+    toProviderThreadId: ProviderThreadId.make(`provider-thread:${childSuffix}`),
+    fromProviderInstanceId: ProviderInstanceId.make("codex"),
+    toProviderInstanceId: ProviderInstanceId.make("codex"),
+    coveredRunOrdinals: { from: 1, to: 1 },
+    parentItems,
+    createdAt: DateTime.makeUnsafe("2026-11-21T08:00:00.000Z"),
+    cwd: "/workspace/project",
+    projectId: ProjectId.make("proj:semantic"),
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4-mini",
+    },
+  });
+
+  it.effect(
+    "generates structured semantic summary, caches it in SQLite, reuses on sibling subtask, and preserves t3_thread_read anchor",
+    () => {
+      let calls = 0;
+      const seenInputs: Array<SubtaskSummaryGenerationInput> = [];
+      const layer = makeSemanticLayer((input) => {
+        calls += 1;
+        seenInputs.push(input);
+        return Effect.succeed({
+          goal: "Ship cached semantic summaries for subtasks",
+          constraints: ["Preserve t3_thread_read anchor", "Stay under 8000 chars"],
+          decisions: ["Use composite SQLite primary key with content digest"],
+          openQuestions: ["Tune default prune TTL after telemetry"],
+          keyAnchors: [
+            "apps/server/src/orchestration-v2/ContextHandoffService.ts",
+            "item=turn-item:p-2",
+          ],
+          summary: "Parent established schema and single-flight cache; subtask implements wiring.",
+        });
+      });
+
+      return Effect.gen(function* () {
+        const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+        const parentThreadId = ThreadId.make("thread:semantic-parent");
+        const parentItems = [
+          importedItem({
+            role: "user",
+            id: "p-1",
+            text: "Build cached subtask summary with fallback",
+            ordinal: 1,
+          }),
+          importedItem({
+            role: "assistant",
+            id: "p-2",
+            text: "Agreed: preserve t3_thread_read anchor and content digest invalidation.",
+            ordinal: 2,
+          }),
+        ];
+
+        const first = yield* service.prepareSubtaskContext(
+          baseSubtaskInput(parentThreadId, "a", parentItems),
+        );
+        const second = yield* service.prepareSubtaskContext(
+          baseSubtaskInput(parentThreadId, "b", parentItems),
+        );
+
+        assert.equal(calls, 1);
+        assert.equal(seenInputs.length, 1);
+        assert.equal(seenInputs[0]!.cwd, "/workspace/project");
+        assert.include(seenInputs[0]!.conversationExcerpt, "item=turn-item:p-2");
+
+        assert.include(
+          first.summaryText,
+          "Context summary mode: semantic (llm-summary-v1, generated, model=codex/gpt-5.4-mini)",
+        );
+        assert.include(first.summaryText, "Goal: Ship cached semantic summaries for subtasks");
+        assert.include(first.summaryText, "Constraints:\n- Preserve t3_thread_read anchor");
+        assert.include(
+          first.summaryText,
+          "Decisions:\n- Use composite SQLite primary key with content digest",
+        );
+        assert.include(
+          first.summaryText,
+          "Open questions:\n- Tune default prune TTL after telemetry",
+        );
+        assert.include(
+          first.summaryText,
+          "Key anchors:\n- apps/server/src/orchestration-v2/ContextHandoffService.ts",
+        );
+        assert.include(
+          first.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+        assert.include(first.summaryText, "item=turn-item:p-2");
+
+        assert.include(
+          second.summaryText,
+          "Context summary mode: semantic (llm-summary-v1, cache_hit, model=codex/gpt-5.4-mini)",
+        );
+        assert.include(second.summaryText, "Goal: Ship cached semantic summaries for subtasks");
+        assert.include(
+          second.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+
+        // Mutating parent content at the same sourceRunId invalidates via content_digest.
+        const updatedItems = [
+          parentItems[0]!,
+          importedItem({
+            role: "assistant",
+            id: "p-2",
+            text: "Updated streaming response with additional constraint.",
+            ordinal: 2,
+          }),
+        ];
+        const third = yield* service.prepareSubtaskContext(
+          baseSubtaskInput(parentThreadId, "c", updatedItems),
+        );
+        assert.equal(calls, 2);
+        assert.include(third.summaryText, "generated");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "coalesces concurrent prepareSubtaskContext calls for the same parent cutoff into one LLM call",
+    () =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const gate = yield* Deferred.make<void>();
+        const started = yield* Deferred.make<void>();
+        const layer = makeSemanticLayer(() =>
+          Effect.gen(function* () {
+            calls += 1;
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(gate);
+            return {
+              goal: "Coalesced goal",
+              constraints: [],
+              decisions: ["Single-flight active"],
+              openQuestions: [],
+              keyAnchors: ["run=run:cutoff-semantic-1"],
+              summary: "Generated once for both concurrent subtasks.",
+            };
+          }),
+        );
+
+        return yield* Effect.gen(function* () {
+          const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+          const parentThreadId = ThreadId.make("thread:concurrent-parent");
+          const parentItems = [
+            importedItem({
+              role: "user",
+              id: "c-1",
+              text: "Run two subtasks in parallel",
+              ordinal: 1,
+            }),
+          ];
+
+          const f1 = yield* Effect.forkChild(
+            service.prepareSubtaskContext(baseSubtaskInput(parentThreadId, "c1", parentItems)),
+          );
+          yield* Deferred.await(started);
+          const f2 = yield* Effect.forkChild(
+            service.prepareSubtaskContext(baseSubtaskInput(parentThreadId, "c2", parentItems)),
+          );
+          yield* Effect.yieldNow;
+          yield* Deferred.succeed(gate, undefined);
+
+          const [r1, r2] = yield* Effect.all([Fiber.join(f1), Fiber.join(f2)]);
+          assert.equal(calls, 1);
+          assert.include(r1.summaryText, "Coalesced goal");
+          assert.include(r2.summaryText, "Coalesced goal");
+          const outcomes = [r1.summaryText, r2.summaryText];
+          assert.isTrue(outcomes.some((text) => text.includes(", generated,")));
+          assert.isTrue(outcomes.some((text) => text.includes(", coalesced,")));
+        }).pipe(Effect.provide(layer));
+      }),
+  );
+
+  it.effect(
+    "degrades to MVP skeleton with timeout reason and t3_thread_read anchor when LLM summary times out",
+    () => {
+      const layer = makeSemanticLayer(() =>
+        Effect.sleep("10 seconds").pipe(
+          Effect.as({
+            goal: "Too late",
+            constraints: [],
+            decisions: [],
+            openQuestions: [],
+            keyAnchors: [],
+            summary: "Should not be returned after timeout",
+          }),
+        ),
+      );
+
+      return Effect.gen(function* () {
+        const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+        const cacheRepo = yield* SubtaskSummaryCache.SubtaskSummaryCacheRepository;
+        const parentThreadId = ThreadId.make("thread:timeout-parent");
+        const parentItems = [
+          importedItem({
+            role: "user",
+            id: "t-1",
+            text: "PARENT_FALLBACK_CONTENT_ON_TIMEOUT",
+            ordinal: 1,
+          }),
+        ];
+        const input = {
+          ...baseSubtaskInput(parentThreadId, "timeout", parentItems),
+          summaryTimeoutMs: 500,
+        };
+
+        const fiber = yield* Effect.forkChild(service.prepareSubtaskContext(input));
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("1 second");
+        const handoff = yield* Fiber.join(fiber);
+
+        assert.include(
+          handoff.summaryText,
+          "Context summary fallback: mvp_skeleton (reason=timeout:",
+        );
+        assert.include(handoff.summaryText, "PARENT_FALLBACK_CONTENT_ON_TIMEOUT");
+        assert.include(
+          handoff.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+        assert.include(handoff.summaryText, "item=turn-item:t-1");
+
+        const key = SubtaskSummaryCacheService.buildSubtaskSummaryCacheKey({
+          parentThreadId,
+          parentTitle: input.parentTitle,
+          parentGoal: input.parentGoal,
+          sourceAnchor: input.sourceAnchor,
+          coveredRunOrdinals: input.coveredRunOrdinals,
+          parentItems,
+          maxSummaryChars: 8_000,
+        });
+        assert.isTrue(Option.isNone(yield* cacheRepo.get(key)));
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "degrades to MVP skeleton with model_unavailable reason when TextGeneration fails",
+    () => {
+      const layer = makeSemanticLayer(() =>
+        Effect.fail(
+          new TextGenerationError({
+            operation: "generateSubtaskSummary",
+            detail: "Provider codex is unauthenticated.",
+          }),
+        ),
+      );
+
+      return Effect.gen(function* () {
+        const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+        const parentThreadId = ThreadId.make("thread:unavailable-parent");
+        const parentItems = [
+          importedItem({
+            role: "user",
+            id: "u-1",
+            text: "PARENT_FALLBACK_CONTENT_ON_MODEL_ERROR",
+            ordinal: 1,
+          }),
+        ];
+        const handoff = yield* service.prepareSubtaskContext(
+          baseSubtaskInput(parentThreadId, "unavail", parentItems),
+        );
+
+        assert.include(
+          handoff.summaryText,
+          "Context summary fallback: mvp_skeleton (reason=model_unavailable:",
+        );
+        assert.include(handoff.summaryText, "PARENT_FALLBACK_CONTENT_ON_MODEL_ERROR");
+        assert.include(
+          handoff.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "degrades to MVP skeleton with budget_exceeded reason when LLM output exceeds budget or budget is too small",
+    () => {
+      let calls = 0;
+      const layer = makeSemanticLayer(() => {
+        calls += 1;
+        return Effect.succeed({
+          goal: "Oversized summary test",
+          constraints: ["Keep bounded"],
+          decisions: [],
+          openQuestions: [],
+          keyAnchors: [],
+          summary: "Z".repeat(9_000),
+        });
+      });
+
+      return Effect.gen(function* () {
+        const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+        const cacheRepo = yield* SubtaskSummaryCache.SubtaskSummaryCacheRepository;
+        const parentThreadId = ThreadId.make("thread:budget-parent");
+        const parentItems = [
+          importedItem({
+            role: "user",
+            id: "b-1",
+            text: "PARENT_FALLBACK_CONTENT_ON_BUDGET",
+            ordinal: 1,
+          }),
+        ];
+
+        // Case 1: LLM output overflows maxSummaryChars -> fallback & do not cache oversized result.
+        const inputOversized = {
+          ...baseSubtaskInput(parentThreadId, "budget-oversized", parentItems),
+          maxSummaryChars: 2_000,
+        };
+        const oversizedHandoff = yield* service.prepareSubtaskContext(inputOversized);
+        assert.equal(calls, 1);
+        assert.isAtMost(oversizedHandoff.summaryText.length, 2_000);
+        assert.include(
+          oversizedHandoff.summaryText,
+          "Context summary fallback: mvp_skeleton (reason=budget_exceeded:",
+        );
+        assert.include(oversizedHandoff.summaryText, "PARENT_FALLBACK_CONTENT_ON_BUDGET");
+        assert.include(
+          oversizedHandoff.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+
+        const oversizedKey = SubtaskSummaryCacheService.buildSubtaskSummaryCacheKey({
+          parentThreadId,
+          parentTitle: inputOversized.parentTitle,
+          parentGoal: inputOversized.parentGoal,
+          sourceAnchor: inputOversized.sourceAnchor,
+          coveredRunOrdinals: inputOversized.coveredRunOrdinals,
+          parentItems,
+          maxSummaryChars: 2_000,
+        });
+        assert.isTrue(Option.isNone(yield* cacheRepo.get(oversizedKey)));
+
+        // Case 2: maxSummaryChars too tight for semantic wrapper -> short-circuits without LLM call.
+        const tightHandoff = yield* service.prepareSubtaskContext({
+          ...baseSubtaskInput(parentThreadId, "budget-tight", parentItems),
+          maxSummaryChars: 420,
+        });
+        assert.equal(calls, 1);
+        assert.isAtMost(tightHandoff.summaryText.length, 420);
+        assert.include(tightHandoff.summaryText, "reason=budget_exceeded");
+        assert.include(
+          tightHandoff.summaryText,
+          `t3_thread_read({ threadId: "${parentThreadId}", view: "activity" })`,
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+});

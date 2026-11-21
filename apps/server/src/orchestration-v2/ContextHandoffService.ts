@@ -1,19 +1,25 @@
 import {
+  type ModelSelection,
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
   type OrchestrationV2SubtaskSourceAnchor,
   type OrchestrationV2TurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
+  type ProjectId,
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import type { SubtaskSummaryGenerationResult } from "@t3tools/provider-core/server/textGeneration";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
@@ -26,7 +32,11 @@ import {
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
+import * as SubtaskSummaryCacheService from "./SubtaskSummaryCacheService.ts";
 
 export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandoffPrepareError>()(
   "ContextHandoffPrepareError",
@@ -100,7 +110,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
-  /** Budgeted structured skeleton from parent cutoff, lazily prepended on subtask's first turn. */
+  /** Budgeted semantic summary (with cached LLM generation + MVP skeleton fallback) for a subtask's first turn. */
   readonly prepareSubtaskContext: (input: {
     readonly threadId: ThreadId;
     readonly parentThreadId: ThreadId;
@@ -115,6 +125,12 @@ export interface ContextHandoffServiceV2Shape {
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
+    readonly cwd?: string | null | undefined;
+    readonly projectId?: ProjectId | null | undefined;
+    readonly modelSelection?: ModelSelection | null | undefined;
+    readonly summaryTimeoutMs?: number | undefined;
+    readonly maxSummaryChars?: number | undefined;
+    readonly strategyVersion?: string | undefined;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
   /** Aggregated multi-source merge-back handoff with shared budget and per-source guaranteed floor. */
   readonly prepareMultiMergeBack: (input: {
@@ -418,18 +434,31 @@ export const isSideChatContextHandoff = (handoff: OrchestrationV2ContextHandoff)
   handoff.strategy === "manual_context" && handoff.transferId != null;
 
 const SUBTASK_CONTEXT_MAX_CHARS = 8_000;
+const SUBTASK_CONTEXT_MIN_MAX_CHARS = 256;
+const DEFAULT_SUBTASK_SUMMARY_TIMEOUT_MS = 12_000;
+const SUBTASK_SUMMARY_CONVERSATION_EXCERPT_MAX_CHARS = 28_000;
+const SUBTASK_SUMMARY_MIN_BODY_CHARS = 160;
 
-/** Budgeted structured skeleton from the parent cutoff, never framed as a read-only side chat. */
-function makeSubtaskContext(input: {
-  readonly parentThreadId: ThreadId;
-  readonly parentTitle: string;
-  readonly parentGoal?: string | null | undefined;
+type SubtaskSummaryFallbackReason = "timeout" | "model_unavailable" | "budget_exceeded";
+
+interface SubtaskSummaryFallbackNotice {
+  readonly reason: SubtaskSummaryFallbackReason;
+  readonly detail: string;
+}
+
+class SubtaskSummaryFallbackError extends Schema.TaggedError<SubtaskSummaryFallbackError>()(
+  "SubtaskSummaryFallbackError",
+  {
+    reason: Schema.Literals(["timeout", "model_unavailable", "budget_exceeded"]),
+    detail: Schema.String,
+  },
+) {}
+
+function subtaskCutoffParts(input: {
   readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
   readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-  readonly digest: ReadonlyArray<string | OrchestrationV2TurnItem>;
-}): string {
-  const framing = `You are working in a dedicated subtask branched from parent thread ${input.parentThreadId}. Proceed with the user's instructions for this subtask; coordinate carefully if the parent shares this workspace.`;
-  const cutoffParts = [
+}): ReadonlyArray<string> {
+  return [
     input.sourceAnchor?.sourceRunId ? `run=${input.sourceAnchor.sourceRunId}` : null,
     input.sourceAnchor?.sourceOrdinal !== undefined
       ? `ordinal=${input.sourceAnchor.sourceOrdinal}`
@@ -437,8 +466,41 @@ function makeSubtaskContext(input: {
         ? `runs=${input.coveredRunOrdinals.from}-${input.coveredRunOrdinals.to}`
         : null,
     input.sourceAnchor?.sourceMessageId ? `message=${input.sourceAnchor.sourceMessageId}` : null,
+    input.sourceAnchor?.sourceTurnItemId ? `item=${input.sourceAnchor.sourceTurnItemId}` : null,
   ].filter((part): part is string => part !== null);
-  const metadataLines = [
+}
+
+function buildSubtaskReadBackAnchor(input: {
+  readonly parentThreadId: ThreadId;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
+  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+  readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
+}): string {
+  const anchorItemId =
+    input.sourceAnchor?.sourceTurnItemId ?? input.parentItems.at(-1)?.id ?? undefined;
+  const anchorParts = [
+    input.sourceAnchor?.sourceRunId ? `run=${input.sourceAnchor.sourceRunId}` : null,
+    input.sourceAnchor?.sourceOrdinal !== undefined
+      ? `ordinal=${input.sourceAnchor.sourceOrdinal}`
+      : input.coveredRunOrdinals.to > 0
+        ? `runs=${input.coveredRunOrdinals.from}-${input.coveredRunOrdinals.to}`
+        : null,
+    input.sourceAnchor?.sourceMessageId ? `message=${input.sourceAnchor.sourceMessageId}` : null,
+    anchorItemId ? `item=${anchorItemId}` : null,
+  ].filter((part): part is string => part !== null);
+  const anchorSuffix = anchorParts.length > 0 ? ` (cutoff anchor: ${anchorParts.join(", ")})` : "";
+  return `Use t3_thread_read({ threadId: "${input.parentThreadId}", view: "activity" }) to inspect full parent history or later updates${anchorSuffix}.`;
+}
+
+function buildSubtaskBaseMetadataLines(input: {
+  readonly parentThreadId: ThreadId;
+  readonly parentTitle: string;
+  readonly parentGoal?: string | null | undefined;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
+  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+}): ReadonlyArray<string> {
+  const cutoffParts = subtaskCutoffParts(input);
+  return [
     `Parent thread: ${compactText(input.parentTitle, 140)} (${input.parentThreadId})`,
     ...(input.sourceAnchor?.sourceThreadId &&
     input.sourceAnchor.sourceThreadId !== input.parentThreadId
@@ -452,14 +514,150 @@ function makeSubtaskContext(input: {
       ? [`Selected excerpt: ${compactText(input.sourceAnchor.excerpt, 600)}`]
       : []),
   ];
+}
+
+function formatSubtaskConversationExcerpt(
+  items: ReadonlyArray<OrchestrationV2TurnItem>,
+  maxChars = SUBTASK_SUMMARY_CONVERSATION_EXCERPT_MAX_CHARS,
+): string {
+  const entries: Array<string> = [];
+  for (const item of items) {
+    let body: string | null = null;
+    switch (item.type) {
+      case "user_message":
+        body = `User: ${item.text.trim()}`;
+        break;
+      case "assistant_message":
+        body = `Assistant: ${item.text.trim()}`;
+        break;
+      case "command_execution":
+        body = `Command (exit=${item.exitCode ?? "unknown"}): ${compactText(item.input, 400)}`;
+        break;
+      case "file_change": {
+        const paths = item.changes?.length
+          ? item.changes.map((change) => `${change.operation}:${change.path}`).join(", ")
+          : item.fileName;
+        body = `File change: ${compactText(paths, 400)}`;
+        break;
+      }
+      case "checkpoint":
+        body = `Checkpoint: ${item.files.length} files`;
+        break;
+      case "handoff":
+        body = `Handoff: ${compactText(item.summary ?? item.strategy, 500)}`;
+        break;
+      default:
+        body = null;
+        break;
+    }
+    if (body === null || body.length === 0) continue;
+    entries.push(`[#${item.ordinal} item=${item.id}] ${body}`);
+  }
+  if (entries.length === 0) return "";
+
+  const truncatedHeader = "[Earlier parent items truncated]";
+  const kept: Array<string> = [];
+  let omitted = false;
+  let remaining = maxChars - truncatedHeader.length - 1;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]!;
+    if (entry.length + 1 <= remaining) {
+      kept.unshift(entry);
+      remaining -= entry.length + 1;
+      continue;
+    }
+    if (kept.length === 0 && remaining > 40) {
+      kept.unshift(compactText(entry, remaining));
+      remaining = 0;
+    }
+    omitted = true;
+    break;
+  }
+  return [...(omitted ? [truncatedHeader] : []), ...kept].join("\n");
+}
+
+function formatSemanticBulletSection(title: string, items: ReadonlyArray<string>): Array<string> {
+  const cleaned = items.map((item) => item.trim()).filter((item) => item.length > 0);
+  if (cleaned.length === 0) return [];
+  return [`${title}:`, ...cleaned.map((item) => `- ${item}`)];
+}
+
+function renderSemanticSubtaskContext(input: {
+  readonly parentThreadId: ThreadId;
+  readonly parentTitle: string;
+  readonly parentGoal?: string | null | undefined;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
+  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+  readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly summary: SubtaskSummaryGenerationResult;
+  readonly strategyVersion: string;
+  readonly cacheOutcome: SubtaskSummaryCacheService.SubtaskSummaryCacheOutcome;
+  readonly modelInstanceId?: ProviderInstanceId | null | undefined;
+  readonly modelSlug?: string | null | undefined;
+}): string {
+  const framing = `You are working in a dedicated subtask branched from parent thread ${input.parentThreadId}. Proceed with the user's instructions for this subtask; coordinate carefully if the parent shares this workspace.`;
+  const modelTag =
+    input.modelInstanceId && input.modelSlug
+      ? `, model=${input.modelInstanceId}/${input.modelSlug}`
+      : "";
+  const metadataLines = [
+    ...buildSubtaskBaseMetadataLines(input),
+    `Context summary mode: semantic (${input.strategyVersion}, ${input.cacheOutcome}${modelTag})`,
+  ];
+  const header = "Parent semantic summary up to source cutoff:";
+  const bodyLines: Array<string> = [
+    ...(input.summary.goal.trim().length > 0 ? [`Goal: ${input.summary.goal.trim()}`] : []),
+    ...(input.summary.summary.trim().length > 0
+      ? [`Summary: ${input.summary.summary.trim()}`]
+      : []),
+    ...formatSemanticBulletSection("Constraints", input.summary.constraints),
+    ...formatSemanticBulletSection("Decisions", input.summary.decisions),
+    ...formatSemanticBulletSection("Open questions", input.summary.openQuestions),
+    ...formatSemanticBulletSection("Key anchors", input.summary.keyAnchors),
+  ];
+  const footer = buildSubtaskReadBackAnchor(input);
+  return [framing, "", ...metadataLines, "", header, ...bodyLines, "", footer].join("\n");
+}
+
+/** Budgeted structured skeleton from the parent cutoff, never framed as a read-only side chat. */
+function makeSubtaskContext(input: {
+  readonly parentThreadId: ThreadId;
+  readonly parentTitle: string;
+  readonly parentGoal?: string | null | undefined;
+  readonly sourceAnchor?: OrchestrationV2SubtaskSourceAnchor | undefined;
+  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+  readonly digest: ReadonlyArray<string | OrchestrationV2TurnItem>;
+  readonly parentItems?: ReadonlyArray<OrchestrationV2TurnItem>;
+  readonly maxChars?: number | undefined;
+  readonly fallback?: SubtaskSummaryFallbackNotice | undefined;
+}): string {
+  const maxChars = Math.max(
+    SUBTASK_CONTEXT_MIN_MAX_CHARS,
+    Math.floor(input.maxChars ?? SUBTASK_CONTEXT_MAX_CHARS),
+  );
+  const framing = `You are working in a dedicated subtask branched from parent thread ${input.parentThreadId}. Proceed with the user's instructions for this subtask; coordinate carefully if the parent shares this workspace.`;
+  const fallbackLine =
+    input.fallback === undefined
+      ? null
+      : `Context summary fallback: mvp_skeleton (reason=${input.fallback.reason}: ${compactText(input.fallback.detail, 200)})`;
+  const metadataLines = [
+    ...buildSubtaskBaseMetadataLines(input),
+    ...(fallbackLine === null ? [] : [fallbackLine]),
+  ];
   const header = "Parent context up to source cutoff:";
   const truncated = "- Earlier items truncated.";
-  const footer = `Use t3_thread_read({ threadId: "${input.parentThreadId}", view: "activity" }) to inspect full parent history or later updates.`;
+  const footer = buildSubtaskReadBackAnchor({
+    parentThreadId: input.parentThreadId,
+    sourceAnchor: input.sourceAnchor,
+    coveredRunOrdinals: input.coveredRunOrdinals,
+    parentItems:
+      input.parentItems ??
+      input.digest.filter((entry): entry is OrchestrationV2TurnItem => typeof entry !== "string"),
+  });
   const kept: Array<string> = [];
   let omitted = false;
   let remaining =
-    SUBTASK_CONTEXT_MAX_CHARS -
-    [framing, "", ...metadataLines, "", header, truncated, "", footer].join("\n").length;
+    maxChars - [framing, "", ...metadataLines, "", header, truncated, "", footer].join("\n").length;
   for (let index = input.digest.length - 1; index >= 0; index--) {
     const item = input.digest[index]!;
     const line = typeof item === "string" ? item : summarizeDeltaItem(item);
@@ -471,7 +669,7 @@ function makeSubtaskContext(input: {
     kept.unshift(line);
     remaining -= line.length + 1;
   }
-  return [
+  const fullRendered = [
     framing,
     "",
     ...metadataLines,
@@ -479,6 +677,31 @@ function makeSubtaskContext(input: {
     "",
     footer,
   ].join("\n");
+  if (fullRendered.length <= maxChars) {
+    return fullRendered;
+  }
+
+  // Tight-budget fallback: preserve framing, fallback reason, and t3_thread_read anchor within maxChars.
+  const compactFraming = `Subtask of parent thread ${input.parentThreadId}.`;
+  const essentialFooter =
+    footer.length <= maxChars - 80
+      ? footer
+      : `Use t3_thread_read({ threadId: "${input.parentThreadId}", view: "activity" }) to inspect parent history.`;
+  const compactFallback =
+    input.fallback === undefined
+      ? null
+      : `Context summary fallback: mvp_skeleton (reason=${input.fallback.reason})`;
+  const candidateBase = [
+    compactFraming,
+    ...(compactFallback === null ? [] : [compactFallback]),
+    essentialFooter,
+  ].join("\n");
+  if (candidateBase.length <= maxChars) {
+    return candidateBase;
+  }
+  return [...(compactFallback === null ? [] : [compactFallback]), essentialFooter]
+    .join("\n")
+    .slice(0, maxChars);
 }
 
 function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>): string {
@@ -545,6 +768,11 @@ function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>):
 const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffService.layer")(
   function* () {
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const textGenerationOption = yield* Effect.serviceOption(TextGeneration.TextGeneration);
+    const summaryCacheOption = yield* Effect.serviceOption(
+      SubtaskSummaryCacheService.SubtaskSummaryCacheService,
+    );
+    const serverSettingsOption = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
     const tokenCap = yield* handoffTokenCapConfig.pipe(
       Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
     );
@@ -824,6 +1052,286 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
                 }),
             ),
           );
+
+        const maxSummaryChars = Math.max(
+          SUBTASK_CONTEXT_MIN_MAX_CHARS,
+          Math.floor(input.maxSummaryChars ?? SUBTASK_CONTEXT_MAX_CHARS),
+        );
+        const strategyVersion =
+          input.strategyVersion?.trim() ||
+          SubtaskSummaryCacheService.DEFAULT_SUBTASK_SUMMARY_STRATEGY_VERSION;
+        const timeoutMs = Math.max(
+          1,
+          Math.floor(input.summaryTimeoutMs ?? DEFAULT_SUBTASK_SUMMARY_TIMEOUT_MS),
+        );
+        const conversationExcerpt = formatSubtaskConversationExcerpt(input.parentItems);
+
+        const makeFallbackSummary = (fallback?: SubtaskSummaryFallbackNotice) =>
+          makeSubtaskContext({
+            parentThreadId: input.parentThreadId,
+            parentTitle: input.parentTitle,
+            parentGoal: input.parentGoal,
+            sourceAnchor: input.sourceAnchor,
+            coveredRunOrdinals: input.coveredRunOrdinals,
+            digest: input.parentItems,
+            parentItems: input.parentItems,
+            maxChars: maxSummaryChars,
+            fallback,
+          });
+
+        const summaryText =
+          conversationExcerpt.length === 0
+            ? makeFallbackSummary()
+            : yield* Effect.gen(function* () {
+                if (Option.isNone(textGenerationOption)) {
+                  return yield* new SubtaskSummaryFallbackError({
+                    reason: "model_unavailable",
+                    detail: "Text generation service is unavailable.",
+                  });
+                }
+
+                let resolvedModelSelection: ModelSelection | null = input.modelSelection ?? null;
+                if (resolvedModelSelection === null && Option.isSome(serverSettingsOption)) {
+                  resolvedModelSelection = yield* serverSettingsOption.value.getSettings.pipe(
+                    Effect.map(
+                      (settings) =>
+                        resolveProjectSettings(settings, input.projectId ?? null).settings
+                          .textGenerationModelSelection,
+                    ),
+                    Effect.orElseSucceed(() => null),
+                  );
+                }
+                if (resolvedModelSelection === null) {
+                  return yield* new SubtaskSummaryFallbackError({
+                    reason: "model_unavailable",
+                    detail: "No text generation model is configured for subtask summary.",
+                  });
+                }
+
+                const wrapperOverhead = renderSemanticSubtaskContext({
+                  parentThreadId: input.parentThreadId,
+                  parentTitle: input.parentTitle,
+                  parentGoal: input.parentGoal,
+                  sourceAnchor: input.sourceAnchor,
+                  coveredRunOrdinals: input.coveredRunOrdinals,
+                  parentItems: input.parentItems,
+                  summary: {
+                    goal: "",
+                    constraints: [],
+                    decisions: [],
+                    openQuestions: [],
+                    keyAnchors: [],
+                    summary: "",
+                  },
+                  strategyVersion,
+                  cacheOutcome: "coalesced",
+                  modelInstanceId: resolvedModelSelection.instanceId,
+                  modelSlug: resolvedModelSelection.model,
+                }).length;
+                const semanticBodyBudget = maxSummaryChars - wrapperOverhead;
+                if (semanticBodyBudget < SUBTASK_SUMMARY_MIN_BODY_CHARS) {
+                  return yield* new SubtaskSummaryFallbackError({
+                    reason: "budget_exceeded",
+                    detail: `Remaining semantic summary budget (${Math.max(0, semanticBodyBudget)} chars) is below the ${SUBTASK_SUMMARY_MIN_BODY_CHARS}-char minimum.`,
+                  });
+                }
+
+                const cutoffText = subtaskCutoffParts({
+                  sourceAnchor: input.sourceAnchor,
+                  coveredRunOrdinals: input.coveredRunOrdinals,
+                }).join(", ");
+                const resolvedCwd = input.cwd?.trim() || ".";
+                const textGeneration = textGenerationOption.value;
+                const selectedModel = resolvedModelSelection;
+
+                const generateSummary = Effect.gen(function* () {
+                  const generated = yield* textGeneration
+                    .generateSubtaskSummary({
+                      cwd: resolvedCwd,
+                      parentThreadId: input.parentThreadId,
+                      parentTitle: input.parentTitle,
+                      parentGoal: input.parentGoal,
+                      ...(cutoffText.length > 0 ? { sourceCutoff: cutoffText } : {}),
+                      ...(input.sourceAnchor?.excerpt
+                        ? { selectedExcerpt: input.sourceAnchor.excerpt }
+                        : {}),
+                      conversationExcerpt,
+                      maxSummaryChars: semanticBodyBudget,
+                      strategyVersion,
+                      modelSelection: selectedModel,
+                      projectId: input.projectId,
+                    })
+                    .pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new SubtaskSummaryFallbackError({
+                            reason: "model_unavailable",
+                            detail: compactText(
+                              error.message || "Subtask summary model call failed.",
+                              200,
+                            ),
+                          }),
+                      ),
+                      Effect.timeoutOrElse({
+                        duration: Duration.millis(timeoutMs),
+                        orElse: () =>
+                          Effect.fail(
+                            new SubtaskSummaryFallbackError({
+                              reason: "timeout",
+                              detail: `Semantic summary generation timed out after ${timeoutMs}ms.`,
+                            }),
+                          ),
+                      }),
+                    );
+
+                  if (generated.goal.trim().length === 0 && generated.summary.trim().length === 0) {
+                    return yield* new SubtaskSummaryFallbackError({
+                      reason: "model_unavailable",
+                      detail: "Model returned an empty semantic subtask summary.",
+                    });
+                  }
+
+                  const candidateRendered = renderSemanticSubtaskContext({
+                    parentThreadId: input.parentThreadId,
+                    parentTitle: input.parentTitle,
+                    parentGoal: input.parentGoal,
+                    sourceAnchor: input.sourceAnchor,
+                    coveredRunOrdinals: input.coveredRunOrdinals,
+                    parentItems: input.parentItems,
+                    summary: generated,
+                    strategyVersion,
+                    cacheOutcome: "coalesced",
+                    modelInstanceId: selectedModel.instanceId,
+                    modelSlug: selectedModel.model,
+                  });
+                  if (candidateRendered.length > maxSummaryChars) {
+                    return yield* new SubtaskSummaryFallbackError({
+                      reason: "budget_exceeded",
+                      detail: `Semantic summary rendered ${candidateRendered.length} chars, exceeding the ${maxSummaryChars}-char context budget.`,
+                    });
+                  }
+
+                  return {
+                    summary: generated,
+                    modelInstanceId: selectedModel.instanceId,
+                    modelSlug: selectedModel.model,
+                  } satisfies SubtaskSummaryCacheService.SubtaskSummaryGeneratedValue;
+                });
+
+                const lookupResult: {
+                  readonly summary: SubtaskSummaryGenerationResult;
+                  readonly outcome: SubtaskSummaryCacheService.SubtaskSummaryCacheOutcome;
+                  readonly modelInstanceId: ProviderInstanceId | null;
+                  readonly modelSlug: string | null;
+                } = Option.isSome(summaryCacheOption)
+                  ? yield* summaryCacheOption.value
+                      .getOrGenerate({
+                        key: SubtaskSummaryCacheService.buildSubtaskSummaryCacheKey({
+                          parentThreadId: input.parentThreadId,
+                          parentTitle: input.parentTitle,
+                          parentGoal: input.parentGoal,
+                          sourceAnchor: input.sourceAnchor,
+                          coveredRunOrdinals: input.coveredRunOrdinals,
+                          parentItems: input.parentItems,
+                          maxSummaryChars,
+                          strategyVersion,
+                        }),
+                        metadata: {
+                          sourceRunId: input.sourceAnchor?.sourceRunId ?? null,
+                          sourceOrdinal: input.sourceAnchor?.sourceOrdinal ?? null,
+                          sourceMessageId: input.sourceAnchor?.sourceMessageId ?? null,
+                          sourceTurnItemId:
+                            input.sourceAnchor?.sourceTurnItemId ??
+                            input.parentItems.at(-1)?.id ??
+                            null,
+                        },
+                        generate: generateSummary,
+                      })
+                      .pipe(
+                        Effect.timeoutOrElse({
+                          duration: Duration.millis(timeoutMs),
+                          orElse: () =>
+                            Effect.fail(
+                              new SubtaskSummaryFallbackError({
+                                reason: "timeout",
+                                detail: `Timed out waiting ${timeoutMs}ms for cached semantic summary.`,
+                              }),
+                            ),
+                        }),
+                        Effect.map(({ entry, outcome }) => ({
+                          summary: entry.summary,
+                          outcome,
+                          modelInstanceId: entry.modelInstanceId,
+                          modelSlug: entry.modelSlug,
+                        })),
+                      )
+                  : yield* generateSummary.pipe(
+                      Effect.map((generated) => ({
+                        summary: generated.summary,
+                        outcome: "generated" as const,
+                        modelInstanceId: generated.modelInstanceId ?? null,
+                        modelSlug: generated.modelSlug ?? null,
+                      })),
+                    );
+
+                const rendered = renderSemanticSubtaskContext({
+                  parentThreadId: input.parentThreadId,
+                  parentTitle: input.parentTitle,
+                  parentGoal: input.parentGoal,
+                  sourceAnchor: input.sourceAnchor,
+                  coveredRunOrdinals: input.coveredRunOrdinals,
+                  parentItems: input.parentItems,
+                  summary: lookupResult.summary,
+                  strategyVersion,
+                  cacheOutcome: lookupResult.outcome,
+                  modelInstanceId: lookupResult.modelInstanceId,
+                  modelSlug: lookupResult.modelSlug,
+                });
+                if (rendered.length > maxSummaryChars) {
+                  return yield* new SubtaskSummaryFallbackError({
+                    reason: "budget_exceeded",
+                    detail: `Rendered semantic summary (${rendered.length} chars) exceeded the ${maxSummaryChars}-char context budget.`,
+                  });
+                }
+                return rendered;
+              }).pipe(
+                Effect.catchTags({
+                  SubtaskSummaryFallbackError: (fallback) =>
+                    Effect.logDebug("Falling back to deterministic MVP subtask skeleton", {
+                      threadId: input.threadId,
+                      parentThreadId: input.parentThreadId,
+                      reason: fallback.reason,
+                      detail: fallback.detail,
+                    }).pipe(
+                      Effect.as(
+                        makeFallbackSummary({
+                          reason: fallback.reason,
+                          detail: fallback.detail,
+                        }),
+                      ),
+                    ),
+                }),
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning(
+                        "Unexpected defect preparing semantic subtask summary; falling back to MVP skeleton",
+                        {
+                          threadId: input.threadId,
+                          parentThreadId: input.parentThreadId,
+                          cause,
+                        },
+                      ).pipe(
+                        Effect.as(
+                          makeFallbackSummary({
+                            reason: "model_unavailable",
+                            detail: "Unexpected error during semantic summary generation.",
+                          }),
+                        ),
+                      ),
+                ),
+              );
+
         return {
           id: handoffId,
           transferId: input.transferId,
@@ -835,14 +1343,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           strategy: "manual_context",
           status: "ready",
           summaryMessageId: null,
-          summaryText: makeSubtaskContext({
-            parentThreadId: input.parentThreadId,
-            parentTitle: input.parentTitle,
-            parentGoal: input.parentGoal,
-            sourceAnchor: input.sourceAnchor,
-            coveredRunOrdinals: input.coveredRunOrdinals,
-            digest: input.parentItems,
-          }),
+          summaryText,
           createdByProviderInstanceId: null,
           createdAt: input.createdAt,
           updatedAt: input.createdAt,

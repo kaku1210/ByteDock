@@ -129,8 +129,20 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
 const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
   Layer.provide(IdAllocator.layer),
 );
+const layerTextGenerationProvided = TextGeneration.layer.pipe(
+  Layer.provide(ProviderInstallationGate.layer),
+);
+const layerSubtaskSummaryCacheProvided = SubtaskSummaryCacheService.layer.pipe(
+  Layer.provide(SubtaskSummaryCache.layer),
+);
 const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
-  Layer.provide(IdAllocator.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      IdAllocator.layer,
+      layerSubtaskSummaryCacheProvided,
+      layerTextGenerationProvided,
+    ),
+  ),
 );
 
 const layerProviderSwitchServiceProvided = ProviderSwitchService.layer.pipe(
@@ -254,6 +266,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerRunExecutionServiceProvided,
       layerSharedWorktreeCoordinationProvided,
       layerSubtaskEscalationStoreProvided,
+      layerSubtaskSummaryCacheProvided,
       ThreadForkService.layer,
     ),
   ),
@@ -365,11 +378,7 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
 );
 const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.layer.pipe(
   Layer.provide(
-    Layer.mergeAll(
-      layerThreadManagementProvided,
-      ProjectStore.layer,
-      TextGeneration.layer.pipe(Layer.provide(ProviderInstallationGate.layer)),
-    ),
+    Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, layerTextGenerationProvided),
   ),
 );
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
@@ -422,10 +431,6 @@ const layerFamilyCollaborationOverviewProvided = FamilyCollaborationOverviewServ
       layerSharedWorktreeCoordinationProvided,
     ),
   ),
-);
-
-const layerSubtaskSummaryCacheProvided = SubtaskSummaryCacheService.layer.pipe(
-  Layer.provide(SubtaskSummaryCache.layer),
 );
 
 export const layer = Layer.mergeAll(

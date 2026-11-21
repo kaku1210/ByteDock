@@ -8,21 +8,31 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   RunId,
+  TextGenerationError,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type {
+  SubtaskSummaryGenerationInput,
+  SubtaskSummaryGenerationResult,
+} from "@t3tools/provider-core/server/textGeneration";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as SubtaskSummaryCache from "../persistence/SubtaskSummaryCache.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as SubtaskSummaryCacheService from "./SubtaskSummaryCacheService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
 describe("Subtask execution lifecycle (Acceptance Scenario 1)", () => {
@@ -468,6 +478,560 @@ describe("Subtask execution lifecycle (Acceptance Scenario 1)", () => {
           }),
         );
         assert.isTrue(Exit.isFailure(aiL3Exit));
+      }).pipe(Effect.provide(layer));
+    },
+  );
+});
+
+describe("Subtask cached semantic summary end-to-end & deletion cleanup (P3-A3)", () => {
+  const makeStubAdapter = (
+    driver: ProviderDriverKind,
+    instanceId: ProviderInstanceId,
+    model: string,
+    startedTurns: Array<{ readonly threadId: ThreadId; readonly text: string }>,
+  ): ProviderAdapter.ProviderAdapterV2["Service"] => ({
+    instanceId,
+    driver,
+    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    openSession: ({ providerSessionId }) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        return {
+          instanceId,
+          driver,
+          providerSessionId,
+          providerSession: {
+            id: providerSessionId,
+            driver,
+            providerInstanceId: instanceId,
+            status: "ready",
+            cwd: "/tmp/subtask-semantic-e2e",
+            model,
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: now,
+            updatedAt: now,
+            lastError: null,
+          },
+          events: Stream.never,
+          ensureThread: ({ threadId, existingProviderThread }) =>
+            Effect.succeed({
+              ...existingProviderThread!,
+              appThreadId: threadId,
+              nativeThreadRef: {
+                driver,
+                nativeId: `native:${threadId}`,
+                strength: "strong",
+              },
+              status: "idle",
+              updatedAt: now,
+            }),
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (turn) =>
+            Effect.sync(() => {
+              startedTurns.push({
+                threadId: turn.threadId,
+                text: turn.message.text,
+              });
+            }),
+          steerTurn: () => Effect.void,
+          interruptTurn: () => Effect.void,
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () => Effect.die("unused"),
+          rollbackThread: () => Effect.die("unused"),
+          forkThread: () => Effect.die("subtask must never invoke native forkThread"),
+        } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
+      }),
+  });
+
+  it.effect(
+    "injects cached semantic summary into subtask turns, reuses SQLite cache across siblings, and clears cache on parent thread deletion",
+    () => {
+      const driver = ProviderDriverKind.make("codex");
+      const instanceId = ProviderInstanceId.make(driver);
+      const modelSelection = { instanceId, model: "test-model" };
+      const startedTurns: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+      let summaryCalls = 0;
+
+      const adapter = makeStubAdapter(driver, instanceId, modelSelection.model, startedTurns);
+      const textGenerationLayer = Layer.mock(TextGeneration.TextGeneration)({
+        generateSubtaskSummary: (_input: SubtaskSummaryGenerationInput) => {
+          summaryCalls += 1;
+          return Effect.succeed({
+            goal: "Migrate SQLite parent index safely",
+            constraints: ["Do not drop existing rows", "Keep fork cutoff immutable"],
+            decisions: ["Composite PK with content_digest for subtask_summary_cache"],
+            openQuestions: ["Add background prune worker later"],
+            keyAnchors: ["run=run:e2e-root-1", "item=item:e2e-root-1"],
+            summary:
+              "Parent locked migration plan and cutoff semantics before splitting parallel subtasks.",
+          } satisfies SubtaskSummaryGenerationResult);
+        },
+      });
+
+      const layer = ProviderReplayHarness.layerWithRegistry(
+        { name: "subtask-semantic-e2e-cache" },
+        ProviderAdapterRegistry.layerFromAdapters([adapter]),
+        { textGenerationLayer },
+      );
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const cacheRepo = yield* SubtaskSummaryCache.SubtaskSummaryCacheRepository;
+        const now = yield* DateTime.now;
+
+        const rootId = ThreadId.make("semantic-e2e-l0");
+        const l1aId = ThreadId.make("semantic-e2e-l1a");
+        const l1bId = ThreadId.make("semantic-e2e-l1b");
+        const rootProviderThreadId = ProviderThreadId.make("pt:e2e-root");
+        const run1Id = RunId.make("run:e2e-root-1");
+        const run2Id = RunId.make("run:e2e-root-2");
+        const msg1Id = MessageId.make("msg:e2e-root-1");
+        const msg2Id = MessageId.make("msg:e2e-root-2");
+        const item1Id = TurnItemId.make("item:e2e-root-1");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:e2e-root-create"),
+          threadId: rootId,
+          projectId: ProjectId.make("proj:e2e-semantic"),
+          title: "Parent migration thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        const turn1Item = {
+          id: item1Id,
+          threadId: rootId,
+          runId: run1Id,
+          nodeId: null,
+          providerThreadId: rootProviderThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed" as const,
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "user_message" as const,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          inputIntent: "turn_start" as const,
+          messageId: msg1Id,
+          text: "TURN_1_SEMANTIC_SOURCE: migrate parentThreadId index cleanly",
+          attachments: [],
+        };
+
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("ev:e2e-root-pt"),
+              type: "provider-thread.updated",
+              threadId: rootId,
+              occurredAt: now,
+              payload: {
+                id: rootProviderThreadId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: rootId,
+                ownerNodeId: null,
+                nativeThreadRef: { driver, nativeId: "native:e2e-root", strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:e2e-root-run-1"),
+              type: "run.created",
+              threadId: rootId,
+              runId: run1Id,
+              occurredAt: now,
+              payload: {
+                id: run1Id,
+                threadId: rootId,
+                ordinal: 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: rootProviderThreadId,
+                userMessageId: msg1Id,
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "completed",
+                queuePosition: null,
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("ev:e2e-root-item-1"),
+              type: "turn-item.updated",
+              threadId: rootId,
+              runId: run1Id,
+              occurredAt: now,
+              payload: turn1Item,
+            },
+          ],
+        });
+
+        const sharedAnchor = {
+          sourceThreadId: rootId,
+          sourceRunId: run1Id,
+          sourceOrdinal: 1,
+          sourceMessageId: msg1Id,
+          sourceTurnItemId: item1Id,
+          excerpt: "migrate parentThreadId index cleanly",
+        };
+
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:e2e-fork-l1a"),
+          sourceThreadId: rootId,
+          targetThreadId: l1aId,
+          sourcePoint: { type: "run", runId: run1Id },
+          subtask: true,
+          sourceAnchor: sharedAnchor,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:e2e-fork-l1b"),
+          sourceThreadId: rootId,
+          targetThreadId: l1bId,
+          sourcePoint: { type: "run", runId: run1Id },
+          subtask: true,
+          sourceAnchor: sharedAnchor,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        // First subtask generates and persists semantic summary.
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:e2e-l1a-send"),
+          threadId: l1aId,
+          messageId: MessageId.make("msg:e2e-l1a-1"),
+          text: "Write migration 099",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        for (let step = 0; step < 3; step += 1) {
+          yield* worker.drain();
+          yield* TestClock.adjust("1 second");
+        }
+
+        assert.equal(summaryCalls, 1);
+        assert.equal(startedTurns.length, 1);
+        const promptA = startedTurns[0]!.text;
+        assert.include(promptA, "Context summary mode: semantic (llm-summary-v1, generated");
+        assert.include(promptA, "Goal: Migrate SQLite parent index safely");
+        assert.include(promptA, "Constraints:\n- Do not drop existing rows");
+        assert.include(
+          promptA,
+          "Decisions:\n- Composite PK with content_digest for subtask_summary_cache",
+        );
+        assert.include(promptA, `t3_thread_read({ threadId: "${rootId}", view: "activity" })`);
+        assert.include(promptA, `item=${item1Id}`);
+        assert.include(promptA, "Write migration 099");
+
+        // Verify cache row exists in SQLite.
+        const rootProjection = yield* orchestrator.getThreadProjection(rootId);
+        const l1aProjection = yield* orchestrator.getThreadProjection(l1aId);
+        const expectedCacheKey = SubtaskSummaryCacheService.buildSubtaskSummaryCacheKey({
+          parentThreadId: rootId,
+          parentTitle: rootProjection.thread.title,
+          parentGoal: null,
+          sourceAnchor: l1aProjection.thread.sourceAnchor,
+          coveredRunOrdinals: { from: 1, to: 1 },
+          parentItems: rootProjection.turnItems,
+          maxSummaryChars: 8_000,
+        });
+        assert.isTrue(
+          Option.isSome(yield* cacheRepo.get(expectedCacheKey)),
+          `expected cached row for key=${JSON.stringify(expectedCacheKey)}`,
+        );
+
+        // Parent advances with Turn 2 AFTER fork; sibling L1-B at Turn 1 hits cache without drift.
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("ev:e2e-root-run-2"),
+              type: "run.created",
+              threadId: rootId,
+              runId: run2Id,
+              occurredAt: now,
+              payload: {
+                id: run2Id,
+                threadId: rootId,
+                ordinal: 2,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: rootProviderThreadId,
+                userMessageId: msg2Id,
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "completed",
+                queuePosition: null,
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("ev:e2e-root-item-2"),
+              type: "turn-item.updated",
+              threadId: rootId,
+              runId: run2Id,
+              occurredAt: now,
+              payload: {
+                ...turn1Item,
+                id: TurnItemId.make("item:e2e-root-2"),
+                runId: run2Id,
+                ordinal: 2,
+                messageId: msg2Id,
+                text: "TURN_2_LATER_DRIFT_MUST_NOT_LEAK",
+              },
+            },
+          ],
+        });
+
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:e2e-l1b-send"),
+          threadId: l1bId,
+          messageId: MessageId.make("msg:e2e-l1b-1"),
+          text: "Write unit tests for cache invalidation",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        for (let step = 0; step < 3; step += 1) {
+          yield* worker.drain();
+          yield* TestClock.adjust("1 second");
+        }
+
+        assert.equal(summaryCalls, 1);
+        assert.equal(startedTurns.length, 2);
+        const promptB = startedTurns[1]!.text;
+        assert.include(promptB, "Context summary mode: semantic (llm-summary-v1, cache_hit");
+        assert.include(promptB, "Goal: Migrate SQLite parent index safely");
+        assert.notInclude(promptB, "TURN_2_LATER_DRIFT_MUST_NOT_LEAK");
+        assert.include(promptB, `t3_thread_read({ threadId: "${rootId}", view: "activity" })`);
+
+        // Deleting parent thread invalidates cached summaries for the parent (and cascaded descendants).
+        yield* orchestrator.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("cmd:e2e-delete-root"),
+          threadId: rootId,
+        });
+        assert.isTrue(Option.isNone(yield* cacheRepo.get(expectedCacheKey)));
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "degrades end-to-end to MVP skeleton with explicit fallback reason and t3_thread_read anchor when summary model fails",
+    () => {
+      const driver = ProviderDriverKind.make("codex");
+      const instanceId = ProviderInstanceId.make(driver);
+      const modelSelection = { instanceId, model: "test-model" };
+      const startedTurns: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+
+      const adapter = makeStubAdapter(driver, instanceId, modelSelection.model, startedTurns);
+      const textGenerationLayer = Layer.mock(TextGeneration.TextGeneration)({
+        generateSubtaskSummary: () =>
+          Effect.fail(
+            new TextGenerationError({
+              operation: "generateSubtaskSummary",
+              detail: "Upstream text generation model unavailable.",
+            }),
+          ),
+      });
+
+      const layer = ProviderReplayHarness.layerWithRegistry(
+        { name: "subtask-semantic-e2e-fallback" },
+        ProviderAdapterRegistry.layerFromAdapters([adapter]),
+        { textGenerationLayer },
+      );
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const now = yield* DateTime.now;
+
+        const rootId = ThreadId.make("fallback-e2e-l0");
+        const l1Id = ThreadId.make("fallback-e2e-l1");
+        const rootProviderThreadId = ProviderThreadId.make("pt:fallback-root");
+        const run1Id = RunId.make("run:fallback-root-1");
+        const msg1Id = MessageId.make("msg:fallback-root-1");
+        const item1Id = TurnItemId.make("item:fallback-root-1");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:fallback-root-create"),
+          threadId: rootId,
+          projectId: ProjectId.make("proj:e2e-fallback"),
+          title: "Fallback parent thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("ev:fallback-root-pt"),
+              type: "provider-thread.updated",
+              threadId: rootId,
+              occurredAt: now,
+              payload: {
+                id: rootProviderThreadId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: rootId,
+                ownerNodeId: null,
+                nativeThreadRef: { driver, nativeId: "native:fallback-root", strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make("ev:fallback-root-run-1"),
+              type: "run.created",
+              threadId: rootId,
+              runId: run1Id,
+              occurredAt: now,
+              payload: {
+                id: run1Id,
+                threadId: rootId,
+                ordinal: 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId: rootProviderThreadId,
+                userMessageId: msg1Id,
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "completed",
+                queuePosition: null,
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+            {
+              id: EventId.make("ev:fallback-root-item-1"),
+              type: "turn-item.updated",
+              threadId: rootId,
+              runId: run1Id,
+              occurredAt: now,
+              payload: {
+                id: item1Id,
+                threadId: rootId,
+                runId: run1Id,
+                nodeId: null,
+                providerThreadId: rootProviderThreadId,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1,
+                status: "completed",
+                title: null,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+                type: "user_message",
+                createdBy: "user",
+                creationSource: "web",
+                inputIntent: "turn_start",
+                messageId: msg1Id,
+                text: "TURN_1_SKELETON_PRESERVED_ON_FAILURE",
+                attachments: [],
+              },
+            },
+          ],
+        });
+
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make("cmd:fallback-fork-l1"),
+          sourceThreadId: rootId,
+          targetThreadId: l1Id,
+          sourcePoint: { type: "run", runId: run1Id },
+          subtask: true,
+          sourceAnchor: {
+            sourceThreadId: rootId,
+            sourceRunId: run1Id,
+            sourceMessageId: msg1Id,
+            sourceTurnItemId: item1Id,
+          },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:fallback-l1-send"),
+          threadId: l1Id,
+          messageId: MessageId.make("msg:fallback-l1-1"),
+          text: "Proceed even if summary model is offline",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        for (let step = 0; step < 3; step += 1) {
+          yield* worker.drain();
+          yield* TestClock.adjust("1 second");
+        }
+
+        assert.equal(startedTurns.length, 1);
+        const delivered = startedTurns[0]!.text;
+        assert.include(
+          delivered,
+          "Context summary fallback: mvp_skeleton (reason=model_unavailable:",
+        );
+        assert.include(delivered, "TURN_1_SKELETON_PRESERVED_ON_FAILURE");
+        assert.include(delivered, `t3_thread_read({ threadId: "${rootId}", view: "activity" })`);
+        assert.include(delivered, `item=${item1Id}`);
+        assert.include(delivered, "Proceed even if summary model is offline");
       }).pipe(Effect.provide(layer));
     },
   );

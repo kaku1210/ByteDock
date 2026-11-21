@@ -64,6 +64,9 @@ import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationServi
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import * as SubtaskEscalationService from "../SubtaskEscalationService.ts";
 import * as SubtaskEscalationStore from "../SubtaskEscalationStore.ts";
+import * as SubtaskSummaryCache from "../../persistence/SubtaskSummaryCache.ts";
+import * as SubtaskSummaryCacheService from "../SubtaskSummaryCacheService.ts";
+import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as TurnItemPositionStore from "../TurnItemPositionStore.ts";
 import * as RuntimeRequestService from "../RuntimeRequestService.ts";
 import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
@@ -290,11 +293,14 @@ export function layerWithRegistry<Error>(
       store: ProjectionStore.ProjectionStoreV2Shape,
     ) => ProjectionStore.ProjectionStoreV2Shape;
     readonly managedPolicy?: ManagedPolicyDocument;
+    readonly textGenerationLayer?: Layer.Layer<TextGeneration.TextGeneration>;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
   | SubtaskEscalationService.SubtaskEscalationService
   | SubtaskEscalationStore.SubtaskEscalationStore
+  | SubtaskSummaryCacheService.SubtaskSummaryCacheService
+  | SubtaskSummaryCache.SubtaskSummaryCacheRepository
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
@@ -390,8 +396,21 @@ export function layerWithRegistry<Error>(
   const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
     Layer.provide(Layer.mergeAll(layerCheckpointStore, IdAllocator.layer)),
   );
+  const layerSubtaskSummaryCacheRepositoryProvided = SubtaskSummaryCache.layer.pipe(
+    Layer.provide(layerDatabase),
+  );
+  const layerSubtaskSummaryCacheProvided = SubtaskSummaryCacheService.layer.pipe(
+    Layer.provide(layerSubtaskSummaryCacheRepositoryProvided),
+  );
   const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
-    Layer.provide(IdAllocator.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        IdAllocator.layer,
+        layerSubtaskSummaryCacheProvided,
+        layerServerSettings,
+        ...(options.textGenerationLayer === undefined ? [] : [options.textGenerationLayer]),
+      ),
+    ),
   );
   const layerPersistence = Layer.mergeAll(
     layerStores,
@@ -518,6 +537,7 @@ export function layerWithRegistry<Error>(
         layerRunExecutionServiceProvided,
         layerServerSettings,
         layerSubtaskEscalationStoreProvided,
+        layerSubtaskSummaryCacheProvided,
         ThreadForkService.layer,
       ),
     ),
@@ -578,6 +598,8 @@ export function layerWithRegistry<Error>(
     layerOrchestratorProvided,
     layerSubtaskEscalationStoreProvided,
     layerSubtaskEscalationServiceProvided,
+    layerSubtaskSummaryCacheProvided,
+    layerSubtaskSummaryCacheRepositoryProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
     layerEventSinkProvided,

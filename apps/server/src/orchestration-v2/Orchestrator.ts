@@ -205,8 +205,10 @@ import {
 import { computeOutboundCausationChain, mergeCausationChains } from "./CausationChain.ts";
 import * as SharedWorktreeCoordinationService from "./SharedWorktreeCoordinationService.ts";
 import * as SubtaskEscalationStore from "./SubtaskEscalationStore.ts";
+import * as SubtaskSummaryCacheService from "./SubtaskSummaryCacheService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as ServerSettings from "../serverSettings.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -1639,6 +1641,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
   const sharedWorktreeCoordination = yield* Effect.serviceOption(
     SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
+  );
+  const subtaskSummaryCache = yield* Effect.serviceOption(
+    SubtaskSummaryCacheService.SubtaskSummaryCacheService,
   );
   const messageIntake = yield* KeyedLock.make<ThreadId>();
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
@@ -9463,24 +9468,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const subtaskContextHandoff =
       !subtaskFork || pendingForkTransfer === undefined || sourceProjection === null
         ? null
-        : yield* contextHandoffService
-            .prepareSubtaskContext({
-              threadId: command.threadId,
-              parentThreadId: sourceProjection.thread.id,
-              parentTitle: sourceProjection.thread.title,
-              parentGoal: subtaskParentGoal,
-              sourceAnchor: projection.thread.sourceAnchor,
-              targetRunId: runId,
-              transferId: pendingForkTransfer.id,
-              toProviderThreadId: ensuredProviderThread.id,
-              fromProviderInstanceId:
-                pendingForkTransfer.sourceProviderInstanceId ?? modelSelection.instanceId,
-              toProviderInstanceId: modelSelection.instanceId,
-              coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, subtaskParentItems),
-              parentItems: subtaskParentItems,
-              createdAt: now,
-            })
-            .pipe(mapDispatchError(command));
+        : yield* Effect.gen(function* () {
+            const sourceWorktreePath = sourceProjection.thread.worktreePath;
+            const sourceWorktreeExists =
+              sourceWorktreePath !== null &&
+              (yield* fileSystem
+                .exists(sourceWorktreePath)
+                .pipe(Effect.orElseSucceed(() => false)));
+            const subtaskSummaryCwd = sourceWorktreeExists
+              ? sourceWorktreePath
+              : (resolvedRuntimePolicy.cwd ??
+                (yield* projects.get(sourceProjection.thread.projectId).pipe(
+                  Effect.map((project) =>
+                    Option.isSome(project) ? project.value.workspaceRoot : null,
+                  ),
+                  Effect.orElseSucceed(() => null),
+                )));
+            const subtaskSummaryModelSelection = yield* serverSettings.getSettings.pipe(
+              Effect.map(
+                (settings) =>
+                  resolveProjectSettings(settings, sourceProjection.thread.projectId).settings
+                    .textGenerationModelSelection,
+              ),
+              Effect.orElseSucceed(() => modelSelection),
+            );
+            return yield* contextHandoffService
+              .prepareSubtaskContext({
+                threadId: command.threadId,
+                parentThreadId: sourceProjection.thread.id,
+                parentTitle: sourceProjection.thread.title,
+                parentGoal: subtaskParentGoal,
+                sourceAnchor: projection.thread.sourceAnchor,
+                targetRunId: runId,
+                transferId: pendingForkTransfer.id,
+                toProviderThreadId: ensuredProviderThread.id,
+                fromProviderInstanceId:
+                  pendingForkTransfer.sourceProviderInstanceId ?? modelSelection.instanceId,
+                toProviderInstanceId: modelSelection.instanceId,
+                coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, subtaskParentItems),
+                parentItems: subtaskParentItems,
+                createdAt: now,
+                cwd: subtaskSummaryCwd,
+                projectId: sourceProjection.thread.projectId,
+                modelSelection: subtaskSummaryModelSelection,
+              })
+              .pipe(mapDispatchError(command));
+          });
     const requiresFullProviderSwitchContext =
       isProviderSwitch && eligibleMergeBackTransfers.length > 0;
     const targetLastCompletedRun =
@@ -16860,6 +16893,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           yield* sharedWorktreeCoordination.value.clearThreadState([childId]);
         }
       }
+    }
+    if (Option.isSome(subtaskSummaryCache) && command.type === "thread.delete") {
+      yield* Effect.forEach(
+        [command.threadId, ...cascade.descendantIds],
+        (deletedThreadId) =>
+          subtaskSummaryCache.value.invalidateParentThread(deletedThreadId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Failed to invalidate subtask summary cache for deleted thread", {
+                threadId: deletedThreadId,
+                error: error.message,
+              }),
+            ),
+          ),
+        { discard: true },
+      );
     }
 
     return {
