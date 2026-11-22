@@ -3243,4 +3243,17 @@ export const interfaceCopy: Readonly<Record<string, string>> = {
   custom: "自定义",
   "Edit name and options": "编辑名称和选项",
   "Remove custom model": "移除自定义模型",
+  "Enhanced tool activity display": "增强工具活动展示",
+  "enhanced tool activity display": "增强工具活动展示",
+  "Show a progress summary bar with height expansion on long tool groups, and display read intent summaries alongside file paths.":
+    "为较长的工具调用组显示进度摘要栏与高度展开按钮，并在文件读取行旁显示阅读意图摘要。",
+  "Milestone progress updates": "阶段进度播报",
+  "Ask Antigravity to post short progress updates with send_to_user at major milestones during long tasks.":
+    "在长任务的关键里程碑处，引导 Antigravity 通过 send_to_user 发送简短进度更新。",
+  "{value0} steps": "{value0} 步",
+  "{value0} file edited": "已修改 {value0} 个文件",
+  "{value0} files edited": "已修改 {value0} 个文件",
+  "{value0} failed": "{value0} 项失败",
+  "Expand tool calls list": "展开工具调用列表",
+  "Collapse tool calls list": "收起工具调用列表",
 };

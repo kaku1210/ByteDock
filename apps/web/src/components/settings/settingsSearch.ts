@@ -508,6 +508,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "enhanced-tool-group-display",
+    title: "Enhanced tool activity display",
+    to: "/settings/chat",
+    searchTerms: [
+      "tool group progress summary bar expand height read intent summary antigravity long work log",
+    ],
+  },
+  {
     id: "screen-reader-announcements",
     title: "Screen reader announcements",
     to: "/settings/chat",

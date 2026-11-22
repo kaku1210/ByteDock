@@ -4,13 +4,17 @@ import type {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { SEND_TO_USER_TOOL_NAME } from "@t3tools/shared/toolOutput";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as AcpWireSchema from "effect-acp/schema-v1";
 
-import type { AcpToolCallState } from "@t3tools/provider-acp/server/runtimeModel";
+import {
+  extractMcpToolCallIdentity,
+  type AcpToolCallState,
+} from "@t3tools/provider-acp/server/runtimeModel";
 
 import {
   ANTIGRAVITY_EDIT_DIFF_OMITTED,
@@ -45,11 +49,59 @@ const decodeSingleAnswer = Schema.decodeUnknownOption(
 );
 const decodeToolCallContent = Schema.decodeUnknownOption(AcpWireSchema.ToolCallContent);
 
+export const ANTIGRAVITY_MILESTONE_PROGRESS_INSTRUCTIONS = `<milestone_progress_updates>
+During long multi-step tasks, post a brief progress update (1-3 lines: what finished and what's next) using the \`send_to_user\` tool at major milestones, such as after completing a planned phase, finishing a \`git commit\`, resolving a blocker, or before starting a long test/build suite. Call \`send_to_user\` in parallel with your next tool call when possible. Skip progress updates on short tasks, and reserve full details for your final reply.
+</milestone_progress_updates>`;
+
+const T3_MCP_SERVER_PATTERN = /^t3[-_ ]?code$/i;
+const ANTIGRAVITY_SEND_TO_USER_PROMPT_TITLE = `Run ${SEND_TO_USER_TOOL_NAME}?`;
+
 /** Native questions share the permission method, but their choices are not approvals. */
 export function isAntigravityUserInputRequest(
   request: EffectAcpSchema.RequestPermissionRequest,
 ): boolean {
   return request.toolCall.toolCallId.startsWith("interaction_");
+}
+
+/**
+ * T3's `send_to_user` MCP tool only posts a mid-turn message to the user and cannot mutate files
+ * or run commands, so Antigravity permission prompts for it can be auto-approved safely.
+ */
+export function isAntigravitySendToUserPermissionRequest(
+  request: EffectAcpSchema.RequestPermissionRequest,
+): boolean {
+  if (isAntigravityUserInputRequest(request)) return false;
+  const { toolCall } = request;
+  if (toolCall.kind !== undefined && toolCall.kind !== null && toolCall.kind !== "other") {
+    return false;
+  }
+  const title = typeof toolCall.title === "string" ? toolCall.title.trim() : undefined;
+  const toolCallState: AcpToolCallState = {
+    toolCallId: toolCall.toolCallId,
+    ...(title ? { title } : {}),
+    ...(toolCall.kind ? { kind: toolCall.kind } : {}),
+    data: {
+      ...(title ? { title } : {}),
+      ...(toolCall.rawInput !== undefined ? { rawInput: toolCall.rawInput } : {}),
+      ...(toolCall._meta !== undefined ? { meta: toolCall._meta } : {}),
+    },
+  };
+  const identity = extractMcpToolCallIdentity(toolCallState);
+  if (identity !== undefined) {
+    return T3_MCP_SERVER_PATTERN.test(identity.server) && identity.tool === SEND_TO_USER_TOOL_NAME;
+  }
+  if (title !== ANTIGRAVITY_SEND_TO_USER_PROMPT_TITLE) return false;
+  const rawInputServer =
+    Predicate.isObject(toolCall.rawInput) && typeof toolCall.rawInput.server === "string"
+      ? toolCall.rawInput.server.trim()
+      : "";
+  if (rawInputServer.length > 0 && !T3_MCP_SERVER_PATTERN.test(rawInputServer)) return false;
+  const metaServerId =
+    Predicate.isObject(toolCall._meta) && typeof toolCall._meta.serverId === "string"
+      ? toolCall._meta.serverId.trim()
+      : "";
+  if (metaServerId.length > 0 && !T3_MCP_SERVER_PATTERN.test(metaServerId)) return false;
+  return true;
 }
 
 /** Copy truncated text so V8 cannot retain the original large string. */

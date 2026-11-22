@@ -530,13 +530,15 @@ function ProviderSettingsFieldRow({
     variant === "dialog"
       ? "text-2xs text-muted-foreground"
       : "mt-1 block text-xs text-muted-foreground";
-  const label = <span className="text-xs font-medium text-foreground">{field.label}</span>;
-  const description = field.description ? (
-    <span className={descriptionClassName}>{field.description}</span>
+  const translatedLabel = uiText(field.label);
+  const translatedDescription = field.description ? uiText(field.description) : undefined;
+  const label = <span className="text-xs font-medium text-foreground">{translatedLabel}</span>;
+  const description = translatedDescription ? (
+    <span className={descriptionClassName}>{translatedDescription}</span>
   ) : null;
 
   if (variant === "settings") {
-    const descriptionId = field.description ? `${inputId}-description` : undefined;
+    const descriptionId = translatedDescription ? `${inputId}-description` : undefined;
     const secretConfigured =
       field.secret === true && readProviderConfigString(value, field.key).length > 0;
     const control =
@@ -546,7 +548,7 @@ function ProviderSettingsFieldRow({
           onCheckedChange={(checked) =>
             onChange(nextProviderConfigWithFieldValue(value, field, Boolean(checked)))
           }
-          aria-label={field.label}
+          aria-label={translatedLabel}
           aria-describedby={descriptionId}
         />
       ) : field.control === "select" ? (
@@ -596,7 +598,7 @@ function ProviderSettingsFieldRow({
               size="icon-sm"
               variant="ghost-destructive"
               onClick={() => onChange(nextProviderConfigWithFieldValue(value, field, ""))}
-              aria-label={uiText("Clear {value0}", { value0: field.label })}
+              aria-label={uiText("Clear {value0}", { value0: translatedLabel })}
             >
               <XIcon className="size-3.5" />
             </Button>
@@ -615,10 +617,16 @@ function ProviderSettingsFieldRow({
     return (
       <SettingsRow
         title={
-          field.control === "switch" ? field.label : <label htmlFor={inputId}>{field.label}</label>
+          field.control === "switch" ? (
+            translatedLabel
+          ) : (
+            <label htmlFor={inputId}>{translatedLabel}</label>
+          )
         }
         description={
-          field.description ? <span id={descriptionId}>{field.description}</span> : undefined
+          translatedDescription ? (
+            <span id={descriptionId}>{translatedDescription}</span>
+          ) : undefined
         }
         control={control}
         managed={managedReason}
@@ -639,7 +647,7 @@ function ProviderSettingsFieldRow({
             onCheckedChange={(checked) =>
               onChange(nextProviderConfigWithFieldValue(value, field, Boolean(checked)))
             }
-            aria-label={field.label}
+            aria-label={translatedLabel}
           />
         </div>
       </FieldFrame>

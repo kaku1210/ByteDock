@@ -85,6 +85,26 @@ describe("ProviderSettingsForm helpers", () => {
 
     expect(next).toEqual({ experimental: false });
   });
+
+  it("exposes Antigravity milestoneProgressUpdates as a default-on switch", () => {
+    const antigravity = providerClients.get(ProviderDriverKind.make("antigravity"));
+    expect(antigravity).toBeDefined();
+
+    const milestoneField = deriveProviderSettingsFields(antigravity!).find(
+      (field) => field.key === "milestoneProgressUpdates",
+    );
+    expect(milestoneField).toMatchObject({
+      key: "milestoneProgressUpdates",
+      control: "switch",
+      label: "Milestone progress updates",
+      clearWhenEmpty: "omit",
+      defaultBooleanValue: true,
+    });
+
+    const disabled = nextProviderConfigWithFieldValue({}, milestoneField!, false);
+    expect(disabled).toEqual({ milestoneProgressUpdates: false });
+    expect(nextProviderConfigWithFieldValue(disabled, milestoneField!, true)).toBeUndefined();
+  });
 });
 
 describe("reconcileRowsDraft", () => {

@@ -18,7 +18,7 @@ import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { workEntryDisplayIndicatesToolFailure } from "../../session-logic";
 import ChatMarkdown from "../ChatMarkdown";
 import { assetMediaActionsSource } from "./ChatMarkdownMedia";
-import { Minimize2Icon, XIcon } from "lucide-react";
+import { GitCommitHorizontalIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
 import {
@@ -62,7 +62,12 @@ import {
   toolGroupSummaryIconName,
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
-import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
+import {
+  LONG_WORK_GROUP_EXPAND_HEIGHT_THRESHOLD,
+  LONG_WORK_GROUP_SUMMARY_THRESHOLD,
+  formatWorkingTimerNow,
+  summarizeWorkGroupProgress,
+} from "./TimelineWorkGroupRows.logic";
 import { useThreadTaskNavigation } from "./threadTaskNavigation";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
@@ -210,11 +215,15 @@ function ExpandedWorkGroupEntries({
     workGroupViewState: viewState,
     onToggleWorkEntry,
     onWorkEntryContentReady,
+    enhancedToolGroupDisplay = false,
   } = use(TimelineRowCtx);
   const [initialScrollIndex] = useState(() =>
     resolveWorkGroupScrollIndex(entries, viewState.scrollPositions.get(anchorKey)),
   );
   const [restoringPosition, setRestoringPosition] = useState(initialScrollIndex !== undefined);
+  const [heightExpanded, setHeightExpanded] = useState(
+    () => viewState.expandedHeights?.has(anchorKey) ?? false,
+  );
   const listRef = useRef<LegendListRef>(null);
   const [expandedContentHeight, setExpandedContentHeight] = useState(0);
   const [fades, setFades] = useState({ top: false, bottom: false, viewportHeight: 0 });
@@ -312,13 +321,102 @@ function ExpandedWorkGroupEntries({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads expanded row sizes from LegendList's measured state after layout
   useLayoutEffect(updateExpandedContentHeight, [entries, updateExpandedContentHeight]);
 
+  const showProgressSummaryBar =
+    enhancedToolGroupDisplay && entries.length >= LONG_WORK_GROUP_SUMMARY_THRESHOLD;
+  const progressSummary = showProgressSummaryBar
+    ? summarizeWorkGroupProgress(entries, workspaceRoot)
+    : null;
+  const canToggleHeight =
+    showProgressSummaryBar &&
+    (entries.length >= LONG_WORK_GROUP_EXPAND_HEIGHT_THRESHOLD ||
+      fades.top ||
+      fades.bottom ||
+      heightExpanded);
+  const toggleHeightExpanded = () => {
+    const next = !heightExpanded;
+    const heights = (viewState.expandedHeights ??= new Set());
+    if (next) heights.add(anchorKey);
+    else heights.delete(anchorKey);
+    setHeightExpanded(next);
+  };
+  const baseMaxHeight =
+    enhancedToolGroupDisplay && heightExpanded ? "min(40rem, 75dvh)" : "min(18rem, 50dvh)";
+  const listExtraData = `${workspaceRoot ?? ""}:${enhancedToolGroupDisplay ? "1" : "0"}`;
+
   return (
     <WorkGroupViewCtx value={groupView}>
       <WorkLogList>
+        {progressSummary ? (
+          <div
+            data-tool-group-progress-summary
+            className="mb-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-md border border-border/50 bg-muted/30 px-2.5 py-1 text-2xs text-muted-foreground"
+          >
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+              <span className="shrink-0 font-medium text-foreground/80 tabular-nums">
+                {uiText("{value0} steps", { value0: String(progressSummary.totalSteps) })}
+              </span>
+              {progressSummary.editedFileCount > 0 ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="shrink-0 tabular-nums">
+                    {uiText(
+                      progressSummary.editedFileCount === 1
+                        ? "{value0} file edited"
+                        : "{value0} files edited",
+                      { value0: String(progressSummary.editedFileCount) },
+                    )}
+                  </span>
+                </>
+              ) : null}
+              {progressSummary.failedCount > 0 ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="shrink-0 tabular-nums text-warning">
+                    {uiText("{value0} failed", { value0: String(progressSummary.failedCount) })}
+                  </span>
+                </>
+              ) : null}
+              {progressSummary.latestCommitMessage ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-1 text-foreground/80">
+                    <GitCommitHorizontalIcon aria-hidden className="size-3 shrink-0" />
+                    <span className="min-w-0 truncate">{progressSummary.latestCommitMessage}</span>
+                  </span>
+                </>
+              ) : progressSummary.latestActionLabel ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="min-w-0 truncate text-secondary-label">
+                    {progressSummary.latestActionLabel}
+                  </span>
+                </>
+              ) : null}
+            </div>
+            {canToggleHeight ? (
+              <button
+                type="button"
+                onClick={toggleHeightExpanded}
+                aria-expanded={heightExpanded}
+                aria-label={uiText(
+                  heightExpanded ? "Collapse tool calls list" : "Expand tool calls list",
+                )}
+                className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-2xs font-medium text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+              >
+                {heightExpanded ? (
+                  <Minimize2Icon aria-hidden className="size-3" />
+                ) : (
+                  <Maximize2Icon aria-hidden className="size-3" />
+                )}
+                <span>{uiText(heightExpanded ? "Collapse" : "Expand")}</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <LegendList
           ref={listRef}
           data={entries}
-          extraData={workspaceRoot}
+          extraData={listExtraData}
           keyExtractor={workEntryKey}
           renderItem={renderEntry}
           estimatedItemSize={compactWorkEntryHeight}
@@ -343,7 +441,7 @@ function ExpandedWorkGroupEntries({
           role="region"
           aria-label={uiText("Tool calls")}
           data-tool-group-scroll
-          style={{ maxHeight: `calc(min(18rem, 50dvh) + ${expandedContentHeight}px)` }}
+          style={{ maxHeight: `calc(${baseMaxHeight} + ${expandedContentHeight}px)` }}
           className={cn(
             "scrollbar-gutter-stable scroll-py-6 overflow-x-hidden rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
             getVirtualizedScrollFadeClassName(fades),

@@ -140,6 +140,91 @@ describe("AntigravityAdapterV2 flavor", () => {
       outcome: { outcome: "selected", optionId: "opt-dev" },
     });
   });
+
+  it("auto-approves T3 send_to_user permission prompts without weakening other tools", () => {
+    const approvalPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      cwd: "/repo",
+    });
+    const readOnlyPolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: "/repo",
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly" },
+    });
+    const sendToUserPrompt: EffectAcpSchema.RequestPermissionRequest = {
+      sessionId: "session-1",
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      toolCall: {
+        toolCallId: "tool-send-1",
+        title: "Run send_to_user?",
+        kind: "other",
+        rawInput: { message: "Phase 1 finished." },
+      },
+    };
+    const executePrompt: EffectAcpSchema.RequestPermissionRequest = {
+      sessionId: "session-1",
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      toolCall: {
+        toolCallId: "tool-exec-1",
+        title: "Run command",
+        kind: "execute",
+      },
+    };
+
+    assert.equal(flavor.permissionDisposition?.(approvalPolicy, sendToUserPrompt), "allow");
+    assert.equal(flavor.permissionDisposition?.(readOnlyPolicy, sendToUserPrompt), "allow");
+    assert.equal(flavor.permissionDisposition?.(approvalPolicy, executePrompt), "ask");
+    assert.equal(flavor.permissionDisposition?.(readOnlyPolicy, executePrompt), "deny");
+  });
+
+  it.effect("appends milestone progress instructions by default and omits them when disabled", () =>
+    Effect.gen(function* () {
+      const captured: Array<string | undefined> = [];
+      const fakeRuntime = {
+        handleReadTextFile: () => Effect.void,
+        handleSessionUpdate: () => Effect.void,
+        prompt: () => Effect.succeed({ stopReason: "end_turn" as const }),
+        start: () => Effect.die("unused"),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const random = yield* SecureRandom.SecureRandom;
+      const host = {
+        paths: { attachmentsDir: "/tmp/attachments" },
+      } as unknown as ProviderHost.ProviderHost["Service"];
+
+      const runtimeInput = {
+        cwd: "/repo",
+        mcpServers: [],
+      } as unknown as Parameters<typeof flavor.makeRuntime>[0];
+
+      for (const milestoneProgressUpdates of [undefined, true, false]) {
+        const testFlavor = makeAntigravityAcpAdapterFlavor({
+          instanceId: ProviderInstanceId.make("antigravity-test"),
+          random,
+          fileSystem: undefined as never,
+          path: undefined as never,
+          host,
+          selfInvocation: undefined as never,
+          makeRuntime: (input) => {
+            captured.push(input.sessionSystemPromptAppend);
+            return Effect.succeed(fakeRuntime);
+          },
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.undefined,
+          ...(milestoneProgressUpdates === undefined ? {} : { milestoneProgressUpdates }),
+        });
+        yield* testFlavor.makeRuntime(runtimeInput);
+      }
+
+      assert.include(captured[0] ?? "", "<pull_request_linking>");
+      assert.include(captured[0] ?? "", "<milestone_progress_updates>");
+      assert.include(captured[1] ?? "", "<milestone_progress_updates>");
+      assert.include(captured[2] ?? "", "<pull_request_linking>");
+      assert.notInclude(captured[2] ?? "", "<milestone_progress_updates>");
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
 });
 
 const layerSession = Layer.mergeAll(
