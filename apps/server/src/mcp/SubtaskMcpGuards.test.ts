@@ -9,9 +9,11 @@ import {
   MessageId,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpSubtaskEscalateResult,
+  OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
+  OrchestratorMcpThreadWaitResult,
   OrchestratorMcpWorktreeCoordinateResult,
   ProjectId,
   ProviderDriverKind,
@@ -70,9 +72,13 @@ const decodeDelegateTaskResult = Schema.decodeUnknownEffect(OrchestratorMcpDeleg
 const decodeSubtaskEscalateResult = Schema.decodeUnknownEffect(
   OrchestratorMcpSubtaskEscalateResult,
 );
+const decodeThreadInterruptResult = Schema.decodeUnknownEffect(
+  OrchestratorMcpThreadInterruptResult,
+);
 const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
 const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
 const decodeThreadSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
+const decodeThreadWaitResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitResult);
 const decodeWorktreeCoordinateResult = Schema.decodeUnknownEffect(
   OrchestratorMcpWorktreeCoordinateResult,
 );
@@ -114,16 +120,27 @@ function makeMcpHarness(input: {
   readonly projectId: ProjectId;
   readonly capturedTurns: Array<CapturedTurn>;
   readonly workspaceRoot?: string;
+  readonly supportsActiveSteering?: boolean;
 }) {
   const driver = ProviderDriverKind.make("codex");
   const instanceId = ProviderInstanceId.make(driver);
   const modelSelection = { instanceId, model: "model-alpha" };
+  const capabilities =
+    input.supportsActiveSteering === undefined
+      ? CodexProviderCapabilitiesV2
+      : {
+          ...CodexProviderCapabilitiesV2,
+          turns: {
+            ...CodexProviderCapabilitiesV2.turns,
+            supportsActiveSteering: input.supportsActiveSteering,
+          },
+        };
   let nativeThreadSeq = 0;
 
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
-    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    getCapabilities: () => Effect.succeed(capabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: ({ providerSessionId }) =>
       Effect.gen(function* () {
@@ -140,7 +157,7 @@ function makeMcpHarness(input: {
             status: "ready",
             cwd: process.cwd(),
             model: modelSelection.model,
-            capabilities: CodexProviderCapabilitiesV2,
+            capabilities,
             createdAt: now,
             updatedAt: now,
             lastError: null,
@@ -381,6 +398,58 @@ function completeRun(input: {
           payload: { ...node, status: "completed", completedAt: now },
         },
       ],
+    });
+    yield* worker.drain();
+  });
+}
+
+function deliverDelegatedCompletionWake(input: {
+  readonly parentThreadId: ThreadId;
+  readonly parentRunId: RunId;
+  readonly modelSelection: { readonly instanceId: ProviderInstanceId; readonly model: string };
+  readonly commandId: string;
+}) {
+  return Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    const deliveryEvent = yield* orchestrator
+      .streamStoredEventsFrom({
+        threadId: input.parentThreadId,
+        eventType: "run.updated",
+      })
+      .pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "run.updated" &&
+            event.payload.id === input.parentRunId &&
+            event.payload.delegatedCompletion?.delivery != null,
+        ),
+        Stream.runHead,
+      );
+    const delivery =
+      Option.isSome(deliveryEvent) && deliveryEvent.value.event.type === "run.updated"
+        ? (deliveryEvent.value.event.payload.delegatedCompletion?.delivery ?? null)
+        : null;
+    assert.isNotNull(
+      delivery,
+      `Expected non-null delegatedCompletion.delivery on ${input.parentRunId}`,
+    );
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      createdBy: "agent",
+      creationSource: "server",
+      commandId: CommandId.make(input.commandId),
+      threadId: input.parentThreadId,
+      messageId: delivery!.messageId,
+      text: `Delegated task ${delivery!.taskIds.join(", ")} [completed]`,
+      attachments: [],
+      modelSelection: input.modelSelection,
+      dispatchMode: { type: "queue_after_active" },
+      delegatedCompletion: {
+        parentRunId: input.parentRunId,
+        generation: delivery!.generation,
+        taskIds: delivery!.taskIds,
+      },
     });
     yield* worker.drain();
   });
@@ -1761,6 +1830,831 @@ describe("Subtask MCP guards, children scope, privilege-safe inbox, and causatio
           l0AfterCancel.runs.every((r) => r.delegatedCompletion?.delivery == null),
           "Parent should have no pending delegated completion delivery after task_cancel",
         );
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "redundant wake cancellation keeps t3_thread_list and t3_thread_read status/latestRunId consistent and preserves active-run escalation with same-requestId replay",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-redundant-wake-consistency");
+      const env = makeMcpHarness({
+        projectId,
+        capturedTurns,
+        supportsActiveSteering: false,
+      });
+      const l0 = ThreadId.make("thread:rw:l0");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:rw:create-l0"),
+          threadId: l0,
+          projectId,
+          title: "Root L0",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:rw:l0-r1"),
+          threadId: l0,
+          messageId: MessageId.make("msg:rw:l0-r1"),
+          text: "Start L0",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // L0 delegates L1-A (async).
+        const delL1Raw = yield* callTool(l0, "delegate_task", {
+          title: "L1-A",
+          task: "Delegate L2, read it, then escalate",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1Raw.isError, true);
+        const delL1 = yield* decodeDelegateTaskResult(delL1Raw.structuredContent);
+        if (delL1.childThreadId === null) assert.fail("Expected L1-A childThreadId");
+        const l1a = delL1.childThreadId;
+        yield* worker.drain();
+
+        const l1aRun1 = (yield* orchestrator.getThreadProjection(l1a)).runs[0]!;
+
+        // L1-A (still running ordinal 1) delegates L2 (async).
+        const delL2Raw = yield* callTool(l1a, "delegate_task", {
+          title: "L2-Probe",
+          task: "Finish quickly",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL2Raw.isError, true);
+        const delL2 = yield* decodeDelegateTaskResult(delL2Raw.structuredContent);
+        if (delL2.childThreadId === null) assert.fail("Expected L2 childThreadId");
+        const l2 = delL2.childThreadId;
+        yield* worker.drain();
+
+        // L2 completes while L1-A ordinal 1 is still running -> queues a delegated completion wake (ordinal 2) on L1-A.
+        const l2Run1 = (yield* orchestrator.getThreadProjection(l2)).runs[0]!;
+        yield* completeRun({ threadId: l2, runId: l2Run1.id, replyText: "L2 done." });
+        yield* deliverDelegatedCompletionWake({
+          parentThreadId: l1a,
+          parentRunId: l1aRun1.id,
+          modelSelection: env.modelSelection,
+          commandId: "cmd:rw:l2-wake",
+        });
+
+        const l1aBeforeRead = yield* orchestrator.getThreadProjection(l1a);
+        const wakeRun = l1aBeforeRead.runs.find((run) => run.ordinal === 2);
+        assert.isDefined(wakeRun);
+        assert.equal(wakeRun!.status, "queued");
+
+        // L1-A reads L2 via t3_thread_read -> acknowledges L2 and cancels the redundant unstarted wake run (ordinal 2).
+        const readL2Raw = yield* callTool(l1a, "t3_thread_read", { threadId: l2 });
+        assert.notEqual(readL2Raw.isError, true);
+        yield* worker.drain();
+
+        const l1aAfterRead = yield* orchestrator.getThreadProjection(l1a);
+        const cancelledWakeRun = l1aAfterRead.runs.find((run) => run.id === wakeRun!.id);
+        assert.isDefined(cancelledWakeRun);
+        assert.equal(cancelledWakeRun!.status, "cancelled");
+        assert.isNull(cancelledWakeRun!.startedAt);
+
+        // L1-A (still in active ordinal 1) calls t3_subtask_escalate -> must use active run 1, NOT cancelled wake run 2!
+        const reqId = SubtaskEscalationRequestId.make("esc:rw:l1a-replay-1");
+        const esc1Raw = yield* callTool(l1a, "t3_subtask_escalate", {
+          requestId: reqId,
+          task: "Create sibling L1 after L2 probe",
+        });
+        assert.notEqual(esc1Raw.isError, true, JSON.stringify(esc1Raw));
+        const esc1 = yield* decodeSubtaskEscalateResult(esc1Raw.structuredContent);
+        assert.equal(esc1.replayed, false);
+        assert.equal(esc1.request.requestId, reqId);
+        assert.equal(esc1.request.status, "pending");
+        assert.equal(esc1.request.sourceRunId, l1aRun1.id);
+
+        // Replaying with the exact same requestId must be idempotent (replayed: true, same inbox message, no duplicate run).
+        const l0RunCountAfterFirst = (yield* orchestrator.getThreadProjection(l0)).runs.length;
+        const esc2Raw = yield* callTool(l1a, "t3_subtask_escalate", {
+          requestId: reqId,
+          task: "Create sibling L1 after L2 probe",
+        });
+        assert.notEqual(esc2Raw.isError, true, JSON.stringify(esc2Raw));
+        const esc2 = yield* decodeSubtaskEscalateResult(esc2Raw.structuredContent);
+        assert.equal(esc2.replayed, true);
+        assert.equal(esc2.request.requestId, reqId);
+        assert.equal(esc2.request.inboxMessageId, esc1.request.inboxMessageId);
+        assert.equal(esc2.request.inboxRunId, esc1.request.inboxRunId);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(l0)).runs.length,
+          l0RunCountAfterFirst,
+        );
+
+        // Complete L1-A ordinal 1 after ordinal 2 was already cancelled before starting.
+        yield* completeRun({ threadId: l1a, runId: l1aRun1.id, replyText: "L1-A finished." });
+        yield* worker.drain();
+
+        // Both t3_thread_list (children scope & project subagents) and t3_thread_read must agree on status: "completed" and latestRunId: l1aRun1.id.
+        const listChildrenRaw = yield* callTool(l0, "t3_thread_list", {
+          scope: "children",
+          parentThreadId: l0,
+        });
+        assert.notEqual(listChildrenRaw.isError, true, JSON.stringify(listChildrenRaw));
+        const listResult = yield* decodeThreadListResult(listChildrenRaw.structuredContent);
+        const listedL1a = listResult.threads.find((thread) => thread.threadId === l1a);
+        assert.isDefined(listedL1a);
+        assert.equal(listedL1a!.status, "completed");
+        assert.equal(listedL1a!.latestRunId, l1aRun1.id);
+
+        const listProjectRaw = yield* callTool(l0, "t3_thread_list", {
+          projectId,
+          includeSubagents: true,
+        });
+        assert.notEqual(listProjectRaw.isError, true, JSON.stringify(listProjectRaw));
+        const listProjectResult = yield* decodeThreadListResult(listProjectRaw.structuredContent);
+        const listedProjectL1a = listProjectResult.threads.find(
+          (thread) => thread.threadId === l1a,
+        );
+        assert.isDefined(listedProjectL1a);
+        assert.equal(listedProjectL1a!.status, "completed");
+        assert.equal(listedProjectL1a!.latestRunId, l1aRun1.id);
+
+        const readL1aRaw = yield* callTool(l0, "t3_thread_read", { threadId: l1a });
+        assert.notEqual(readL1aRaw.isError, true);
+        const readL1a = yield* decodeThreadReadResult(readL1aRaw.structuredContent);
+        assert.equal(readL1a.thread.status, "completed");
+        assert.equal(readL1a.thread.latestRunId, l1aRun1.id);
+        assert.equal(readL1a.thread.status, listedL1a!.status);
+        assert.equal(readL1a.thread.latestRunId, listedL1a!.latestRunId);
+        // Full run history still includes both ordinal 2 (cancelled wake) and ordinal 1 (completed).
+        assert.equal(readL1a.recentRuns.length, 2);
+
+        // t3_thread_wait without runId must also resolve to ordinal 1 ("completed"), not cancelled ordinal 2.
+        const waitL1aRaw = yield* callTool(l0, "t3_thread_wait", { threadId: l1a });
+        assert.notEqual(waitL1aRaw.isError, true, JSON.stringify(waitL1aRaw));
+        const waitL1a = yield* decodeThreadWaitResult(waitL1aRaw.structuredContent);
+        assert.equal(waitL1a.status, "completed");
+        assert.equal(waitL1a.runId, l1aRun1.id);
+        assert.equal(waitL1a.timedOut, false);
+        assert.equal(waitL1a.status, listedL1a!.status);
+        assert.equal(waitL1a.runId, readL1a.thread.latestRunId);
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "horizontal escalation succeeds after L2 completion wake and after prior sibling L1 completion with same-requestId replay, while blocking real recursive escalation loops",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-escalation-false-positive-fix");
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      const l0a = ThreadId.make("thread:efp:l0a");
+      const l0b = ThreadId.make("thread:efp:l0b");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+
+        for (const [threadId, title] of [
+          [l0a, "Root L0-A (L2 wake case)"],
+          [l0b, "Root L0-B (Sibling completion case)"],
+        ] as const) {
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`cmd:efp:create:${threadId}`),
+            threadId,
+            projectId,
+            title,
+            modelSelection: env.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`cmd:efp:start:${threadId}`),
+            threadId,
+            messageId: MessageId.make(`msg:efp:start:${threadId}`),
+            text: `Start ${title}`,
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        yield* worker.drain();
+
+        // Case A2: L1-A delegates L2, finishes run 1, L2 completes and wakes L1-A into run 2 ([l0a, l2]), then L1-A escalates.
+        const delL1aRaw = yield* callTool(l0a, "delegate_task", {
+          title: "L1-A",
+          task: "Run L2 then handle wake",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1aRaw.isError, true);
+        const delL1a = yield* decodeDelegateTaskResult(delL1aRaw.structuredContent);
+        if (delL1a.childThreadId === null) assert.fail("Expected L1-A childThreadId");
+        const l1a = delL1a.childThreadId;
+        yield* worker.drain();
+
+        const delL2Raw = yield* callTool(l1a, "delegate_task", {
+          title: "L2-Leaf",
+          task: "Return finding to L1-A",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL2Raw.isError, true);
+        const delL2 = yield* decodeDelegateTaskResult(delL2Raw.structuredContent);
+        if (delL2.childThreadId === null) assert.fail("Expected L2 childThreadId");
+        const l2 = delL2.childThreadId;
+        yield* worker.drain();
+
+        const l1aRun1 = (yield* orchestrator.getThreadProjection(l1a)).runs[0]!;
+        const l2Run1 = (yield* orchestrator.getThreadProjection(l2)).runs[0]!;
+        yield* completeRun({ threadId: l1a, runId: l1aRun1.id, replyText: "Waiting on L2." });
+        yield* completeRun({ threadId: l2, runId: l2Run1.id, replyText: "L2 result ready." });
+        yield* deliverDelegatedCompletionWake({
+          parentThreadId: l1a,
+          parentRunId: l1aRun1.id,
+          modelSelection: env.modelSelection,
+          commandId: "cmd:efp:l2-wake",
+        });
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        const l1aAfterWake = yield* orchestrator.getThreadProjection(l1a);
+        const l1aRun2 = l1aAfterWake.runs.find((run) => run.ordinal === 2);
+        assert.isDefined(l1aRun2);
+        const l1aRun2Message = l1aAfterWake.messages.find((m) => m.id === l1aRun2!.userMessageId);
+        assert.deepEqual(l1aRun2Message?.causationChain, [l0a, l2]);
+
+        const reqA2 = SubtaskEscalationRequestId.make("esc:efp:after-l2-wake");
+        const escA2FirstRaw = yield* callTool(l1a, "t3_subtask_escalate", {
+          requestId: reqA2,
+          task: "Escalate after receiving L2 wake",
+        });
+        assert.notEqual(escA2FirstRaw.isError, true, JSON.stringify(escA2FirstRaw));
+        const escA2First = yield* decodeSubtaskEscalateResult(escA2FirstRaw.structuredContent);
+        assert.equal(escA2First.replayed, false);
+        assert.equal(escA2First.request.status, "pending");
+
+        const escA2ReplayRaw = yield* callTool(l1a, "t3_subtask_escalate", {
+          requestId: reqA2,
+          task: "Escalate after receiving L2 wake",
+        });
+        assert.notEqual(escA2ReplayRaw.isError, true, JSON.stringify(escA2ReplayRaw));
+        const escA2Replay = yield* decodeSubtaskEscalateResult(escA2ReplayRaw.structuredContent);
+        assert.equal(escA2Replay.replayed, true);
+        assert.equal(escA2Replay.request.inboxMessageId, escA2First.request.inboxMessageId);
+
+        // Case B: L0-B delegates L1-1 -> L1-1 completes normally -> wakes L0-B ([L1-1]) -> L0-B delegates fresh L1-Esc ([L1-1, L0-B]).
+        const delL1FirstRaw = yield* callTool(l0b, "delegate_task", {
+          title: "L1-First",
+          task: "Complete phase 1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1FirstRaw.isError, true);
+        const delL1First = yield* decodeDelegateTaskResult(delL1FirstRaw.structuredContent);
+        if (delL1First.childThreadId === null) assert.fail("Expected L1-First childThreadId");
+        const l1First = delL1First.childThreadId;
+        yield* worker.drain();
+
+        const l0bRun1 = (yield* orchestrator.getThreadProjection(l0b)).runs[0]!;
+        const l1FirstRun1 = (yield* orchestrator.getThreadProjection(l1First)).runs[0]!;
+        yield* completeRun({ threadId: l0b, runId: l0bRun1.id, replyText: "Delegated phase 1." });
+        yield* completeRun({
+          threadId: l1First,
+          runId: l1FirstRun1.id,
+          replyText: "Phase 1 complete.",
+        });
+        yield* deliverDelegatedCompletionWake({
+          parentThreadId: l0b,
+          parentRunId: l0bRun1.id,
+          modelSelection: env.modelSelection,
+          commandId: "cmd:efp:l1first-wake",
+        });
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        // L0-B is now active on ordinal 2 (delegatedCompletion wake carrying [l1First]). Delegate fresh L1-Esc.
+        const delL1EscRaw = yield* callTool(l0b, "delegate_task", {
+          title: "L1-Esc",
+          task: "Run fresh phase 2 subtask and escalate if needed",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1EscRaw.isError, true);
+        const delL1Esc = yield* decodeDelegateTaskResult(delL1EscRaw.structuredContent);
+        if (delL1Esc.childThreadId === null) assert.fail("Expected L1-Esc childThreadId");
+        const l1Esc = delL1Esc.childThreadId;
+        yield* worker.drain();
+
+        const l1EscProj = yield* orchestrator.getThreadProjection(l1Esc);
+        const l1EscMsg = l1EscProj.messages.find((m) => m.id === l1EscProj.runs[0]!.userMessageId);
+        assert.deepEqual(l1EscMsg?.causationChain, [l1First, l0b]);
+
+        // L1-Esc's first escalation must succeed (NOT a false-positive loop!), and same-requestId replay must be idempotent.
+        const reqB = SubtaskEscalationRequestId.make("esc:efp:fresh-after-sibling-done");
+        const escB1Raw = yield* callTool(l1Esc, "t3_subtask_escalate", {
+          requestId: reqB,
+          task: "Need sibling L1-Peer from L0-B",
+        });
+        assert.notEqual(escB1Raw.isError, true, JSON.stringify(escB1Raw));
+        const escB1 = yield* decodeSubtaskEscalateResult(escB1Raw.structuredContent);
+        assert.equal(escB1.replayed, false);
+        assert.equal(escB1.request.status, "pending");
+
+        const escB2Raw = yield* callTool(l1Esc, "t3_subtask_escalate", {
+          requestId: reqB,
+          task: "Need sibling L1-Peer from L0-B",
+        });
+        assert.notEqual(escB2Raw.isError, true, JSON.stringify(escB2Raw));
+        const escB2 = yield* decodeSubtaskEscalateResult(escB2Raw.structuredContent);
+        assert.equal(escB2.replayed, true);
+        assert.equal(escB2.request.inboxMessageId, escB1.request.inboxMessageId);
+
+        // Explicit causationChain supplied by caller still cannot bypass loop protection.
+        const explicitLoopRaw = yield* callTool(l1Esc, "t3_subtask_escalate", {
+          requestId: SubtaskEscalationRequestId.make("esc:efp:explicit-chain-loop"),
+          task: "Should fail when explicit causationChain includes root",
+          causationChain: [l1First, l0b],
+        });
+        assert.equal(explicitLoopRaw.isError, true);
+        assert.include(String(declaredFailure(explicitLoopRaw)?.message ?? ""), "causationChain");
+
+        // Now finish L0-B ordinal 2 so L0-B runs the queued escalation inbox run (ordinal 3).
+        const l0bRun2 = (yield* orchestrator.getThreadProjection(l0b)).runs.find(
+          (run) => run.ordinal === 2,
+        )!;
+        yield* completeRun({ threadId: l0b, runId: l0bRun2.id, replyText: "Delegated phase 2." });
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        // Real loop 1: L0-B fulfills reqB via delegate_task({ escalationRequestId: reqB }) -> sibling tries escalating back -> REJECTED!
+        const delLoopExplicitRaw = yield* callTool(l0b, "delegate_task", {
+          title: "L1-Loop-Explicit",
+          task: "Fulfill escalation reqB",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+          escalationRequestId: reqB,
+        });
+        assert.notEqual(delLoopExplicitRaw.isError, true);
+        const delLoopExplicit = yield* decodeDelegateTaskResult(
+          delLoopExplicitRaw.structuredContent,
+        );
+        if (delLoopExplicit.childThreadId === null) assert.fail("Expected explicit loop child");
+        yield* worker.drain();
+
+        const loopExplicitEscRaw = yield* callTool(
+          delLoopExplicit.childThreadId,
+          "t3_subtask_escalate",
+          {
+            requestId: SubtaskEscalationRequestId.make("esc:efp:recursive-explicit"),
+            task: "Recursive escalation back to L0-B",
+          },
+        );
+        assert.equal(loopExplicitEscRaw.isError, true);
+        assert.include(
+          String(declaredFailure(loopExplicitEscRaw)?.message ?? ""),
+          "causationChain",
+        );
+
+        // Real loop 2: L0-B (still running the escalation inbox run) delegates another L1 WITHOUT escalationRequestId -> still REJECTED!
+        const delLoopImplicitRaw = yield* callTool(l0b, "delegate_task", {
+          title: "L1-Loop-Implicit",
+          task: "Delegated inside escalation wake without escalationRequestId",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delLoopImplicitRaw.isError, true);
+        const delLoopImplicit = yield* decodeDelegateTaskResult(
+          delLoopImplicitRaw.structuredContent,
+        );
+        if (delLoopImplicit.childThreadId === null) assert.fail("Expected implicit loop child");
+        yield* worker.drain();
+
+        const loopImplicitEscRaw = yield* callTool(
+          delLoopImplicit.childThreadId,
+          "t3_subtask_escalate",
+          {
+            requestId: SubtaskEscalationRequestId.make("esc:efp:recursive-implicit"),
+            task: "Implicit recursive escalation back to L0-B",
+          },
+        );
+        assert.equal(loopImplicitEscRaw.isError, true);
+        assert.include(
+          String(declaredFailure(loopImplicitEscRaw)?.message ?? ""),
+          "causationChain",
+        );
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "horizontal escalation succeeds after L2 interim report wakes L1 via senderThreadId without delegatedCompletion",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-escalation-after-l2-interim");
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      const l0 = ThreadId.make("thread:interim-esc:l0");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:interim-esc:create-l0"),
+          threadId: l0,
+          projectId,
+          title: "Root L0 (L2 interim report escalation)",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:interim-esc:start-l0"),
+          threadId: l0,
+          messageId: MessageId.make("msg:interim-esc:start-l0"),
+          text: "Start L0",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        const delL1Raw = yield* callTool(l0, "delegate_task", {
+          title: "L1-Coordinator",
+          task: "Delegate L2 and escalate if L2 reports a sibling dependency",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL1Raw.isError, true, JSON.stringify(delL1Raw));
+        const delL1 = yield* decodeDelegateTaskResult(delL1Raw.structuredContent);
+        if (delL1.childThreadId === null) assert.fail("Expected L1 childThreadId");
+        const l1 = delL1.childThreadId;
+        yield* worker.drain();
+
+        const delL2Raw = yield* callTool(l1, "delegate_task", {
+          title: "L2-Worker",
+          task: "Send interim progress back to L1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delL2Raw.isError, true, JSON.stringify(delL2Raw));
+        const delL2 = yield* decodeDelegateTaskResult(delL2Raw.structuredContent);
+        if (delL2.childThreadId === null) assert.fail("Expected L2 childThreadId");
+        const l2 = delL2.childThreadId;
+        yield* worker.drain();
+
+        // L1 finishes ordinal 1 so L2's queued interim report wakes L1 into ordinal 2.
+        const l1Run1 = (yield* orchestrator.getThreadProjection(l1)).runs[0]!;
+        yield* completeRun({
+          threadId: l1,
+          runId: l1Run1.id,
+          replyText: "Waiting for L2 interim progress.",
+        });
+
+        const interimSendRaw = yield* callTool(l2, "t3_thread_send", {
+          threadId: l1,
+          message: "L2 interim progress: discovered cross-module gap requiring sibling L1",
+          mode: "queue",
+          reportKind: "interim",
+        });
+        assert.notEqual(interimSendRaw.isError, true, JSON.stringify(interimSendRaw));
+        yield* orchestrator.resumeQueuedRuns;
+        yield* worker.drain();
+
+        const l1AfterInterim = yield* orchestrator.getThreadProjection(l1);
+        const l1Run2 = l1AfterInterim.runs.find((run) => run.ordinal === 2);
+        assert.isDefined(l1Run2);
+        assert.equal(l1Run2!.status, "running");
+        const l1Run2Message = l1AfterInterim.messages.find((m) => m.id === l1Run2!.userMessageId);
+        assert.equal(l1Run2Message?.senderThreadId, l2);
+        assert.isUndefined(l1Run2Message?.delegatedCompletion);
+        assert.deepEqual(l1Run2Message?.causationChain, [l0, l2]);
+
+        const reqId = SubtaskEscalationRequestId.make("esc:interim-esc:l1-after-l2-interim");
+        const escFirstRaw = yield* callTool(l1, "t3_subtask_escalate", {
+          requestId: reqId,
+          task: "Spawn sibling L1 for gap surfaced by L2 interim report",
+        });
+        assert.notEqual(escFirstRaw.isError, true, JSON.stringify(escFirstRaw));
+        const escFirst = yield* decodeSubtaskEscalateResult(escFirstRaw.structuredContent);
+        assert.equal(escFirst.replayed, false);
+        assert.equal(escFirst.request.status, "pending");
+        assert.equal(escFirst.request.sourceRunId, l1Run2!.id);
+
+        const escReplayRaw = yield* callTool(l1, "t3_subtask_escalate", {
+          requestId: reqId,
+          task: "Spawn sibling L1 for gap surfaced by L2 interim report",
+        });
+        assert.notEqual(escReplayRaw.isError, true, JSON.stringify(escReplayRaw));
+        const escReplay = yield* decodeSubtaskEscalateResult(escReplayRaw.structuredContent);
+        assert.equal(escReplay.replayed, true);
+        assert.equal(escReplay.request.inboxMessageId, escFirst.request.inboxMessageId);
+        assert.equal(escReplay.request.inboxRunId, escFirst.request.inboxRunId);
+
+        // Explicit caller-supplied causationChain still cannot bypass loop protection.
+        const explicitLoopRaw = yield* callTool(l1, "t3_subtask_escalate", {
+          requestId: SubtaskEscalationRequestId.make("esc:interim-esc:explicit-loop"),
+          task: "Should fail when explicit causationChain includes root",
+          causationChain: [l0, l2],
+        });
+        assert.equal(explicitLoopRaw.isError, true);
+        assert.include(String(declaredFailure(explicitLoopRaw)?.message ?? ""), "causationChain");
+      }).pipe(Effect.provide(env.layer));
+    },
+  );
+
+  it.effect(
+    "t3_thread_list, t3_thread_read, and t3_thread_wait all surface a started second run as interrupted/cancelled after Stop instead of reverting to completed run 1",
+    () => {
+      const capturedTurns: Array<CapturedTurn> = [];
+      const projectId = ProjectId.make("project:mcp-started-run2-stop-consistency");
+      const env = makeMcpHarness({ projectId, capturedTurns });
+      const l0 = ThreadId.make("thread:stop-run2:l0");
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sink = yield* EventSink.EventSinkV2;
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:stop-run2:create-l0"),
+          threadId: l0,
+          projectId,
+          title: "Root L0 (Started Run 2 Stop)",
+          modelSelection: env.modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:stop-run2:start-l0"),
+          threadId: l0,
+          messageId: MessageId.make("msg:stop-run2:start-l0"),
+          text: "Start L0",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+
+        // Case A: Started ordinal 2 stopped via real Stop (t3_thread_interrupt { stop: true }) -> interrupted.
+        const delStoppedRaw = yield* callTool(l0, "delegate_task", {
+          title: "L1-Stopped-Run2",
+          task: "Complete round 1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delStoppedRaw.isError, true, JSON.stringify(delStoppedRaw));
+        const delStopped = yield* decodeDelegateTaskResult(delStoppedRaw.structuredContent);
+        if (delStopped.childThreadId === null)
+          assert.fail("Expected L1-Stopped-Run2 childThreadId");
+        const l1Stopped = delStopped.childThreadId;
+        yield* worker.drain();
+
+        const l1StoppedRun1 = (yield* orchestrator.getThreadProjection(l1Stopped)).runs[0]!;
+        yield* completeRun({
+          threadId: l1Stopped,
+          runId: l1StoppedRun1.id,
+          replyText: "Round 1 completed.",
+        });
+
+        const sendRun2Raw = yield* callTool(l0, "t3_thread_send", {
+          threadId: l1Stopped,
+          message: "Start round 2 work",
+          mode: "auto",
+        });
+        assert.notEqual(sendRun2Raw.isError, true, JSON.stringify(sendRun2Raw));
+        yield* worker.drain();
+
+        const l1StoppedBeforeStop = yield* orchestrator.getThreadProjection(l1Stopped);
+        const l1StoppedRun2 = l1StoppedBeforeStop.runs.find((run) => run.ordinal === 2);
+        assert.isDefined(l1StoppedRun2);
+        assert.equal(l1StoppedRun2!.status, "running");
+        assert.isNotNull(l1StoppedRun2!.startedAt);
+
+        const stopRaw = yield* callTool(l0, "t3_thread_interrupt", {
+          threadId: l1Stopped,
+          stop: true,
+          reason: "Stop started second run",
+          clientRequestId: "stop-run2-started",
+        });
+        assert.notEqual(stopRaw.isError, true, JSON.stringify(stopRaw));
+        const stopRes = yield* decodeThreadInterruptResult(stopRaw.structuredContent);
+        assert.equal(stopRes.status, "interrupt_requested");
+        assert.equal(stopRes.runId, l1StoppedRun2!.id);
+        yield* worker.drain();
+
+        const l1StoppedAfterStop = yield* orchestrator.getThreadProjection(l1Stopped);
+        const l1StoppedRun2After = l1StoppedAfterStop.runs.find(
+          (run) => run.id === l1StoppedRun2!.id,
+        );
+        assert.equal(l1StoppedRun2After?.status, "interrupted");
+        assert.isNotNull(l1StoppedRun2After?.startedAt);
+        assert.isNotNull(l1StoppedRun2After?.completedAt);
+
+        // Case B: Started ordinal 2 settled as status: "cancelled" (startedAt !== null) -> must NOT be skipped by outlivedBeforeStart.
+        const delCancelledRaw = yield* callTool(l0, "delegate_task", {
+          title: "L1-Started-Cancelled-Run2",
+          task: "Complete round 1",
+          target: {
+            providerInstanceId: env.modelSelection.instanceId,
+            model: env.modelSelection.model,
+          },
+          mode: "async",
+        });
+        assert.notEqual(delCancelledRaw.isError, true, JSON.stringify(delCancelledRaw));
+        const delCancelled = yield* decodeDelegateTaskResult(delCancelledRaw.structuredContent);
+        if (delCancelled.childThreadId === null)
+          assert.fail("Expected L1-Started-Cancelled-Run2 childThreadId");
+        const l1Cancelled = delCancelled.childThreadId;
+        yield* worker.drain();
+
+        const l1CancelledRun1 = (yield* orchestrator.getThreadProjection(l1Cancelled)).runs[0]!;
+        yield* completeRun({
+          threadId: l1Cancelled,
+          runId: l1CancelledRun1.id,
+          replyText: "Round 1 completed.",
+        });
+
+        const sendCancelledRun2Raw = yield* callTool(l0, "t3_thread_send", {
+          threadId: l1Cancelled,
+          message: "Start round 2 that gets cancelled after start",
+          mode: "auto",
+        });
+        assert.notEqual(sendCancelledRun2Raw.isError, true, JSON.stringify(sendCancelledRun2Raw));
+        yield* worker.drain();
+
+        const l1CancelledProj = yield* orchestrator.getThreadProjection(l1Cancelled);
+        const l1CancelledRun2 = l1CancelledProj.runs.find((run) => run.ordinal === 2)!;
+        assert.equal(l1CancelledRun2.status, "running");
+        assert.isNotNull(l1CancelledRun2.startedAt);
+        const l1CancelledAttempt2 = l1CancelledProj.attempts.find(
+          (a) => a.id === l1CancelledRun2.activeAttemptId,
+        )!;
+        const l1CancelledNode2 = l1CancelledProj.nodes.find(
+          (n) => n.id === l1CancelledRun2.rootNodeId,
+        )!;
+        const cancelNow = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`ev:${l1CancelledRun2.id}:run-cancelled`),
+              type: "run.updated",
+              threadId: l1Cancelled,
+              runId: l1CancelledRun2.id,
+              nodeId: l1CancelledNode2.id,
+              providerInstanceId: l1CancelledRun2.providerInstanceId,
+              occurredAt: cancelNow,
+              payload: {
+                ...l1CancelledRun2,
+                status: "cancelled",
+                completedAt: cancelNow,
+              },
+            },
+            {
+              id: EventId.make(`ev:${l1CancelledRun2.id}:attempt-cancelled`),
+              type: "run-attempt.updated",
+              threadId: l1Cancelled,
+              runId: l1CancelledRun2.id,
+              nodeId: l1CancelledNode2.id,
+              providerInstanceId: l1CancelledRun2.providerInstanceId,
+              occurredAt: cancelNow,
+              payload: {
+                ...l1CancelledAttempt2,
+                status: "cancelled",
+                completedAt: cancelNow,
+              },
+            },
+            {
+              id: EventId.make(`ev:${l1CancelledRun2.id}:node-cancelled`),
+              type: "node.updated",
+              threadId: l1Cancelled,
+              runId: l1CancelledRun2.id,
+              nodeId: l1CancelledNode2.id,
+              providerInstanceId: l1CancelledRun2.providerInstanceId,
+              occurredAt: cancelNow,
+              payload: {
+                ...l1CancelledNode2,
+                status: "cancelled",
+                completedAt: cancelNow,
+              },
+            },
+          ],
+        });
+        yield* worker.drain();
+
+        const listChildrenRaw = yield* callTool(l0, "t3_thread_list", { scope: "children" });
+        assert.notEqual(listChildrenRaw.isError, true, JSON.stringify(listChildrenRaw));
+        const listChildren = yield* decodeThreadListResult(listChildrenRaw.structuredContent);
+
+        const listAllRaw = yield* callTool(l0, "t3_thread_list", {
+          projectId,
+          includeSubagents: true,
+        });
+        assert.notEqual(listAllRaw.isError, true, JSON.stringify(listAllRaw));
+        const listAll = yield* decodeThreadListResult(listAllRaw.structuredContent);
+
+        for (const expected of [
+          {
+            threadId: l1Stopped,
+            runId: l1StoppedRun2!.id,
+            status: "interrupted" as const,
+          },
+          {
+            threadId: l1Cancelled,
+            runId: l1CancelledRun2.id,
+            status: "cancelled" as const,
+          },
+        ]) {
+          const childItem = listChildren.threads.find((t) => t.threadId === expected.threadId);
+          assert.isDefined(childItem);
+          assert.equal(childItem!.status, expected.status);
+          assert.equal(childItem!.latestRunId, expected.runId);
+
+          const projectItem = listAll.threads.find((t) => t.threadId === expected.threadId);
+          assert.isDefined(projectItem);
+          assert.equal(projectItem!.status, expected.status);
+          assert.equal(projectItem!.latestRunId, expected.runId);
+
+          const readRaw = yield* callTool(l0, "t3_thread_read", { threadId: expected.threadId });
+          assert.notEqual(readRaw.isError, true, JSON.stringify(readRaw));
+          const readRes = yield* decodeThreadReadResult(readRaw.structuredContent);
+          assert.equal(readRes.thread.status, expected.status);
+          assert.equal(readRes.thread.latestRunId, expected.runId);
+          assert.equal(readRes.thread.activeRunId, null);
+          assert.equal(readRes.recentRuns.length, 2);
+
+          const waitRaw = yield* callTool(l0, "t3_thread_wait", { threadId: expected.threadId });
+          assert.notEqual(waitRaw.isError, true, JSON.stringify(waitRaw));
+          const waitRes = yield* decodeThreadWaitResult(waitRaw.structuredContent);
+          assert.equal(waitRes.status, expected.status);
+          assert.equal(waitRes.runId, expected.runId);
+          assert.equal(waitRes.timedOut, false);
+        }
       }).pipe(Effect.provide(env.layer));
     },
   );

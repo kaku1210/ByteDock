@@ -9,6 +9,7 @@ import type {
   ProjectionRecords,
   ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
+import { latestUnheldRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   type ChatAttachment,
   CommandId,
@@ -1084,7 +1085,7 @@ const make = Effect.gen(function* () {
     const target = yield* getProjectThreadRecords(input, ["runs"]);
     const selectedRun =
       input.runId === undefined
-        ? latestRun(target)
+        ? (latestUnheldRun(target.runs) ?? latestRun(target))
         : target.runs.find((candidate) => candidate.id === input.runId);
     if (input.runId !== undefined && selectedRun === undefined) {
       return yield* new ThreadManagementRunNotFoundError({

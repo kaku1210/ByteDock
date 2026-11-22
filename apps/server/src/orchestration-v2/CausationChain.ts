@@ -27,7 +27,8 @@ export interface ComputedCausationChain {
 /**
  * Computes and validates outbound `causationChain` across cross-thread actions: callers cannot strip
  * `callerIncomingChain`, child reports allow one upward return per downward ancestor hop, and L1
- * escalations block multi-hop re-entry loops targeting `L0`.
+ * escalations block multi-hop re-entry loops targeting `L0` while ignoring verified benign child
+ * returns (L2 reports back to L1 or prior non-escalation L1 completions before L0 delegated a new L1).
  */
 export function computeOutboundCausationChain(input: {
   readonly callerThreadId: ThreadId | undefined;
@@ -36,6 +37,7 @@ export function computeOutboundCausationChain(input: {
   readonly explicitChain?: ReadonlyArray<ThreadId> | undefined;
   readonly intent: CausationChainIntent;
   readonly callerAncestorThreadIds?: ReadonlyArray<ThreadId> | undefined;
+  readonly benignChildReturnThreadIds?: ReadonlyArray<ThreadId> | undefined;
 }): ComputedCausationChain {
   const mergedIncoming = mergeCausationChains(input.callerIncomingChain, input.explicitChain);
 
@@ -101,11 +103,22 @@ export function computeOutboundCausationChain(input: {
         loopReason: `Escalation loop detected: thread ${input.callerThreadId} is already in causationChain.`,
       };
     }
+    // Caller-supplied explicitChain entries are never ignored as benign child returns.
+    const explicitSet = new Set(input.explicitChain ?? []);
+    const benignSet = new Set(
+      (input.benignChildReturnThreadIds ?? []).filter(
+        (id) => id !== input.callerThreadId && id !== input.targetThreadId && !explicitSet.has(id),
+      ),
+    );
+    const effectiveIncoming = mergedIncoming.filter((id) => !benignSet.has(id));
     const isFreshFirstHopFromRoot =
-      mergedIncoming.length === 0 ||
-      (mergedIncoming.length === 1 && mergedIncoming[0] === input.targetThreadId);
+      effectiveIncoming.length === 0 ||
+      (effectiveIncoming.length === 1 && effectiveIncoming[0] === input.targetThreadId);
     const chain = isFreshFirstHopFromRoot
-      ? [input.callerThreadId]
+      ? mergeCausationChains(
+          mergedIncoming.filter((id) => id !== input.targetThreadId),
+          [input.callerThreadId],
+        )
       : mergeCausationChains(mergedIncoming, [input.callerThreadId]);
     const loopDetected = chain.includes(input.targetThreadId);
     return {

@@ -6,6 +6,7 @@ import {
   SubtaskEscalationRequest,
   SubtaskEscalationRequestId,
   ThreadId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2SubtaskSourceAnchor,
   type RunId,
   type SubtaskEscalationCreateDraftInput,
@@ -13,7 +14,10 @@ import {
   type SubtaskEscalationResolveInput,
   type SubtaskEscalationResolveResult,
 } from "@t3tools/contracts";
-import { orchestrationV2WorktreePending } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestUnheldRun,
+  orchestrationV2WorktreePending,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -231,6 +235,264 @@ export const layer: Layer.Layer<
             }),
         ),
       );
+
+    const loadEscalationTraceRecords = (threadId: ThreadId) =>
+      projectionStore.getThreadRecords(threadId, ["runs", "messages", "subagents"]).pipe(
+        Effect.catchTags({
+          ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
+        }),
+        Effect.mapError(
+          (cause) =>
+            new SubtaskEscalationError({
+              reason: "persistence_failed",
+              detail: `Unable to load escalation trace records for thread ${threadId}.`,
+              cause,
+            }),
+        ),
+      );
+
+    /**
+     * Collects benign child-return thread IDs (L2 returns to L1 or non-escalation L1 returns to L0).
+     * Any prior escalation hop or sibling `sourceAnchor` disables root-side exemptions.
+     */
+    const resolveBenignEscalationChainThreadIds = Effect.fn(
+      "SubtaskEscalationService.resolveBenignEscalationChainThreadIds",
+    )(function* (input: {
+      readonly sourceThread: OrchestrationV2AppThread;
+      readonly rootThread: OrchestrationV2AppThread;
+      readonly sourceRunId?: RunId | undefined;
+      readonly callerIncomingChain?: ReadonlyArray<ThreadId> | undefined;
+    }) {
+      const incoming = input.callerIncomingChain ?? [];
+      const hasOtherEntries = incoming.some(
+        (id) => id !== input.sourceThread.id && id !== input.rootThread.id,
+      );
+      if (!hasOtherEntries) return [] as ReadonlyArray<ThreadId>;
+
+      const benign = new Set<ThreadId>();
+      const sourceRecords = yield* loadEscalationTraceRecords(input.sourceThread.id);
+      const rootRecords = yield* loadEscalationTraceRecords(input.rootThread.id);
+      const rootEscalations = yield* store.listForThread(input.rootThread.id);
+
+      const escalationInboxRunIds = new Set<RunId>();
+      const escalationInboxMessageIds = new Set<MessageId>();
+      const escalationFulfilledChildIds = new Set<ThreadId>();
+      for (const escalation of rootEscalations) {
+        if (escalation.inboxRunId !== null) {
+          escalationInboxRunIds.add(escalation.inboxRunId);
+        }
+        if (escalation.inboxMessageId !== null) {
+          escalationInboxMessageIds.add(escalation.inboxMessageId);
+        }
+        if (escalation.childThreadId !== null) {
+          escalationFulfilledChildIds.add(escalation.childThreadId);
+        }
+      }
+
+      let originSourceRun =
+        sourceRecords === null
+          ? undefined
+          : ((input.sourceRunId === undefined
+              ? undefined
+              : sourceRecords.runs.find((run) => run.id === input.sourceRunId)) ??
+            sourceRecords.runs
+              .filter(
+                (run) =>
+                  run.status === "starting" || run.status === "running" || run.status === "waiting",
+              )
+              .toSorted((left, right) => right.ordinal - left.ordinal)[0] ??
+            latestUnheldRun(sourceRecords.runs) ??
+            sourceRecords.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]);
+
+      // Step A: Walk backwards across this L1's own L2 child completion/report wakes.
+      if (sourceRecords !== null) {
+        const visitedSourceRuns = new Set<RunId>();
+        while (originSourceRun !== undefined && !visitedSourceRuns.has(originSourceRun.id)) {
+          visitedSourceRuns.add(originSourceRun.id);
+          if (originSourceRun.restartContinuationOfRunId != null) {
+            const continuedFrom = sourceRecords.runs.find(
+              (run) => run.id === originSourceRun!.restartContinuationOfRunId,
+            );
+            if (continuedFrom !== undefined) {
+              originSourceRun = continuedFrom;
+              continue;
+            }
+          }
+          const runMessage = sourceRecords.messages.find(
+            (message) => message.id === originSourceRun!.userMessageId,
+          );
+          if (runMessage?.delegatedCompletion !== undefined) {
+            for (const taskId of runMessage.delegatedCompletion.taskIds) {
+              const childThreadId =
+                sourceRecords.subagents.find((candidate) => candidate.id === taskId)
+                  ?.childThreadId ?? null;
+              if (childThreadId !== null) {
+                benign.add(childThreadId);
+              }
+            }
+            originSourceRun = sourceRecords.runs.find(
+              (run) => run.id === runMessage.delegatedCompletion!.parentRunId,
+            );
+            continue;
+          }
+          if (runMessage?.senderThreadId !== undefined) {
+            const senderId = runMessage.senderThreadId;
+            const childSubagent = sourceRecords.subagents.find(
+              (candidate) => candidate.childThreadId === senderId,
+            );
+            const childThread = childSubagent === undefined ? yield* loadThread(senderId) : null;
+            const isDirectChild =
+              childSubagent !== undefined ||
+              (childThread !== null &&
+                childThread.lineage.parentThreadId === input.sourceThread.id);
+            if (isDirectChild) {
+              benign.add(senderId);
+              if (childSubagent?.runId != null) {
+                originSourceRun = sourceRecords.runs.find((run) => run.id === childSubagent.runId);
+                continue;
+              }
+              const precedingRuns = sourceRecords.runs.filter(
+                (run) => run.ordinal < originSourceRun!.ordinal,
+              );
+              originSourceRun =
+                latestUnheldRun(precedingRuns) ??
+                precedingRuns.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+              continue;
+            }
+          }
+          break;
+        }
+      }
+
+      // Step B: If this L1 was NOT created to fulfill a sibling escalation, check whether L0
+      // delegated this L1 during a non-escalation child completion/report wake.
+      const hasSiblingEscalationAnchor =
+        escalationFulfilledChildIds.has(input.sourceThread.id) ||
+        (input.sourceThread.sourceAnchor !== undefined &&
+          input.sourceThread.sourceAnchor.sourceThreadId !== input.rootThread.id &&
+          input.sourceThread.sourceAnchor.sourceThreadId !== input.sourceThread.id);
+      const rootSubagent = rootRecords?.subagents.find(
+        (candidate) => candidate.childThreadId === input.sourceThread.id,
+      );
+      const tracedToInitialDelegatedRun =
+        originSourceRun === undefined || originSourceRun.ordinal === 1;
+
+      if (
+        !hasSiblingEscalationAnchor &&
+        rootRecords !== null &&
+        rootSubagent?.runId != null &&
+        tracedToInitialDelegatedRun
+      ) {
+        const candidateRootBenign = new Set<ThreadId>();
+        const visitedRootRuns = new Set<RunId>();
+        const queue: Array<RunId> = [rootSubagent.runId];
+        let hasEscalationAncestor = false;
+
+        while (queue.length > 0 && !hasEscalationAncestor) {
+          const runId = queue.pop()!;
+          if (visitedRootRuns.has(runId)) continue;
+          visitedRootRuns.add(runId);
+
+          if (escalationInboxRunIds.has(runId)) {
+            hasEscalationAncestor = true;
+            break;
+          }
+
+          const run = rootRecords.runs.find((candidate) => candidate.id === runId);
+          if (run === undefined) continue;
+          if (escalationInboxMessageIds.has(run.userMessageId)) {
+            hasEscalationAncestor = true;
+            break;
+          }
+          if (run.restartContinuationOfRunId != null) {
+            queue.push(run.restartContinuationOfRunId);
+          }
+
+          const msg = rootRecords.messages.find((message) => message.id === run.userMessageId);
+          if (msg === undefined) continue;
+
+          if (msg.delegatedCompletion !== undefined) {
+            for (const taskId of msg.delegatedCompletion.taskIds) {
+              const completedSub = rootRecords.subagents.find(
+                (candidate) => candidate.id === taskId,
+              );
+              const childId = completedSub?.childThreadId ?? null;
+              if (childId === null) continue;
+              const childThread = yield* loadThread(childId);
+              if (
+                escalationFulfilledChildIds.has(childId) ||
+                (childThread?.sourceAnchor !== undefined &&
+                  childThread.sourceAnchor.sourceThreadId !== input.rootThread.id &&
+                  childThread.sourceAnchor.sourceThreadId !== childId)
+              ) {
+                hasEscalationAncestor = true;
+                break;
+              }
+              candidateRootBenign.add(childId);
+              if (completedSub?.runId != null) {
+                queue.push(completedSub.runId);
+              }
+            }
+            if (hasEscalationAncestor) break;
+            queue.push(msg.delegatedCompletion.parentRunId);
+            continue;
+          }
+
+          if (msg.senderThreadId !== undefined) {
+            const senderId = msg.senderThreadId;
+            const senderThread = yield* loadThread(senderId);
+            if (
+              senderThread === null ||
+              senderThread.lineage.parentThreadId !== input.rootThread.id
+            ) {
+              continue;
+            }
+            if (
+              escalationFulfilledChildIds.has(senderId) ||
+              (senderThread.sourceAnchor !== undefined &&
+                senderThread.sourceAnchor.sourceThreadId !== input.rootThread.id &&
+                senderThread.sourceAnchor.sourceThreadId !== senderId)
+            ) {
+              hasEscalationAncestor = true;
+              break;
+            }
+            candidateRootBenign.add(senderId);
+            const senderSub = rootRecords.subagents.find(
+              (candidate) => candidate.childThreadId === senderId,
+            );
+            if (senderSub?.runId != null) {
+              queue.push(senderSub.runId);
+            }
+          }
+        }
+
+        if (!hasEscalationAncestor) {
+          for (const threadId of candidateRootBenign) {
+            benign.add(threadId);
+          }
+          // Also exempt direct L2 children of those benign L1 siblings (e.g. L0->L1-A->L2-A->L1-A->L0->L1-B).
+          for (const candidateId of incoming) {
+            if (
+              candidateId === input.sourceThread.id ||
+              candidateId === input.rootThread.id ||
+              benign.has(candidateId)
+            ) {
+              continue;
+            }
+            const candidateThread = yield* loadThread(candidateId);
+            if (
+              candidateThread !== null &&
+              candidateThread.lineage.parentThreadId !== null &&
+              candidateRootBenign.has(candidateThread.lineage.parentThreadId)
+            ) {
+              benign.add(candidateId);
+            }
+          }
+        }
+      }
+
+      return [...benign] as ReadonlyArray<ThreadId>;
+    });
 
     const createHumanDraftLocked = Effect.fn("SubtaskEscalationService.createHumanDraftLocked")(
       function* (input: {
@@ -498,12 +760,19 @@ export const layer: Layer.Layer<
             }),
           );
 
+          const benignChildReturnThreadIds = yield* resolveBenignEscalationChainThreadIds({
+            sourceThread,
+            rootThread,
+            sourceRunId: input.sourceRunId,
+            callerIncomingChain: input.callerIncomingChain,
+          });
           const computedChain = computeOutboundCausationChain({
             callerThreadId: sourceThread.id,
             targetThreadId: rootThread.id,
             callerIncomingChain: input.callerIncomingChain,
             explicitChain: input.explicitCausationChain,
             intent: "escalation",
+            benignChildReturnThreadIds,
           });
           if (computedChain.loopDetected) {
             return yield* new SubtaskEscalationError({

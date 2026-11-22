@@ -82,7 +82,7 @@ import {
 import { resolveCoordinatorModels } from "@t3tools/shared/coordinator";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestUnheldRun, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { threadPullRequestUpdatedAtMs } from "@t3tools/shared/threadPullRequests";
 import {
@@ -994,6 +994,16 @@ function listItemFromShell(
   };
 }
 
+function callerEffectiveRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+): OrchestrationV2Run | undefined {
+  return (
+    ThreadManagementService.latestActiveRun(projection) ??
+    latestUnheldRun(projection.runs) ??
+    ThreadManagementService.latestRun(projection)
+  );
+}
+
 function threadDetail(
   scope: McpInvocationScope,
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "runtimeRequests">,
@@ -1002,8 +1012,17 @@ function threadDetail(
   nowMs: number,
   firstPage: boolean,
 ): OrchestratorMcpThreadDetail {
-  const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
+  const hasShellPresentedState = shell.status !== undefined && shell.latestRunId !== undefined;
+  const presented = hasShellPresentedState
+    ? shell.latestRunId === null
+      ? undefined
+      : (projection.runs.find((run) => run.id === shell.latestRunId) ??
+        latestUnheldRun(projection.runs) ??
+        undefined)
+    : (latestUnheldRun(projection.runs) ?? undefined);
+  const latestRunId = hasShellPresentedState ? shell.latestRunId : (presented?.id ?? null);
+  const latestStatus = hasShellPresentedState ? shell.status : (presented?.status ?? "idle");
   return {
     threadId: projection.thread.id,
     projectId: projection.thread.projectId,
@@ -1011,8 +1030,8 @@ function threadDetail(
     link: threadLinkFor(scope, projection.thread.id, projection.thread.title),
     createdBy: projection.thread.createdBy,
     creationSource: projection.thread.creationSource,
-    status: threadStatus(active?.status, latest?.status ?? "idle", shell.pendingBackgroundTasks),
-    latestRunId: latest?.id ?? null,
+    status: threadStatus(active?.status, latestStatus, shell.pendingBackgroundTasks),
+    latestRunId,
     activeRunId: active?.id ?? null,
     providerInstanceId: projection.thread.modelSelection.instanceId,
     model: projection.thread.modelSelection.model,
@@ -1039,7 +1058,7 @@ function threadDetail(
     worktreePath: projection.thread.worktreePath,
     parentThreadId: projection.thread.lineage.parentThreadId,
     relationshipToParent: projection.thread.lineage.relationshipToParent,
-    ...(projection.thread.lineage.relationshipToParent === "subtask" && latest === undefined
+    ...(projection.thread.lineage.relationshipToParent === "subtask" && latestRunId === null
       ? { awaitingInitialSend: true }
       : {}),
     ...(projection.thread.delegatedFrom == null
@@ -3094,9 +3113,7 @@ const make = Effect.gen(function* () {
         }
         const { scope, parent } = yield* loadThreadCaller(callerScope, "t3_subtask_escalate");
         const callerRecords = yield* loadThreadRecords(parent.thread.id, ["runs", "messages"]);
-        const callerLatestRun = callerRecords.runs.toSorted(
-          (left, right) => right.ordinal - left.ordinal,
-        )[0];
+        const callerLatestRun = callerEffectiveRun(callerRecords);
         const callerIncomingChain =
           callerLatestRun === undefined
             ? undefined
@@ -4003,9 +4020,8 @@ const make = Effect.gen(function* () {
           : yield* threadManagement
               .getThreadRecords(parent.thread.id, ["runs", "messages"])
               .pipe(Effect.mapError(threadManagementFailure));
-      const callerLatestRun = callerRecords?.runs.toSorted(
-        (left, right) => right.ordinal - left.ordinal,
-      )[0];
+      const callerLatestRun =
+        callerRecords === undefined ? undefined : callerEffectiveRun(callerRecords);
       const callerRunId = callerLatestRun?.id;
       const callerIncomingChain =
         callerLatestRun === undefined

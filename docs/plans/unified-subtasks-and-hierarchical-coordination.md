@@ -1,6 +1,6 @@
 # 统一子会话与分层 AI 协调设计规范
 
-- **状态**：Phase 1–3 已全部实施并完成整体验收（`develop@38eb16c28f`）
+- **状态**：Phase 1–3 已全部实施并完成自动化整体验收（`develop@38eb16c28f`）；已完成 `0.1.9-plus.20261122.1` 实机全链路首轮验收（见第 8.1 节，核心派发与回传链路通过，暴露 2 项待跟进问题 + 1 项桌面端协调者开关补测）
 - **基线版本**：`develop@3a2c0ba90`
 - **关联文档**：
   - [Core Graph and Data Model](../orchestration-v2/core-graph-and-data-model.md)
@@ -216,3 +216,36 @@
 | **Phase 2**   | 树形多 Agent 协作总览页（`L0 → L1 → L2`）、L1 横向提级幂等协议、服务端 worktree 人工审批闸门、共享工作树三层路径归因与重叠冲突提示/预约                     | `bb0fb4b341` / `54ffb144f5` / `4e04004bf5` | 已验收 |
 | **Phase 3-A** | `TextGeneration` 结构化子任务摘要、SQLite 版本化语义摘要缓存（`099_SubtaskSummaryCache`）与 single-flight 去重、降级回退与删除级联清理                      | `451064f2f7` / `5583b223b4` / `cd838a6580` | 已验收 |
 | **Phase 3-B** | L0 协调者角色模板契约与动态模型解析（零硬编码模型）、L0 指令注入与 `orchestrator_capabilities` 分层提示、Web L0 开关/模板管理与实时分层预览                 | `8d90a84e4e` / `3930d1eef6` / `38eb16c28f` | 已验收 |
+
+### 8.1 新版 T3 实机全链路验收记录（2026-11-22）
+
+- **实测版本**：`T3 Code Plus 0.1.9-plus.20261122.1`（Windows x64，`develop@530ae284f8`，`environmentId: 45753abc-a4da-401d-90cc-09128179c8e1`）
+- **实测链路拓扑（共享 checkout `D:\Project\AgentLearn`）**：
+  - **L0 根会话**：`c9013640-e79e-432f-8910-9d1fcdeb793d`（`antigravity_gemini_ultra_endto1217 / gemini-4-neon`，`full-access`，`creationSource: "mobile"`）
+  - **L1-A 子任务**：`thread:delegated-task:command%3Amcp%3Ab784e9b4-e809-4c05-b09e-98595fe6251c%3Adelegate-task%3Alive-accept-l1a-20261122-01`（`gemini-4-carbon`，`thinking_level: low`）
+  - **L2 子任务**：`thread:delegated-task:command%3Amcp%3Adc44847c-34aa-43ef-b07d-b83999604082%3Adelegate-task%3Alive-accept-l2-20261122-01`（`gemini-3.8-flash`，`thinking_level: low`）
+  - **L1-Esc 对照探针**：`thread:delegated-task:command%3Amcp%3Ab784e9b4-e809-4c05-b09e-98595fe6251c%3Adelegate-task%3Alive-accept-l1esc-20261122-02`（`gemini-3.8-flash`，`thinking_level: low`）
+
+| 实测项                                     | 实机结果     | 关键观测证据                                                                                                                                                                                                               |
+| ------------------------------------------ | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **能力探测与分层模型派发（L0 → L1 → L2）** | 通过         | `orchestrator_capabilities` 返回多 Provider 与多档可用模型；实际按 `gemini-4-neon → gemini-4-carbon → gemini-3.8-flash` 分层派发均在共享工作树启动成功，未擅自创建 worktree。                                              |
+| **共享工作树三层路径归因与重叠告警**       | 通过         | `t3_worktree_coordinate(inspect)` 确认 `serverEnforcedWorktreeGate: true`、`serverEnforcedWriteReservation: true`；L1-A `declare_plan` 后 `overlaps` 即时暴露 `layers: ["planned"]` 与历史写入的 `exact/warning` 重叠。    |
+| **运行中阶段性进度汇报（`interim`）**      | 通过         | L1-A 调用 `t3_thread_send(mode: "queue", reportKind: "interim")` 返回 `delivery: "started"` 与 L0 `ordinal:2` 回执；L0 于 `11:15:10` 收到 `[阶段性进度]` 中间轮，且未提前结算 L1-A 委派。                                  |
+| **两层树深度硬拦截（L2 → L3 拒绝）**       | 通过         | L1-A 成功派发 L2 且 `t3_thread_list(scope: "children")` 可见；L2 尝试 `delegate_task` 建 L3 被服务端硬拒绝：`Task tree depth limit (2) exceeded: cannot create L3 child under L2 thread ...`。                             |
+| **读结果去重取消冗余唤醒**                 | 通过         | L1-A 45s `wait` 超时后 L2 完成并入队 L1-A `ordinal:2` 唤醒；L1-A 调用 `t3_thread_read` 消费 L2 结果后，服务端自动取消未启动的冗余 `ordinal:2`（`status: "cancelled"`, `startedAt: null`），未重复执行。                    |
+| **终态自动唤醒回传与交付确认**             | 通过         | L1-A、L1-Esc 完成后均自动唤醒 L0 并附带完整结论；L0 调用 `task_status` 确认 `status: "completed"`、`workState: "result_available"` 及 `resultContextTransferId`，`t3_thread_list(scope: "children")` 返回 `total: 2`。     |
+| **L1 横向提级（`t3_subtask_escalate`）**   | **暴露缺陷** | 两种合法实机路径均被误拦为 `Escalation loop detected`（见下方待跟进 #1），本次未能走通 `t3_subtask_escalate → L0 escalationRequestId 接单建同级 L1` 闭环。                                                                 |
+| **L0 协调者开关与指令注入（Web UI）**      | 待桌面端补测 | 本次根会话自移动端发起（`creationSource: "mobile"`），未在桌面端 Composer 打开 `coordinatorMode.enabled = true`，故 `orchestrator_capabilities` 未下发 `coordinator` 分层推荐对象与 `<t3_code_coordinator_instructions>`。 |
+
+#### 实机暴露的待跟进问题
+
+1. **【中/高｜已修复，待实机复验】`CausationChain.ts` / `SubtaskEscalationService.ts` 中 `intent: "escalation"` 误判合法提级为环路**（[CausationChain.ts](../../apps/server/src/orchestration-v2/CausationChain.ts)、[SubtaskEscalationService.ts](../../apps/server/src/orchestration-v2/SubtaskEscalationService.ts)）
+   - **现象**：`isFreshFirstHopFromRoot` 仅在 `mergedIncoming.length === 0 || (mergedIncoming.length === 1 && mergedIncoming[0] === targetThreadId)` 时剥离 `L0`，导致两类高频合法场景均报错 `Escalation loop detected`：
+     - 场景 A：L1 收到 L2 完结回传（`incoming = [L0, L2]`）后再向 L0 首次提级（L1-A 实机复现）。
+     - 场景 B：L0 在前序 L1 完结唤醒轮中派发新 L1（`incoming = [L1-A, L0]`）后，该新 L1 向 L0 首次提级（L1-Esc 实机复现）。
+   - **修复**：新增可验证良性回流线程追溯（`resolveBenignEscalationChainThreadIds`）与 `benignChildReturnThreadIds` 参数，仅豁免经持久投影验证的“L2 完结/汇报回流”与“L0 非提级前序 L1 完结唤醒回流”，严格保留显式/隐式提级递归回流、外部 peer 唤醒与显式 `causationChain` 环路拦截；同时修正 `OrchestratorMcpService.escalateSubtask` 在冗余唤醒被取消时优先取当前活跃/有效 run。已补齐 `CausationChain.test.ts` 与 `SubtaskMcpGuards.test.ts`（含同 `requestId` 幂等重放）回归测试。
+2. **【低｜已修复】`t3_thread_read` 与 `t3_thread_list` 对「去重取消冗余唤醒」子线程的顶层状态口径不一致**（[OrchestratorMcpService.ts](../../apps/server/src/mcp/OrchestratorMcpService.ts)、[ThreadManagementService.ts](../../apps/server/src/orchestration-v2/ThreadManagementService.ts)）
+   - **现象**：L1-A 的 `ordinal:1` 于 `03:19:49` 正常 `completed`，早先入队后被去重取消的 `ordinal:2`（`startedAt: null`）序号更大；`t3_thread_list(scope: "children")` 展示 `status: "completed"`（`latestRunId: ordinal:1`），而 `t3_thread_read` 展示 `status: "cancelled"`（`latestRunId: ordinal:2`）。
+   - **修复**：将 `t3_thread_read`（`threadDetail`）与 `waitForThread` 默认 run 选取统一对齐至 `shell.latestRunId` / `shell.status` / `latestUnheldRun`，确保未启动即被去重取消的冗余唤醒不会覆盖实际活跃/已完结主 run 的顶层状态；已补齐 `OrchestratorMcpService.activity.test.ts` 与 `SubtaskMcpGuards.test.ts` 回归测试。
+3. **【补测项】桌面端开启 `coordinatorMode.enabled = true` 的 L0 实机核验**
+   - 在桌面端 Composer 启用 L0 协调者模式后新建根会话，核验 `orchestrator_capabilities.coordinator` 分层推荐对象与 `<t3_code_coordinator_instructions>` 实机注入生效。
