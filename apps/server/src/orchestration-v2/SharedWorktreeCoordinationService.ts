@@ -20,6 +20,8 @@ import {
   type SharedWorktreeThreadAttribution,
   type SharedWorktreeWriteReservation,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -38,14 +40,23 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import {
   canonicalizeCheckoutPath,
+  canonicalizeCheckoutPathRaw,
   classifyCanonicalPathConflict,
   computePathOverlaps,
   normalizeCheckoutRelativePath,
+  normalizeCheckoutRelativePathRaw,
+  type CanonicalCheckout,
   type NormalizedCheckoutPath,
   type OverlapInputEntry,
 } from "./SharedWorktreePathUtils.ts";
 
 const MAX_REVISION_PREVIEW_BYTES = 256 * 1024;
+const CANONICAL_CHECKOUT_CACHE_TTL_MS = 60_000;
+const MAX_CANONICAL_CHECKOUT_CACHE_ENTRIES = 512;
+const NORMALIZED_PATH_CACHE_TTL_MS = 30_000;
+const MAX_NORMALIZED_PATH_CACHE_ENTRIES = 4_096;
+const CHECKOUT_SNAPSHOT_CACHE_TTL_MS = 3_000;
+const GIT_LOCAL_STATUS_CACHE_TTL_MS = 3_000;
 const encodeStringArrayJson = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 function decodeUtf8OrNull(bytes: Uint8Array, stream: boolean): string | null {
@@ -85,6 +96,54 @@ interface ControlledWriteRow {
   readonly operation: string;
   readonly updated_at: string;
 }
+
+interface TurnItemFileChangeSummaryRow {
+  readonly thread_id: string;
+  readonly item_count: number;
+  readonly max_updated_at: string | null;
+  readonly total_payload_bytes: number | null;
+  readonly max_ordinal: number | null;
+}
+
+interface CachedTurnItemFileChange {
+  readonly rawPath: string;
+  readonly normalizedPath: string;
+  readonly canonicalKey: string;
+  readonly oldRawPath: string | null;
+  readonly oldNormalizedPath: string | null;
+  readonly oldCanonicalKey: string | null;
+  readonly operation: string;
+  readonly runId: RunId | null;
+  readonly turnItemId: TurnItemId | null;
+  readonly updatedAt: IsoDateTime;
+}
+
+interface ThreadFileChangeCacheEntry {
+  readonly fingerprint: string;
+  readonly entries: ReadonlyArray<CachedTurnItemFileChange>;
+}
+
+interface CheckoutThreadAttributionBase extends Omit<SharedWorktreeThreadAttribution, "inFamily"> {
+  readonly rootThreadId: ThreadId;
+}
+
+interface CheckoutSnapshotBase {
+  readonly checkoutPath: string;
+  readonly checkoutKey: string;
+  readonly policy: SharedWorktreeCheckoutPolicy;
+  readonly threadBases: ReadonlyArray<CheckoutThreadAttributionBase>;
+  readonly overlaps: ReadonlyArray<SharedWorktreePathOverlap>;
+  readonly observedUnverifiedPaths: ReadonlyArray<SharedWorktreeObservedPath>;
+  readonly activeReservations: ReadonlyArray<SharedWorktreeWriteReservation>;
+  readonly waitingReservations: ReadonlyArray<SharedWorktreeWriteReservation>;
+  readonly activeSerializedRun: SharedWorktreeSerializedRunEntry | null;
+  readonly waitingSerializedRuns: ReadonlyArray<SharedWorktreeSerializedRunEntry>;
+  readonly generatedAt: IsoDateTime;
+}
+
+type GitLocalStatusResult = Effect.Success<
+  ReturnType<GitWorkflowService.GitWorkflowService["Service"]["localStatus"]>
+>;
 
 interface InternalReservation {
   readonly reservationId: SharedWorktreeReservationId;
@@ -332,8 +391,168 @@ const make = Effect.gen(function* () {
   const waitingCheckoutLeases = new Map<string, Array<InternalCheckoutTurnLease>>();
   let checkoutLeaseSignal = Deferred.makeUnsafe<void>();
   let coordinationChangeSignal = Deferred.makeUnsafe<void>();
+  let coordinationVersion = 0;
+
+  const checkoutSnapshotBaseCache = new Map<
+    string,
+    {
+      readonly shellSequence: number;
+      readonly coordinationVersion: number;
+      readonly expiresAtMs: number;
+      readonly base: CheckoutSnapshotBase;
+    }
+  >();
+  const inFlightCheckoutBase = new Map<
+    string,
+    Deferred.Deferred<CheckoutSnapshotBase, SharedWorktreeCoordinationError>
+  >();
+  const gitStatusCache = new Map<
+    string,
+    { readonly status: GitLocalStatusResult | null; readonly expiresAtMs: number }
+  >();
+  const inFlightGitStatus = new Map<string, Deferred.Deferred<GitLocalStatusResult | null>>();
+  const canonicalCheckoutCache = new Map<
+    string,
+    { readonly value: CanonicalCheckout; readonly expiresAtMs: number }
+  >();
+  const normalizedPathCache = new Map<
+    string,
+    { readonly value: NormalizedCheckoutPath | null; readonly expiresAtMs: number }
+  >();
+  const threadFileChangeCache = new Map<ThreadId, ThreadFileChangeCacheEntry>();
+
+  const bumpCoordinationVersion = (checkoutKey?: string) => {
+    coordinationVersion += 1;
+    if (checkoutKey !== undefined) {
+      checkoutSnapshotBaseCache.delete(checkoutKey);
+    } else {
+      checkoutSnapshotBaseCache.clear();
+    }
+  };
+
+  const invalidateCheckoutPathCache = (checkoutPath: string) => {
+    const prefix = `${checkoutPath}\0`;
+    for (const key of normalizedPathCache.keys()) {
+      if (key.startsWith(prefix)) {
+        normalizedPathCache.delete(key);
+      }
+    }
+  };
+
+  const singleFlight = <A, E>(
+    flights: Map<string, Deferred.Deferred<A, E>>,
+    key: string,
+    compute: Effect.Effect<A, E>,
+  ): Effect.Effect<A, E> =>
+    Effect.suspend(() => {
+      const existing = flights.get(key);
+      if (existing !== undefined) {
+        return Deferred.await(existing).pipe(
+          Effect.catchCauseIf(Cause.hasInterruptsOnly, () => singleFlight(flights, key, compute)),
+        );
+      }
+      const deferred = Deferred.makeUnsafe<A, E>();
+      flights.set(key, deferred);
+      return compute.pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (flights.get(key) === deferred) {
+              flights.delete(key);
+            }
+            Deferred.doneUnsafe(deferred, exit);
+          }),
+        ),
+      );
+    });
+
+  const canonicalizeCheckoutCached = (
+    rawRoot: string,
+    platform: NodeJS.Platform,
+    nowMs: number,
+  ): Effect.Effect<CanonicalCheckout> => {
+    const cacheKey = `${platform}\0${rawRoot}`;
+    const cached = canonicalCheckoutCache.get(cacheKey);
+    if (cached !== undefined && nowMs < cached.expiresAtMs) {
+      return Effect.succeed(cached.value);
+    }
+    return canonicalizeCheckoutPathRaw(fileSystem, path, rawRoot, platform).pipe(
+      Effect.tap((value) =>
+        Effect.sync(() => {
+          if (canonicalCheckoutCache.size >= MAX_CANONICAL_CHECKOUT_CACHE_ENTRIES) {
+            canonicalCheckoutCache.clear();
+          }
+          canonicalCheckoutCache.set(cacheKey, {
+            value,
+            expiresAtMs: nowMs + CANONICAL_CHECKOUT_CACHE_TTL_MS,
+          });
+        }),
+      ),
+    );
+  };
+
+  const normalizeCheckoutPathCached = (
+    checkoutPath: string,
+    rawPath: string,
+    platform: NodeJS.Platform,
+    nowMs: number,
+  ): Effect.Effect<NormalizedCheckoutPath | null> => {
+    const cacheKey = `${checkoutPath}\0${platform}\0${rawPath}`;
+    const cached = normalizedPathCache.get(cacheKey);
+    if (cached !== undefined && nowMs < cached.expiresAtMs) {
+      return Effect.succeed(cached.value);
+    }
+    return normalizeCheckoutRelativePathRaw(fileSystem, path, checkoutPath, rawPath, platform).pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.tap((value) =>
+        Effect.sync(() => {
+          if (normalizedPathCache.size >= MAX_NORMALIZED_PATH_CACHE_ENTRIES) {
+            normalizedPathCache.clear();
+          }
+          normalizedPathCache.set(cacheKey, {
+            value,
+            expiresAtMs: nowMs + NORMALIZED_PATH_CACHE_TTL_MS,
+          });
+        }),
+      ),
+    );
+  };
+
+  const getCachedGitLocalStatus = (
+    checkoutKey: string,
+    checkoutPath: string,
+  ): Effect.Effect<GitLocalStatusResult | null> => {
+    if (Option.isNone(gitWorkflowOption)) {
+      return Effect.succeed(null);
+    }
+    const gitWorkflow = gitWorkflowOption.value;
+    return Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      const cached = gitStatusCache.get(checkoutKey);
+      if (cached !== undefined && nowMs < cached.expiresAtMs) {
+        return cached.status;
+      }
+      return yield* singleFlight(
+        inFlightGitStatus,
+        checkoutKey,
+        gitWorkflow.localStatus({ cwd: checkoutPath }).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.tap((status) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((completedAtMs) => {
+                gitStatusCache.set(checkoutKey, {
+                  status,
+                  expiresAtMs: completedAtMs + GIT_LOCAL_STATUS_CACHE_TTL_MS,
+                });
+              }),
+            ),
+          ),
+        ),
+      );
+    });
+  };
 
   const notifyCoordinationChange = () => {
+    bumpCoordinationVersion();
     const previous = coordinationChangeSignal;
     coordinationChangeSignal = Deferred.makeUnsafe<void>();
     Deferred.doneUnsafe(previous, Effect.void);
@@ -403,7 +622,9 @@ const make = Effect.gen(function* () {
       }
       rawCheckout = projectOpt.value.workspaceRoot;
     }
-    const checkout = yield* canonicalizeCheckoutPath(fileSystem, path, rawCheckout);
+    const platform = yield* HostProcess.Platform;
+    const nowMs = yield* Clock.currentTimeMillis;
+    const checkout = yield* canonicalizeCheckoutCached(rawCheckout, platform, nowMs);
     return {
       thread: records.thread,
       checkout,
@@ -524,71 +745,147 @@ const make = Effect.gen(function* () {
     return { entries, renameKeys };
   });
 
-  const getSnapshot: SharedWorktreeCoordinationServiceShape["getSnapshot"] = Effect.fn(
-    "SharedWorktreeCoordinationService.getSnapshot",
-  )(function* (threadId) {
-    const { thread, checkout } = yield* resolveThreadCheckout(threadId);
-    const rootThreadId = thread.lineage.rootThreadId ?? thread.id;
+  const loadThreadTurnItemFileChanges = Effect.fn(
+    "SharedWorktreeCoordinationService.loadThreadTurnItemFileChanges",
+  )(function* (
+    threadId: ThreadId,
+    checkoutPath: string,
+    platform: NodeJS.Platform,
+    nowMs: number,
+  ): Effect.fn.Return<ReadonlyArray<CachedTurnItemFileChange>> {
+    const turnItemRecords = yield* projections
+      .getThreadRecords(threadId, ["turnItems"], { turnItemTypes: ["file_change"] })
+      .pipe(Effect.orElseSucceed(() => ({ thread: null, turnItems: [] })));
+
+    const entries: Array<CachedTurnItemFileChange> = [];
+    for (const item of turnItemRecords.turnItems) {
+      if (item.type !== "file_change") continue;
+      if (item.status === "failed" || item.status === "cancelled") continue;
+      const updatedAt = IsoDateTime.make(DateTime.formatIso(item.updatedAt));
+      const turnItemId = TurnItemId.make(item.id);
+      if (item.changes && item.changes.length > 0) {
+        for (const detail of item.changes) {
+          const normalized = yield* normalizeCheckoutPathCached(
+            checkoutPath,
+            detail.path,
+            platform,
+            nowMs,
+          );
+          if (normalized === null) continue;
+          const oldRawPath = detail.oldPath ?? null;
+          const oldNormalized =
+            oldRawPath === null
+              ? null
+              : yield* normalizeCheckoutPathCached(checkoutPath, oldRawPath, platform, nowMs);
+          entries.push({
+            rawPath: detail.path,
+            normalizedPath: normalized.normalizedPath,
+            canonicalKey: normalized.canonicalKey,
+            oldRawPath,
+            oldNormalizedPath: oldNormalized?.normalizedPath ?? null,
+            oldCanonicalKey: oldNormalized?.canonicalKey ?? null,
+            operation: detail.operation,
+            runId: item.runId,
+            turnItemId,
+            updatedAt,
+          });
+        }
+      } else {
+        const normalized = yield* normalizeCheckoutPathCached(
+          checkoutPath,
+          item.fileName,
+          platform,
+          nowMs,
+        );
+        if (normalized === null) continue;
+        entries.push({
+          rawPath: item.fileName,
+          normalizedPath: normalized.normalizedPath,
+          canonicalKey: normalized.canonicalKey,
+          oldRawPath: null,
+          oldNormalizedPath: null,
+          oldCanonicalKey: null,
+          operation: "edit",
+          runId: item.runId,
+          turnItemId,
+          updatedAt,
+        });
+      }
+    }
+    return entries;
+  });
+
+  const computeCheckoutSnapshotBase = Effect.fn(
+    "SharedWorktreeCoordinationService.computeCheckoutSnapshotBase",
+  )(function* (input: {
+    readonly checkout: CanonicalCheckout;
+    readonly targetThreadId: ThreadId;
+    readonly shell: Awaited<Effect.Success<ReturnType<typeof projections.getShellSnapshot>>>;
+    readonly platform: NodeJS.Platform;
+    readonly versionAtStart: number;
+  }): Effect.fn.Return<CheckoutSnapshotBase, SharedWorktreeCoordinationError> {
+    const { checkout, shell, platform, versionAtStart } = input;
+    const nowMs = yield* Clock.currentTimeMillis;
     const policy = yield* readPolicyRow(checkout.checkoutKey, checkout.checkoutPath);
 
-    const shell = yield* projections.getShellSnapshot().pipe(
-      Effect.mapError(
-        (cause) =>
-          new SharedWorktreeCoordinationError({
-            reason: "persistence_failed",
-            detail: "Failed to read thread shell snapshot.",
-            cause,
-          }),
-      ),
-    );
     const activeThreads = shell.threads.filter(
       (candidate) => candidate.deletedAt === null && candidate.archivedAt === null,
     );
     const byId = new Map(activeThreads.map((candidate) => [candidate.id, candidate]));
 
-    const projectRootCache = new Map<string, string>();
-    const resolveCandidateCheckout = Effect.fn(
-      "SharedWorktreeCoordinationService.candidateCheckout",
-    )(function* (candidate: OrchestrationV2ThreadShell) {
+    // Evict deleted/archived threads from the per-thread file_change cache.
+    for (const cachedThreadId of threadFileChangeCache.keys()) {
+      if (!byId.has(cachedThreadId)) {
+        threadFileChangeCache.delete(cachedThreadId);
+      }
+    }
+
+    const projectRootCache = new Map<string, string | null>();
+    const rawRootCheckoutCache = new Map<string, CanonicalCheckout>();
+
+    const sharedThreads: Array<OrchestrationV2ThreadShell> = [];
+    for (const candidate of activeThreads) {
       let rawRoot = candidate.worktreePath;
       if (rawRoot === null) {
-        const cached = projectRootCache.get(candidate.projectId);
-        if (cached !== undefined) {
-          rawRoot = cached;
+        const cachedProjectRoot = projectRootCache.get(candidate.projectId);
+        if (cachedProjectRoot !== undefined) {
+          rawRoot = cachedProjectRoot;
         } else {
           const proj = yield* projects
             .get(candidate.projectId, { includeDeleted: true })
             .pipe(Effect.orElseSucceed(() => Option.none()));
-          if (Option.isNone(proj)) return null;
-          rawRoot = proj.value.workspaceRoot;
+          rawRoot = Option.isSome(proj) ? proj.value.workspaceRoot : null;
           projectRootCache.set(candidate.projectId, rawRoot);
         }
       }
-      return yield* canonicalizeCheckoutPath(fileSystem, path, rawRoot);
-    });
-
-    const sharedThreads: Array<OrchestrationV2ThreadShell> = [];
-    for (const candidate of activeThreads) {
-      const candidateCheckout = yield* resolveCandidateCheckout(candidate);
-      if (candidateCheckout?.checkoutKey === checkout.checkoutKey) {
+      if (rawRoot === null) continue;
+      let candidateCheckout = rawRootCheckoutCache.get(rawRoot);
+      if (candidateCheckout === undefined) {
+        candidateCheckout = yield* canonicalizeCheckoutCached(rawRoot, platform, nowMs);
+        rawRootCheckoutCache.set(rawRoot, candidateCheckout);
+      }
+      if (candidateCheckout.checkoutKey === checkout.checkoutKey) {
         sharedThreads.push(candidate);
       }
     }
-    if (!sharedThreads.some((candidate) => candidate.id === thread.id)) {
-      const targetShell = byId.get(thread.id);
+    if (!sharedThreads.some((candidate) => candidate.id === input.targetThreadId)) {
+      const targetShell = byId.get(input.targetThreadId);
       if (targetShell) sharedThreads.push(targetShell);
     }
 
     const sharedThreadIds = sharedThreads.map((candidate) => candidate.id);
+    const encodedSharedThreadIds =
+      sharedThreadIds.length === 0 ? null : encodeStringArrayJson(sharedThreadIds);
+
     const plannedRows =
-      sharedThreadIds.length === 0
+      encodedSharedThreadIds === null
         ? []
         : yield* sql<PlannedPathRow>`
-            SELECT thread_id, normalized_path, raw_path, run_id, note, declared_at
-            FROM shared_worktree_planned_paths
-            WHERE thread_id IN (SELECT value FROM json_each(${encodeStringArrayJson(sharedThreadIds)}))
-            ORDER BY declared_at ASC, normalized_path ASC
-          `.pipe(
+              SELECT thread_id, normalized_path, raw_path, run_id, note, declared_at
+              FROM shared_worktree_planned_paths
+              WHERE thread_id IN (SELECT value FROM json_each(${encodedSharedThreadIds}))
+              ORDER BY declared_at ASC, normalized_path ASC
+            `.pipe(
             Effect.mapError(
               (cause) =>
                 new SharedWorktreeCoordinationError({
@@ -600,21 +897,21 @@ const make = Effect.gen(function* () {
           );
 
     const controlledWriteRows = yield* sql<ControlledWriteRow>`
-      SELECT
-        write_id,
-        checkout_key,
-        thread_id,
-        run_id,
-        normalized_path,
-        raw_path,
-        old_normalized_path,
-        old_raw_path,
-        operation,
-        updated_at
-      FROM shared_worktree_controlled_writes
-      WHERE checkout_key = ${checkout.checkoutKey}
-      ORDER BY updated_at ASC, write_id ASC
-    `.pipe(
+        SELECT
+          write_id,
+          checkout_key,
+          thread_id,
+          run_id,
+          normalized_path,
+          raw_path,
+          old_normalized_path,
+          old_raw_path,
+          operation,
+          updated_at
+        FROM shared_worktree_controlled_writes
+        WHERE checkout_key = ${checkout.checkoutKey}
+        ORDER BY updated_at ASC, write_id ASC
+      `.pipe(
       Effect.mapError(
         (cause) =>
           new SharedWorktreeCoordinationError({
@@ -624,6 +921,29 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
+
+    // Single batched summary query to skip loading & decoding unchanged threads' file_change rows.
+    const fileChangeSummaryRows =
+      encodedSharedThreadIds === null
+        ? []
+        : yield* sql<TurnItemFileChangeSummaryRow>`
+              SELECT
+                thread_id,
+                COUNT(*) AS item_count,
+                MAX(updated_at) AS max_updated_at,
+                SUM(LENGTH(payload_json)) AS total_payload_bytes,
+                MAX(ordinal) AS max_ordinal
+              FROM orchestration_v2_projection_turn_items
+              WHERE type = 'file_change'
+                AND status NOT IN ('failed', 'cancelled')
+                AND thread_id IN (SELECT value FROM json_each(${encodedSharedThreadIds}))
+              GROUP BY thread_id
+            `.pipe(Effect.orElseSucceed(() => null));
+
+    const fileChangeSummaryByThread =
+      fileChangeSummaryRows === null
+        ? null
+        : new Map(fileChangeSummaryRows.map((row) => [ThreadId.make(row.thread_id), row] as const));
 
     const plannedByThread = new Map<ThreadId, Array<SharedWorktreePlannedPathEntry>>();
     for (const row of plannedRows) {
@@ -663,19 +983,46 @@ const make = Effect.gen(function* () {
       });
     }
 
+    // Index active & waiting reservations for this checkout by thread once instead of scanning per thread.
+    const activeReservationsByThread = new Map<ThreadId, Array<InternalReservation>>();
+    const checkoutActiveReservations: Array<SharedWorktreeWriteReservation> = [];
+    for (const reservation of activeReservations.values()) {
+      if (reservation.checkoutKey !== checkout.checkoutKey) continue;
+      checkoutActiveReservations.push(toPublicReservation(reservation));
+      let list = activeReservationsByThread.get(reservation.threadId);
+      if (!list) {
+        list = [];
+        activeReservationsByThread.set(reservation.threadId, list);
+      }
+      list.push(reservation);
+    }
+
+    const waitingReservationsByThread = new Map<ThreadId, Array<InternalWaitingReservation>>();
+    const checkoutWaitingReservations: Array<SharedWorktreeWriteReservation> = [];
+    for (const waiting of waitingReservations) {
+      if (waiting.checkoutKey !== checkout.checkoutKey) continue;
+      checkoutWaitingReservations.push(toPublicWaitingReservation(waiting));
+      let list = waitingReservationsByThread.get(waiting.threadId);
+      if (!list) {
+        list = [];
+        waitingReservationsByThread.set(waiting.threadId, list);
+      }
+      list.push(waiting);
+    }
+
     const confirmedCanonicalKeys = new Set<string>();
     const overlapEntries: Array<OverlapInputEntry> = [];
-    const threadAttributions: Array<SharedWorktreeThreadAttribution> = [];
+    const threadBases: Array<CheckoutThreadAttributionBase> = [];
 
     for (const candidate of sharedThreads) {
       const planned = plannedByThread.get(candidate.id) ?? [];
       for (const item of planned) {
-        const normalized = yield* normalizeCheckoutRelativePath(
-          fileSystem,
-          path,
+        const normalized = yield* normalizeCheckoutPathCached(
           checkout.checkoutPath,
           item.normalizedPath,
-        ).pipe(Effect.orElseSucceed(() => null));
+          platform,
+          nowMs,
+        );
         if (normalized !== null) {
           overlapEntries.push({
             threadId: candidate.id,
@@ -692,119 +1039,133 @@ const make = Effect.gen(function* () {
       const confirmedWrites: Array<SharedWorktreeConfirmedWriteEntry> = [];
       const seenConfirmed = new Set<string>();
 
-      const addConfirmedWrite = Effect.fn("SharedWorktreeCoordinationService.addConfirmedWrite")(
-        function* (entry: {
-          readonly rawPath: string;
-          readonly oldRawPath: string | null;
-          readonly operation: string;
-          readonly runId: RunId | null;
-          readonly turnItemId: TurnItemId | null;
-          readonly source: "turn_item" | "controlled_write";
-          readonly updatedAt: IsoDateTime;
-        }) {
-          const normalized = yield* normalizeCheckoutRelativePath(
-            fileSystem,
-            path,
-            checkout.checkoutPath,
-            entry.rawPath,
-          ).pipe(Effect.orElseSucceed(() => null));
-          if (normalized === null) return;
+      const recordConfirmedWrite = (entry: {
+        readonly rawPath: string;
+        readonly normalizedPath: string;
+        readonly canonicalKey: string;
+        readonly oldRawPath: string | null;
+        readonly oldNormalizedPath: string | null;
+        readonly oldCanonicalKey: string | null;
+        readonly operation: string;
+        readonly runId: RunId | null;
+        readonly turnItemId: TurnItemId | null;
+        readonly source: "turn_item" | "controlled_write";
+        readonly updatedAt: IsoDateTime;
+      }) => {
+        confirmedCanonicalKeys.add(entry.canonicalKey);
+        if (entry.oldCanonicalKey !== null) {
+          confirmedCanonicalKeys.add(entry.oldCanonicalKey);
+        }
 
-          const oldNormalized =
-            entry.oldRawPath === null
-              ? null
-              : yield* normalizeCheckoutRelativePath(
-                  fileSystem,
-                  path,
-                  checkout.checkoutPath,
-                  entry.oldRawPath,
-                ).pipe(Effect.orElseSucceed(() => null));
+        const dedupeKey = `${entry.canonicalKey}\0${entry.oldCanonicalKey ?? ""}\0${entry.runId ?? ""}\0${entry.source}`;
+        if (seenConfirmed.has(dedupeKey)) {
+          return;
+        }
+        seenConfirmed.add(dedupeKey);
 
-          confirmedCanonicalKeys.add(normalized.canonicalKey);
-          if (oldNormalized !== null) {
-            confirmedCanonicalKeys.add(oldNormalized.canonicalKey);
-          }
+        confirmedWrites.push({
+          path: entry.rawPath,
+          normalizedPath: entry.normalizedPath,
+          oldPath: entry.oldRawPath,
+          oldNormalizedPath: entry.oldNormalizedPath,
+          operation: entry.operation,
+          runId: entry.runId,
+          turnItemId: entry.turnItemId,
+          source: entry.source,
+          updatedAt: entry.updatedAt,
+        });
 
-          const dedupeKey = `${normalized.canonicalKey}\0${oldNormalized?.canonicalKey ?? ""}\0${entry.runId ?? ""}\0${entry.source}`;
-          if (!seenConfirmed.has(dedupeKey)) {
-            seenConfirmed.add(dedupeKey);
-            confirmedWrites.push({
-              path: entry.rawPath,
-              normalizedPath: normalized.normalizedPath,
-              oldPath: entry.oldRawPath,
-              oldNormalizedPath: oldNormalized?.normalizedPath ?? null,
-              operation: entry.operation,
-              runId: entry.runId,
-              turnItemId: entry.turnItemId,
-              source: entry.source,
-              updatedAt: entry.updatedAt,
-            });
-          }
-
+        const isRename = entry.oldCanonicalKey !== null && entry.oldNormalizedPath !== null;
+        overlapEntries.push({
+          threadId: candidate.id,
+          threadTitle: candidate.title,
+          runId: entry.runId,
+          layer: "confirmed_write",
+          rawPath: entry.rawPath,
+          normalizedPath: entry.normalizedPath,
+          canonicalKey: entry.canonicalKey,
+          ...(isRename ? { isRenameEndpoint: true } : {}),
+        });
+        if (isRename) {
           overlapEntries.push({
             threadId: candidate.id,
             threadTitle: candidate.title,
             runId: entry.runId,
             layer: "confirmed_write",
-            rawPath: entry.rawPath,
-            normalizedPath: normalized.normalizedPath,
-            canonicalKey: normalized.canonicalKey,
-            ...(oldNormalized !== null ? { isRenameEndpoint: true } : {}),
-          });
-          if (oldNormalized !== null) {
-            overlapEntries.push({
-              threadId: candidate.id,
-              threadTitle: candidate.title,
-              runId: entry.runId,
-              layer: "confirmed_write",
-              rawPath: entry.oldRawPath!,
-              normalizedPath: oldNormalized.normalizedPath,
-              canonicalKey: oldNormalized.canonicalKey,
-              isRenameEndpoint: true,
-            });
-          }
-        },
-      );
-
-      // Layer 2a: Confirmed tool writes from durable file_change turn items.
-      const turnItemRecords = yield* projections
-        .getThreadRecords(candidate.id, ["turnItems"], { turnItemTypes: ["file_change"] })
-        .pipe(Effect.orElseSucceed(() => ({ thread: null, turnItems: [] })));
-
-      for (const item of turnItemRecords.turnItems) {
-        if (item.type !== "file_change") continue;
-        if (item.status === "failed" || item.status === "cancelled") continue;
-        const updatedAt = IsoDateTime.make(DateTime.formatIso(item.updatedAt));
-        if (item.changes && item.changes.length > 0) {
-          for (const detail of item.changes) {
-            yield* addConfirmedWrite({
-              rawPath: detail.path,
-              oldRawPath: detail.oldPath ?? null,
-              operation: detail.operation,
-              runId: item.runId,
-              turnItemId: TurnItemId.make(item.id),
-              source: "turn_item",
-              updatedAt,
-            });
-          }
-        } else {
-          yield* addConfirmedWrite({
-            rawPath: item.fileName,
-            oldRawPath: null,
-            operation: "edit",
-            runId: item.runId,
-            turnItemId: TurnItemId.make(item.id),
-            source: "turn_item",
-            updatedAt,
+            rawPath: entry.oldRawPath!,
+            normalizedPath: entry.oldNormalizedPath!,
+            canonicalKey: entry.oldCanonicalKey!,
+            isRenameEndpoint: true,
           });
         }
+      };
+
+      // Layer 2a: Confirmed tool writes from durable file_change turn items (fingerprint-cached).
+      let turnItemFileChanges: ReadonlyArray<CachedTurnItemFileChange>;
+      if (fileChangeSummaryByThread !== null) {
+        const summary = fileChangeSummaryByThread.get(candidate.id);
+        if (summary === undefined) {
+          threadFileChangeCache.delete(candidate.id);
+          turnItemFileChanges = [];
+        } else {
+          const fingerprint = `${checkout.checkoutKey}\0${summary.item_count}\0${summary.max_updated_at ?? ""}\0${summary.total_payload_bytes ?? 0}\0${summary.max_ordinal ?? 0}`;
+          const cached = threadFileChangeCache.get(candidate.id);
+          if (cached !== undefined && cached.fingerprint === fingerprint) {
+            turnItemFileChanges = cached.entries;
+          } else {
+            turnItemFileChanges = yield* loadThreadTurnItemFileChanges(
+              candidate.id,
+              checkout.checkoutPath,
+              platform,
+              nowMs,
+            );
+            threadFileChangeCache.set(candidate.id, {
+              fingerprint,
+              entries: turnItemFileChanges,
+            });
+          }
+        }
+      } else {
+        turnItemFileChanges = yield* loadThreadTurnItemFileChanges(
+          candidate.id,
+          checkout.checkoutPath,
+          platform,
+          nowMs,
+        );
+      }
+
+      for (const entry of turnItemFileChanges) {
+        recordConfirmedWrite({
+          ...entry,
+          source: "turn_item",
+        });
       }
 
       // Layer 2b: Server-controlled write tool commits.
       for (const controlled of controlledWritesByThread.get(candidate.id) ?? []) {
-        yield* addConfirmedWrite({
+        const normalized = yield* normalizeCheckoutPathCached(
+          checkout.checkoutPath,
+          controlled.path,
+          platform,
+          nowMs,
+        );
+        if (normalized === null) continue;
+        const oldNormalized =
+          controlled.oldPath === null
+            ? null
+            : yield* normalizeCheckoutPathCached(
+                checkout.checkoutPath,
+                controlled.oldPath,
+                platform,
+                nowMs,
+              );
+        recordConfirmedWrite({
           rawPath: controlled.path,
+          normalizedPath: normalized.normalizedPath,
+          canonicalKey: normalized.canonicalKey,
           oldRawPath: controlled.oldPath,
+          oldNormalizedPath: oldNormalized?.normalizedPath ?? null,
+          oldCanonicalKey: oldNormalized?.canonicalKey ?? null,
           operation: controlled.operation,
           runId: controlled.runId,
           turnItemId: null,
@@ -813,13 +1174,8 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const threadActiveReservations = [...activeReservations.values()]
-        .filter(
-          (reservation) =>
-            reservation.checkoutKey === checkout.checkoutKey &&
-            reservation.threadId === candidate.id,
-        )
-        .map((reservation) => {
+      const threadActiveReservations = (activeReservationsByThread.get(candidate.id) ?? []).map(
+        (reservation) => {
           for (const entry of reservation.entries) {
             overlapEntries.push({
               threadId: candidate.id,
@@ -833,12 +1189,10 @@ const make = Effect.gen(function* () {
             });
           }
           return toPublicReservation(reservation);
-        });
+        },
+      );
 
-      for (const waiting of waitingReservations) {
-        if (waiting.checkoutKey !== checkout.checkoutKey || waiting.threadId !== candidate.id) {
-          continue;
-        }
+      for (const waiting of waitingReservationsByThread.get(candidate.id) ?? []) {
         for (const entry of waiting.entries) {
           overlapEntries.push({
             threadId: candidate.id,
@@ -853,14 +1207,13 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const candidateRoot = candidate.lineage.rootThreadId ?? candidate.id;
-      threadAttributions.push({
+      threadBases.push({
         threadId: candidate.id,
         title: candidate.title,
         depth: computeThreadDepth(candidate, byId),
         activeRunId: candidate.activeRunId,
         status: candidate.status,
-        inFamily: candidateRoot === rootThreadId,
+        rootThreadId: candidate.lineage.rootThreadId ?? candidate.id,
         plannedPaths: planned,
         confirmedWritePaths: confirmedWrites,
         activeReservations: threadActiveReservations,
@@ -869,41 +1222,30 @@ const make = Effect.gen(function* () {
 
     // Layer 3: Working-tree dirty files NOT confirmed written by any thread in this checkout.
     const observedUnverifiedPaths: Array<SharedWorktreeObservedPath> = [];
-    if (Option.isSome(gitWorkflowOption)) {
-      const localStatus = yield* gitWorkflowOption.value
-        .localStatus({ cwd: checkout.checkoutPath })
-        .pipe(Effect.orElseSucceed(() => null));
-      if (localStatus !== null && localStatus.isRepo) {
-        const seenObserved = new Set<string>();
-        for (const file of localStatus.workingTree.files) {
-          const normalized = yield* normalizeCheckoutRelativePath(
-            fileSystem,
-            path,
-            checkout.checkoutPath,
-            file.path,
-          ).pipe(Effect.orElseSucceed(() => null));
-          if (normalized === null) continue;
-          if (confirmedCanonicalKeys.has(normalized.canonicalKey)) continue;
-          if (seenObserved.has(normalized.canonicalKey)) continue;
-          seenObserved.add(normalized.canonicalKey);
-          observedUnverifiedPaths.push({
-            path: file.path,
-            normalizedPath: normalized.normalizedPath,
-            attribution: "observed_unverified",
-            reason: "external_or_unattributed",
-            insertions: file.insertions,
-            deletions: file.deletions,
-          });
-        }
+    const localStatus = yield* getCachedGitLocalStatus(checkout.checkoutKey, checkout.checkoutPath);
+    if (localStatus !== null && localStatus.isRepo) {
+      const seenObserved = new Set<string>();
+      for (const file of localStatus.workingTree.files) {
+        const normalized = yield* normalizeCheckoutPathCached(
+          checkout.checkoutPath,
+          file.path,
+          platform,
+          nowMs,
+        );
+        if (normalized === null) continue;
+        if (confirmedCanonicalKeys.has(normalized.canonicalKey)) continue;
+        if (seenObserved.has(normalized.canonicalKey)) continue;
+        seenObserved.add(normalized.canonicalKey);
+        observedUnverifiedPaths.push({
+          path: file.path,
+          normalizedPath: normalized.normalizedPath,
+          attribution: "observed_unverified",
+          reason: "external_or_unattributed",
+          insertions: file.insertions,
+          deletions: file.deletions,
+        });
       }
     }
-
-    const checkoutActiveReservations = [...activeReservations.values()]
-      .filter((reservation) => reservation.checkoutKey === checkout.checkoutKey)
-      .map(toPublicReservation);
-    const checkoutWaitingReservations = waitingReservations
-      .filter((waiting) => waiting.checkoutKey === checkout.checkoutKey)
-      .map(toPublicWaitingReservation);
 
     const activeLease = activeCheckoutLeases.get(checkout.checkoutKey);
     const activeSerializedRun: SharedWorktreeSerializedRunEntry | null =
@@ -924,30 +1266,109 @@ const make = Effect.gen(function* () {
       acquiredAt: entry.acquiredAt,
     }));
 
-    threadAttributions.sort(
-      (a, b) =>
-        (a.inFamily === b.inFamily ? 0 : a.inFamily ? -1 : 1) ||
-        a.depth - b.depth ||
-        a.threadId.localeCompare(b.threadId),
-    );
     observedUnverifiedPaths.sort((a, b) => a.normalizedPath.localeCompare(b.normalizedPath));
 
-    return {
-      rootThreadId,
+    const base: CheckoutSnapshotBase = {
       checkoutPath: checkout.checkoutPath,
       checkoutKey: checkout.checkoutKey,
       policy,
-      sharedThreadCount: threadAttributions.length,
-      threads: threadAttributions,
+      threadBases,
       overlaps: computePathOverlaps(overlapEntries),
       observedUnverifiedPaths,
       activeReservations: checkoutActiveReservations,
       waitingReservations: checkoutWaitingReservations,
       activeSerializedRun,
       waitingSerializedRuns,
-      restoreSafetyProtected: threadAttributions.length > 1 || thread.worktreePath === null,
       generatedAt: yield* nowIso(),
-    } satisfies SharedWorktreeCoordinationSnapshot;
+    };
+
+    const completedAtMs = yield* Clock.currentTimeMillis;
+    if (coordinationVersion === versionAtStart) {
+      checkoutSnapshotBaseCache.set(checkout.checkoutKey, {
+        shellSequence: shell.snapshotSequence,
+        coordinationVersion: versionAtStart,
+        expiresAtMs: completedAtMs + CHECKOUT_SNAPSHOT_CACHE_TTL_MS,
+        base,
+      });
+    }
+    return base;
+  });
+
+  const projectSnapshotForCaller = (
+    base: CheckoutSnapshotBase,
+    rootThreadId: ThreadId,
+    isWorkspaceRootThread: boolean,
+  ): SharedWorktreeCoordinationSnapshot => {
+    const threadAttributions: Array<SharedWorktreeThreadAttribution> = base.threadBases.map(
+      ({ rootThreadId: candidateRoot, ...rest }) => ({
+        ...rest,
+        inFamily: candidateRoot === rootThreadId,
+      }),
+    );
+    threadAttributions.sort(
+      (a, b) =>
+        (a.inFamily === b.inFamily ? 0 : a.inFamily ? -1 : 1) ||
+        a.depth - b.depth ||
+        a.threadId.localeCompare(b.threadId),
+    );
+    return {
+      rootThreadId,
+      checkoutPath: base.checkoutPath,
+      checkoutKey: base.checkoutKey,
+      policy: base.policy,
+      sharedThreadCount: threadAttributions.length,
+      threads: threadAttributions,
+      overlaps: base.overlaps,
+      observedUnverifiedPaths: base.observedUnverifiedPaths,
+      activeReservations: base.activeReservations,
+      waitingReservations: base.waitingReservations,
+      activeSerializedRun: base.activeSerializedRun,
+      waitingSerializedRuns: base.waitingSerializedRuns,
+      restoreSafetyProtected: threadAttributions.length > 1 || isWorkspaceRootThread,
+      generatedAt: base.generatedAt,
+    };
+  };
+
+  const getSnapshot: SharedWorktreeCoordinationServiceShape["getSnapshot"] = Effect.fn(
+    "SharedWorktreeCoordinationService.getSnapshot",
+  )(function* (threadId) {
+    const { thread, checkout } = yield* resolveThreadCheckout(threadId);
+    const rootThreadId = thread.lineage.rootThreadId ?? thread.id;
+    const platform = yield* HostProcess.Platform;
+
+    const shell = yield* projections.getShellSnapshot().pipe(
+      Effect.mapError(
+        (cause) =>
+          new SharedWorktreeCoordinationError({
+            reason: "persistence_failed",
+            detail: "Failed to read thread shell snapshot.",
+            cause,
+          }),
+      ),
+    );
+
+    const nowMs = yield* Clock.currentTimeMillis;
+    const versionAtStart = coordinationVersion;
+    const cached = checkoutSnapshotBaseCache.get(checkout.checkoutKey);
+    const base =
+      cached !== undefined &&
+      cached.shellSequence === shell.snapshotSequence &&
+      cached.coordinationVersion === versionAtStart &&
+      nowMs < cached.expiresAtMs
+        ? cached.base
+        : yield* singleFlight(
+            inFlightCheckoutBase,
+            `${checkout.checkoutKey}:${shell.snapshotSequence}:${versionAtStart}`,
+            computeCheckoutSnapshotBase({
+              checkout,
+              targetThreadId: thread.id,
+              shell,
+              platform,
+              versionAtStart,
+            }),
+          );
+
+    return projectSnapshotForCaller(base, rootThreadId, thread.worktreePath === null);
   });
 
   const setPolicy: SharedWorktreeCoordinationServiceShape["setPolicy"] = Effect.fn(
@@ -985,6 +1406,7 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
+    bumpCoordinationVersion(checkout.checkoutKey);
     return {
       checkoutKey: checkout.checkoutKey,
       checkoutPath: checkout.checkoutPath,
@@ -1056,6 +1478,8 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+
+    bumpCoordinationVersion(checkout.checkoutKey);
 
     const plannedPaths: Array<SharedWorktreePlannedPathEntry> = normalizedEntries.map((entry) => ({
       path: entry.rawPath,
@@ -1148,6 +1572,7 @@ const make = Effect.gen(function* () {
               acquiredAt,
             };
             activeReservations.set(reservationId, reservation);
+            bumpCoordinationVersion(checkout.checkoutKey);
             return reservation;
           }
 
@@ -1159,6 +1584,7 @@ const make = Effect.gen(function* () {
             });
           }
 
+          const signal = reservationSignal;
           if (waitingEntry === null) {
             waitingEntry = {
               reservationId,
@@ -1176,7 +1602,6 @@ const make = Effect.gen(function* () {
             waitingEntry.waitingOnReservationIds = conflicting.map((item) => item.reservationId);
           }
 
-          const signal = reservationSignal;
           yield* Deferred.await(signal);
         }
       }).pipe(
@@ -1344,6 +1769,10 @@ const make = Effect.gen(function* () {
           ),
         );
 
+        bumpCoordinationVersion(checkout.checkoutKey);
+        gitStatusCache.delete(checkout.checkoutKey);
+        invalidateCheckoutPathCache(checkout.checkoutPath);
+
         const writtenFile = yield* readFileRevision(targetNorm);
         return {
           writtenFile,
@@ -1394,8 +1823,10 @@ const make = Effect.gen(function* () {
           removeFromQueue();
           lease.acquiredAt = yield* nowIso();
           activeCheckoutLeases.set(checkoutKey, lease);
+          bumpCoordinationVersion(checkoutKey);
           return;
         }
+        const signal = checkoutLeaseSignal;
         if (!queued) {
           queued = true;
           let targetQueue = waitingCheckoutLeases.get(checkoutKey);
@@ -1406,7 +1837,6 @@ const make = Effect.gen(function* () {
           targetQueue.push(lease);
           notifyCoordinationChange();
         }
-        const signal = checkoutLeaseSignal;
         yield* Deferred.await(signal);
       }
     }).pipe(
@@ -1547,6 +1977,11 @@ const make = Effect.gen(function* () {
       DELETE FROM shared_worktree_controlled_writes
       WHERE thread_id IN (SELECT value FROM json_each(${encoded}))
     `.pipe(Effect.ignore);
+
+    for (const id of idSet) {
+      threadFileChangeCache.delete(id);
+    }
+    bumpCoordinationVersion();
   });
 
   return SharedWorktreeCoordinationService.of({

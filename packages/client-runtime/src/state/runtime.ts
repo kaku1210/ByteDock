@@ -85,6 +85,8 @@ interface EnvironmentCommandAtomOptions<Input, A, E, R> extends Omit<
   ) => Effect.Effect<A, E, R>;
 }
 
+export type QueryRefreshIntervalMs<A> = number | ((value: Option.Option<A>) => number);
+
 interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   EnvironmentAtomOptions<Input, A, E, R>,
   "execute"
@@ -101,7 +103,7 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   readonly persistence?: QueryPersistence<A>;
   readonly staleTimeMs?: number;
   readonly idleTtlMs?: number;
-  readonly refreshIntervalMs?: number;
+  readonly refreshIntervalMs?: QueryRefreshIntervalMs<A>;
   /** Each change of the returned signal refreshes the query; `query` is the data it refreshes. */
   readonly refreshTrigger?: (
     target: {
@@ -591,16 +593,23 @@ const refreshOnSignalWhileRead =
   };
 
 const refreshEveryUntilFinal =
-  <V>(intervalMs: number, isFinal: (value: V) => boolean) =>
-  <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> =>
+  <A>(
+    intervalMs: QueryRefreshIntervalMs<A>,
+    isFinal: (value: AsyncResult.AsyncResult<A, unknown>) => boolean,
+  ) =>
+  <E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
     Atom.transform(
       self,
       (get) => {
         const value = get(self);
-        if (!isFinal(value)) {
-          // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
-          const handle = setTimeout(() => get.refresh(self), intervalMs);
-          get.addFinalizer(() => clearTimeout(handle));
+        if (!value.waiting && !isFinal(value)) {
+          const delayMs =
+            typeof intervalMs === "function" ? intervalMs(AsyncResult.value(value)) : intervalMs;
+          if (Number.isFinite(delayMs) && delayMs >= 0) {
+            // @effect-diagnostics-next-line globalTimers:off - Mirrors `Atom.withRefresh`, outside an Effect runtime.
+            const handle = setTimeout(() => get.refresh(self), delayMs);
+            get.addFinalizer(() => clearTimeout(handle));
+          }
         }
         return value;
       },
@@ -1030,7 +1039,7 @@ export function createEnvironmentRpcQueryAtomFamily<
     readonly persistence?: QueryPersistence<EnvironmentRpcSuccess<TTag>>;
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
-    readonly refreshIntervalMs?: number;
+    readonly refreshIntervalMs?: QueryRefreshIntervalMs<EnvironmentRpcSuccess<TTag>>;
     readonly refreshTrigger?: (target: {
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;

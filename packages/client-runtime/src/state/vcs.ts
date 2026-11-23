@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type SharedWorktreeCoordinationSnapshot,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type VcsRefreshStatusResult,
@@ -53,6 +54,30 @@ const sharedWorktreeRevisionAtom = Atom.family((_environmentId: EnvironmentId) =
 const OFFLINE_BRANCH_LIST_LIMIT = 100;
 const VCS_REFS_IDLE_TTL_MS = 30_000;
 const VCS_STATUS_IDLE_TTL_MS = 10_000;
+export const SHARED_WORKTREE_ACTIVE_REFRESH_INTERVAL_MS = 10_000;
+export const SHARED_WORKTREE_IDLE_REFRESH_INTERVAL_MS = 30_000;
+
+export function isSharedWorktreeSnapshotActive(
+  snapshot: SharedWorktreeCoordinationSnapshot,
+): boolean {
+  return (
+    snapshot.activeReservations.length > 0 ||
+    snapshot.waitingReservations.length > 0 ||
+    snapshot.activeSerializedRun !== null ||
+    snapshot.waitingSerializedRuns.length > 0 ||
+    snapshot.threads.some(
+      (thread) =>
+        thread.activeRunId !== null ||
+        thread.activeReservations.length > 0 ||
+        thread.status === "preparing" ||
+        thread.status === "queued" ||
+        thread.status === "starting" ||
+        thread.status === "running" ||
+        thread.status === "waiting",
+    )
+  );
+}
+
 const VCS_REFS_RETRY_SCHEDULE = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay(({ duration }) =>
     Effect.succeed(Duration.min(duration, Duration.seconds(30))),
@@ -398,8 +423,11 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:shared-worktree-snapshot",
       tag: WS_METHODS.sharedWorktreeGetSnapshot,
       idleTtlMs: VCS_STATUS_IDLE_TTL_MS,
-      staleTimeMs: 2_000,
-      refreshIntervalMs: 5_000,
+      staleTimeMs: 5_000,
+      refreshIntervalMs: (snapshot) =>
+        Option.exists(snapshot, isSharedWorktreeSnapshotActive)
+          ? SHARED_WORKTREE_ACTIVE_REFRESH_INTERVAL_MS
+          : SHARED_WORKTREE_IDLE_REFRESH_INTERVAL_MS,
       refreshTrigger: (target) => sharedWorktreeRevisionAtom(target.environmentId),
     }),
     setSharedWorktreePolicy: createEnvironmentRpcCommand(runtime, {

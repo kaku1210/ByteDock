@@ -8,6 +8,10 @@ import {
   type VcsListRefsResult,
   type VcsStatusResult,
   type ServerConfig,
+  type SharedWorktreeCoordinationSnapshot,
+  SharedWorktreeReservationId,
+  ThreadId,
+  RunId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -39,8 +43,11 @@ import type { RpcSession } from "../rpc/session.ts";
 import { createGitEnvironmentAtoms } from "./git.ts";
 
 import {
+  SHARED_WORKTREE_ACTIVE_REFRESH_INTERVAL_MS,
+  SHARED_WORKTREE_IDLE_REFRESH_INTERVAL_MS,
   commitVcsRefsRefresh,
   createVcsEnvironmentAtoms,
+  isSharedWorktreeSnapshotActive,
   makeCachedVcsRefsChanges,
   resolveQuickAction,
 } from "./vcs.ts";
@@ -911,5 +918,161 @@ describe("resolveQuickAction", () => {
         false,
       ),
     ).toEqual(commit);
+  });
+});
+
+function sharedWorktreeSnapshot(
+  overrides: Partial<SharedWorktreeCoordinationSnapshot> = {},
+): SharedWorktreeCoordinationSnapshot {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    rootThreadId: ThreadId.make("thread-root"),
+    checkoutPath: "/repo",
+    checkoutKey: "/repo",
+    policy: {
+      checkoutKey: "/repo",
+      checkoutPath: "/repo",
+      serializationMode: "parallel",
+      shellConstraintCoverage: {
+        serverEnforcedWorktreeGate: true,
+        serverEnforcedWriteReservation: true,
+        checkoutWriteSerializationEnabled: false,
+        shellGitWorktreeConstraint: "provider_tool_permission",
+        summary: "ok",
+      },
+      updatedAt: now,
+      updatedBy: null,
+    },
+    sharedThreadCount: 2,
+    threads: [
+      {
+        threadId: ThreadId.make("thread-root"),
+        title: "Root",
+        depth: 0,
+        activeRunId: null,
+        status: "idle",
+        inFamily: true,
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservations: [],
+      },
+      {
+        threadId: ThreadId.make("thread-side"),
+        title: "Side",
+        depth: 1,
+        activeRunId: null,
+        status: "ready",
+        inFamily: true,
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservations: [],
+      },
+    ],
+    overlaps: [],
+    observedUnverifiedPaths: [],
+    activeReservations: [],
+    waitingReservations: [],
+    activeSerializedRun: null,
+    waitingSerializedRuns: [],
+    restoreSafetyProtected: false,
+    generatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("shared worktree adaptive polling", () => {
+  it("uses 30s idle and 10s active refresh intervals", () => {
+    expect(SHARED_WORKTREE_IDLE_REFRESH_INTERVAL_MS).toBe(30_000);
+    expect(SHARED_WORKTREE_ACTIVE_REFRESH_INTERVAL_MS).toBe(10_000);
+  });
+
+  it("classifies idle vs active shared worktree snapshots accurately", () => {
+    const idle = sharedWorktreeSnapshot();
+    expect(isSharedWorktreeSnapshotActive(idle)).toBe(false);
+
+    const reservation = {
+      reservationId: SharedWorktreeReservationId.make("res-1"),
+      checkoutKey: "/repo",
+      threadId: ThreadId.make("thread-root"),
+      runId: RunId.make("run-1"),
+      paths: ["src/a.ts"],
+      canonicalPaths: ["src/a.ts"],
+      status: "active" as const,
+      waitingOnReservationIds: [],
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    expect(
+      isSharedWorktreeSnapshotActive(sharedWorktreeSnapshot({ activeReservations: [reservation] })),
+    ).toBe(true);
+
+    expect(
+      isSharedWorktreeSnapshotActive(
+        sharedWorktreeSnapshot({
+          waitingReservations: [{ ...reservation, status: "waiting" }],
+        }),
+      ),
+    ).toBe(true);
+
+    expect(
+      isSharedWorktreeSnapshotActive(
+        sharedWorktreeSnapshot({
+          activeSerializedRun: {
+            threadId: ThreadId.make("thread-root"),
+            runId: RunId.make("run-1"),
+            enqueuedAt: "2026-01-01T00:00:00.000Z",
+            acquiredAt: "2026-01-01T00:00:00.000Z",
+          },
+        }),
+      ),
+    ).toBe(true);
+
+    expect(
+      isSharedWorktreeSnapshotActive(
+        sharedWorktreeSnapshot({
+          waitingSerializedRuns: [
+            {
+              threadId: ThreadId.make("thread-side"),
+              runId: RunId.make("run-2"),
+              enqueuedAt: "2026-01-01T00:00:00.000Z",
+              acquiredAt: null,
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+
+    expect(
+      isSharedWorktreeSnapshotActive(
+        sharedWorktreeSnapshot({
+          threads: [
+            {
+              ...idle.threads[0]!,
+              activeRunId: RunId.make("run-active"),
+            },
+          ],
+        }),
+      ),
+    ).toBe(true);
+
+    for (const activeStatus of ["preparing", "queued", "starting", "running", "waiting"] as const) {
+      expect(
+        isSharedWorktreeSnapshotActive(
+          sharedWorktreeSnapshot({
+            threads: [{ ...idle.threads[0]!, status: activeStatus }],
+          }),
+        ),
+      ).toBe(true);
+    }
+
+    for (const idleStatus of ["idle", "ready", "completed", "error", "interrupted"] as const) {
+      expect(
+        isSharedWorktreeSnapshotActive(
+          sharedWorktreeSnapshot({
+            threads: [{ ...idle.threads[0]!, status: idleStatus }],
+          }),
+        ),
+      ).toBe(false);
+    }
   });
 });

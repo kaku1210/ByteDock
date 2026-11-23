@@ -1,14 +1,19 @@
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  threadRuntimeIsActive,
+  type EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type {
-  ScopedThreadRef,
-  SharedWorktreeCoordinationSnapshot,
-  SharedWorktreePathOverlap,
-  SharedWorktreeSerializationMode,
-  SharedWorktreeThreadAttribution,
-  ThreadId,
+import {
+  type ScopedThreadRef,
+  type SharedWorktreeCoordinationSnapshot,
+  type SharedWorktreePathOverlap,
+  type SharedWorktreeSerializationMode,
+  type SharedWorktreeThreadAttribution,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
   AlertTriangleIcon,
@@ -21,9 +26,10 @@ import {
   RefreshCwIcon,
   ShieldCheckIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { useThreadShell } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsEnvironment } from "../../state/vcs";
@@ -616,6 +622,25 @@ export function SharedWorktreeCoordinationBannerView({
   return <ComposerBanner.Attachment>{bannerRoot}</ComposerBanner.Attachment>;
 }
 
+export function resolveSharedWorktreeQueryRef(
+  threadRef: ScopedThreadRef | null,
+  threadShell: EnvironmentThreadShell | null,
+  rootThreadShell: EnvironmentThreadShell | null,
+): ScopedThreadRef | null {
+  if (threadRef === null) return null;
+  if (
+    threadShell !== null &&
+    rootThreadShell !== null &&
+    rootThreadShell.deletedAt === null &&
+    rootThreadShell.id !== threadRef.threadId &&
+    rootThreadShell.projectId === threadShell.projectId &&
+    rootThreadShell.worktreePath === threadShell.worktreePath
+  ) {
+    return scopeThreadRef(threadRef.environmentId, rootThreadShell.id);
+  }
+  return threadRef;
+}
+
 export function SharedWorktreeCoordinationBanner({
   threadRef,
   alwaysShow = false,
@@ -626,14 +651,46 @@ export function SharedWorktreeCoordinationBanner({
   readonly detached?: boolean;
 }) {
   const { text: uiText } = useUiLanguage();
+  const threadShell = useThreadShell(threadRef);
+  const candidateRootRef =
+    threadRef !== null &&
+    threadShell !== null &&
+    threadShell.lineage.rootThreadId !== threadRef.threadId
+      ? scopeThreadRef(threadRef.environmentId, threadShell.lineage.rootThreadId)
+      : null;
+  const rootThreadShell = useThreadShell(candidateRootRef);
+  const queryThreadRef = resolveSharedWorktreeQueryRef(threadRef, threadShell, rootThreadShell);
   const query = useEnvironmentQuery(
-    threadRef === null
+    queryThreadRef === null
       ? null
       : vcsEnvironment.sharedWorktreeSnapshot({
-          environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId },
+          environmentId: queryThreadRef.environmentId,
+          input: { threadId: queryThreadRef.threadId },
         }),
   );
+  const localThreadActive =
+    threadRuntimeIsActive(threadShell?.runtime) || threadRuntimeIsActive(rootThreadShell?.runtime);
+  const queryThreadKey =
+    queryThreadRef === null ? null : `${queryThreadRef.environmentId}:${queryThreadRef.threadId}`;
+  const previousActivityRef = useRef<{ readonly key: string | null; readonly active: boolean }>({
+    key: queryThreadKey,
+    active: localThreadActive,
+  });
+  const refreshSnapshot = query.refresh;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- triggers an imperative AtomRegistry refresh on idle-to-active transition so adaptive polling switches promptly from 30s to 10s
+  useEffect(() => {
+    const previous = previousActivityRef.current;
+    previousActivityRef.current = { key: queryThreadKey, active: localThreadActive };
+    if (
+      queryThreadKey !== null &&
+      previous.key === queryThreadKey &&
+      !previous.active &&
+      localThreadActive
+    ) {
+      refreshSnapshot();
+    }
+  }, [localThreadActive, queryThreadKey, refreshSnapshot]);
+
   const setPolicy = useAtomCommand(vcsEnvironment.setSharedWorktreePolicy, {
     label: "set shared worktree serialization policy",
     reportFailure: false,

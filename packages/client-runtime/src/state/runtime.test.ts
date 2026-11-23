@@ -70,6 +70,7 @@ import {
   environmentSessionGenerationAtom,
   executeAtomQuery,
   type QueryAnswerHandler,
+  type QueryRefreshIntervalMs,
 } from "./runtime.ts";
 
 const QUERY_ENVIRONMENT = new PrimaryConnectionTarget({
@@ -115,6 +116,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
   execute: Effect.Effect<A, E>,
   {
     refreshTrigger,
+    refreshIntervalMs,
     idleTtlMs,
     persistence,
     initialState,
@@ -123,6 +125,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     onAnswer,
   }: {
     readonly refreshTrigger?: Atom.Atom<unknown>;
+    readonly refreshIntervalMs?: QueryRefreshIntervalMs<A>;
     readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
     readonly idleTtlMs?: number;
@@ -170,6 +173,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     ...(persistence === undefined ? {} : { persistence }),
     execute: () => execute,
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
+    ...(refreshIntervalMs === undefined ? {} : { refreshIntervalMs }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
     ...(onAnswer === undefined ? {} : { onAnswer }),
@@ -1596,6 +1600,99 @@ describe("environment query lifecycle", () => {
       yield* Deferred.succeed(yield* Queue.take(requests), page([]));
       expect(yield* archivedIds).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "adapts dynamic refreshIntervalMs between idle and active values without overlapping while waiting",
+    () =>
+      Effect.gen(function* () {
+        const originalSetTimeout = globalThis.setTimeout;
+        const originalClearTimeout = globalThis.clearTimeout;
+        const scheduled: Array<{
+          readonly id: number;
+          readonly delayMs: number;
+          readonly callback: () => void;
+          cleared: boolean;
+        }> = [];
+        let nextTimerId = 10_000;
+
+        using _setTimeout = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+          callback: (...args: Array<unknown>) => void,
+          delay?: number,
+          ...args: Array<unknown>
+        ) => {
+          if (typeof delay === "number" && delay >= 1_000) {
+            const entry = {
+              id: nextTimerId++,
+              delayMs: delay,
+              callback: () => callback(...args),
+              cleared: false,
+            };
+            scheduled.push(entry);
+            return entry.id as unknown as ReturnType<typeof globalThis.setTimeout>;
+          }
+          // @effect-diagnostics-next-line globalTimers:off - Forwarding non-refresh timers in setTimeout spy.
+          return originalSetTimeout(callback, delay, ...args);
+        }) as typeof globalThis.setTimeout);
+
+        using _clearTimeout = vi.spyOn(globalThis, "clearTimeout").mockImplementation(((
+          handle?: ReturnType<typeof globalThis.setTimeout>,
+        ) => {
+          const entry = scheduled.find(
+            (timer) => (timer.id as unknown as ReturnType<typeof globalThis.setTimeout>) === handle,
+          );
+          if (entry !== undefined) {
+            entry.cleared = true;
+            return;
+          }
+          originalClearTimeout(handle);
+        }) as typeof globalThis.clearTimeout);
+
+        const requests = yield* Queue.unbounded<Deferred.Deferred<{ readonly active: boolean }>>();
+        const harness = yield* makeEnvironmentQueryHarness(
+          Effect.gen(function* () {
+            const answer = yield* Deferred.make<{ readonly active: boolean }>();
+            yield* Queue.offer(requests, answer);
+            return yield* Deferred.await(answer);
+          }),
+          {
+            refreshIntervalMs: (value) =>
+              Option.exists(value, (snapshot) => snapshot.active) ? 10_000 : 30_000,
+          },
+        );
+
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+
+        // Initial load is waiting: no refresh timer should be scheduled yet.
+        const firstRequest = yield* Queue.take(requests);
+        expect(registry.get(harness.atom).waiting).toBe(true);
+        expect(scheduled).toHaveLength(0);
+
+        // Settle idle -> schedules 30_000ms timer.
+        yield* Deferred.succeed(firstRequest, { active: false });
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toEqual({ active: false });
+        expect(scheduled.map((entry) => entry.delayMs)).toEqual([30_000]);
+        expect(scheduled[0]?.cleared).toBe(false);
+
+        // Fire idle timer -> enters waiting state; no overlapping timer scheduled while in-flight.
+        scheduled[0]!.callback();
+        const secondRequest = yield* Queue.take(requests);
+        expect(registry.get(harness.atom).waiting).toBe(true);
+        expect(scheduled).toHaveLength(1);
+
+        // Settle active -> schedules 10_000ms timer.
+        yield* Deferred.succeed(secondRequest, { active: true });
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toEqual({ active: true });
+        expect(scheduled.map((entry) => entry.delayMs)).toEqual([30_000, 10_000]);
+        expect(scheduled[1]?.cleared).toBe(false);
+
+        // Fire active timer -> settle back to idle -> schedules 30_000ms timer again.
+        scheduled[1]!.callback();
+        const thirdRequest = yield* Queue.take(requests);
+        yield* Deferred.succeed(thirdRequest, { active: false });
+        expect(yield* readEnvironmentQuery(registry, harness.atom)).toEqual({ active: false });
+        expect(scheduled.map((entry) => entry.delayMs)).toEqual([30_000, 10_000, 30_000]);
+      }),
   );
 });
 

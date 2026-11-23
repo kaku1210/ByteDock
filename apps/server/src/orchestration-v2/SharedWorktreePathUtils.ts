@@ -54,10 +54,13 @@ export interface CanonicalCheckout {
   readonly checkoutKey: string;
 }
 
-export const canonicalizeCheckoutPath = Effect.fn(
-  "SharedWorktreePathUtils.canonicalizeCheckoutPath",
-)(function* (fileSystem: FileSystem.FileSystem, path: Path.Path, rawCheckoutPath: string) {
-  const platform = yield* HostProcess.Platform;
+/** Untraced checkout canonicalizer for cached hot paths inside snapshot reads. */
+export const canonicalizeCheckoutPathRaw = Effect.fnUntraced(function* (
+  fileSystem: FileSystem.FileSystem,
+  path: Path.Path,
+  rawCheckoutPath: string,
+  platform: NodeJS.Platform,
+) {
   const resolved = path.resolve(rawCheckoutPath);
   const canonical = yield* canonicalizeExistingAncestor(fileSystem, path, resolved);
   const posix = stripTrailingSlashes(canonical.replaceAll("\\", "/"));
@@ -65,6 +68,13 @@ export const canonicalizeCheckoutPath = Effect.fn(
     checkoutPath: canonical,
     checkoutKey: toCaseCanonicalKey(posix, platform),
   } satisfies CanonicalCheckout;
+});
+
+export const canonicalizeCheckoutPath = Effect.fn(
+  "SharedWorktreePathUtils.canonicalizeCheckoutPath",
+)(function* (fileSystem: FileSystem.FileSystem, path: Path.Path, rawCheckoutPath: string) {
+  const platform = yield* HostProcess.Platform;
+  return yield* canonicalizeCheckoutPathRaw(fileSystem, path, rawCheckoutPath, platform);
 });
 
 export interface NormalizedCheckoutPath {
@@ -82,16 +92,14 @@ const isWithinRoot = (path: Path.Path, root: string, candidate: string): boolean
   );
 };
 
-/** Normalizes a relative or absolute path inside `canonicalCheckoutPath`, resolving symlink aliases. */
-export const normalizeCheckoutRelativePath = Effect.fn(
-  "SharedWorktreePathUtils.normalizeCheckoutRelativePath",
-)(function* (
+/** Untraced core path normalizer for high-volume batch snapshot reads. */
+export const normalizeCheckoutRelativePathRaw = Effect.fnUntraced(function* (
   fileSystem: FileSystem.FileSystem,
   path: Path.Path,
   canonicalCheckoutPath: string,
   inputPath: string,
+  platform: NodeJS.Platform,
 ) {
-  const platform = yield* HostProcess.Platform;
   const trimmed = inputPath.trim();
   if (trimmed.length === 0) {
     return yield* new SharedWorktreeCoordinationError({
@@ -157,6 +165,25 @@ export const normalizeCheckoutRelativePath = Effect.fn(
   } satisfies NormalizedCheckoutPath;
 });
 
+/** Normalizes a relative or absolute path inside `canonicalCheckoutPath`, resolving symlink aliases. */
+export const normalizeCheckoutRelativePath = Effect.fn(
+  "SharedWorktreePathUtils.normalizeCheckoutRelativePath",
+)(function* (
+  fileSystem: FileSystem.FileSystem,
+  path: Path.Path,
+  canonicalCheckoutPath: string,
+  inputPath: string,
+) {
+  const platform = yield* HostProcess.Platform;
+  return yield* normalizeCheckoutRelativePathRaw(
+    fileSystem,
+    path,
+    canonicalCheckoutPath,
+    inputPath,
+    platform,
+  );
+});
+
 export function classifyCanonicalPathConflict(
   leftKey: string,
   rightKey: string,
@@ -179,86 +206,176 @@ export interface OverlapInputEntry {
   readonly isRenameEndpoint?: boolean;
 }
 
+interface AggregatedOverlapNode {
+  readonly index: number;
+  readonly threadId: ThreadId;
+  readonly threadTitle: string;
+  readonly canonicalKey: string;
+  runId: RunId | null;
+  readonly layers: Set<SharedWorktreePathOverlapParticipantLayer>;
+  readonly normalizedPaths: Set<string>;
+  hasRenameEndpoint: boolean;
+}
+
+const OVERLAP_KIND_PRIORITY: Record<SharedWorktreeOverlapKind, number> = {
+  exact: 0,
+  directory_containment: 1,
+  rename_pair: 2,
+};
+
+function mergeOverlapKind(
+  current: SharedWorktreeOverlapKind,
+  next: SharedWorktreeOverlapKind,
+): SharedWorktreeOverlapKind {
+  return OVERLAP_KIND_PRIORITY[next] > OVERLAP_KIND_PRIORITY[current] ? next : current;
+}
+
 /** Detects cross-thread exact, directory-containment, and rename-pair path overlaps. */
 export function computePathOverlaps(
   entries: ReadonlyArray<OverlapInputEntry>,
 ): ReadonlyArray<SharedWorktreePathOverlap> {
   if (entries.length < 2) return [];
 
-  // Build undirected conflict graph between distinct threads.
-  const adjacency = new Map<number, Set<number>>();
-  const pairKinds = new Map<string, SharedWorktreeOverlapKind>();
+  // Collapse duplicate entries per (threadId, canonicalKey) without losing layer/path/rename info.
+  const nodes: Array<AggregatedOverlapNode> = [];
+  const nodeByThreadKey = new Map<string, AggregatedOverlapNode>();
+  const bucketsByCanonicalKey = new Map<string, Array<AggregatedOverlapNode>>();
 
-  const pairKey = (i: number, j: number) => (i < j ? `${i}:${j}` : `${j}:${i}`);
+  for (const entry of entries) {
+    const threadKey = `${entry.threadId}\0${entry.canonicalKey}`;
+    let node = nodeByThreadKey.get(threadKey);
+    if (node === undefined) {
+      node = {
+        index: nodes.length,
+        threadId: entry.threadId,
+        threadTitle: entry.threadTitle,
+        canonicalKey: entry.canonicalKey,
+        runId: entry.runId,
+        layers: new Set([entry.layer]),
+        normalizedPaths: new Set([entry.normalizedPath]),
+        hasRenameEndpoint: entry.isRenameEndpoint === true,
+      };
+      nodes.push(node);
+      nodeByThreadKey.set(threadKey, node);
 
-  for (let i = 0; i < entries.length; i += 1) {
-    const left = entries[i]!;
-    for (let j = i + 1; j < entries.length; j += 1) {
-      const right = entries[j]!;
-      if (left.threadId === right.threadId) continue;
-      const baseConflict = classifyCanonicalPathConflict(left.canonicalKey, right.canonicalKey);
-      if (baseConflict === null) continue;
-      const kind: SharedWorktreeOverlapKind =
-        left.isRenameEndpoint === true || right.isRenameEndpoint === true
-          ? "rename_pair"
-          : baseConflict;
-      let leftSet = adjacency.get(i);
-      if (!leftSet) {
-        leftSet = new Set();
-        adjacency.set(i, leftSet);
+      let bucket = bucketsByCanonicalKey.get(entry.canonicalKey);
+      if (bucket === undefined) {
+        bucket = [];
+        bucketsByCanonicalKey.set(entry.canonicalKey, bucket);
       }
-      leftSet.add(j);
-      let rightSet = adjacency.get(j);
-      if (!rightSet) {
-        rightSet = new Set();
-        adjacency.set(j, rightSet);
+      bucket.push(node);
+    } else {
+      if (node.runId === null && entry.runId !== null) {
+        node.runId = entry.runId;
       }
-      rightSet.add(i);
-      pairKinds.set(pairKey(i, j), kind);
+      node.layers.add(entry.layer);
+      node.normalizedPaths.add(entry.normalizedPath);
+      if (entry.isRenameEndpoint === true) {
+        node.hasRenameEndpoint = true;
+      }
     }
   }
 
-  // Group connected components of conflicting entries so overlapping siblings appear once.
-  const visited = new Set<number>();
+  if (nodes.length < 2) return [];
+
+  // Disjoint-set union over aggregated nodes to build cross-thread conflict components in linear time.
+  const parent = new Int32Array(nodes.length);
+  const componentKind: Array<SharedWorktreeOverlapKind> = new Array(nodes.length);
+  const hasConflictEdge = new Uint8Array(nodes.length);
+  for (let i = 0; i < nodes.length; i += 1) {
+    parent[i] = i;
+    componentKind[i] = "exact";
+  }
+
+  const find = (idx: number): number => {
+    let root = idx;
+    while (parent[root]! !== root) {
+      root = parent[root]!;
+    }
+    let current = idx;
+    while (parent[current]! !== root) {
+      const next = parent[current]!;
+      parent[current] = root;
+      current = next;
+    }
+    return root;
+  };
+
+  const union = (a: number, b: number, edgeKind: SharedWorktreeOverlapKind): void => {
+    const rootA = find(a);
+    const rootB = find(b);
+    const mergedKind = mergeOverlapKind(
+      mergeOverlapKind(componentKind[rootA]!, componentKind[rootB]!),
+      edgeKind,
+    );
+    if (rootA !== rootB) {
+      parent[rootB] = rootA;
+    }
+    componentKind[rootA] = mergedKind;
+  };
+
+  // 1. Exact path overlaps: every bucket with >= 2 distinct threads conflicts pairwise.
+  for (const bucket of bucketsByCanonicalKey.values()) {
+    if (bucket.length < 2) continue;
+    const first = bucket[0]!;
+    hasConflictEdge[first.index] = 1;
+    let bucketHasRename = first.hasRenameEndpoint;
+    for (let i = 1; i < bucket.length; i += 1) {
+      const node = bucket[i]!;
+      hasConflictEdge[node.index] = 1;
+      if (node.hasRenameEndpoint) bucketHasRename = true;
+      union(first.index, node.index, bucketHasRename ? "rename_pair" : "exact");
+    }
+    if (bucketHasRename) {
+      const root = find(first.index);
+      componentKind[root] = "rename_pair";
+    }
+  }
+
+  // 2. Directory containment overlaps: check strict ancestor prefixes in O(uniqueKeys * pathDepth).
+  for (const [canonicalKey, childBucket] of bucketsByCanonicalKey.entries()) {
+    let slashIdx = canonicalKey.lastIndexOf("/");
+    while (slashIdx > 0) {
+      const ancestorKey = canonicalKey.slice(0, slashIdx);
+      const parentBucket = bucketsByCanonicalKey.get(ancestorKey);
+      if (parentBucket !== undefined) {
+        const sameSingleThread =
+          childBucket.length === 1 &&
+          parentBucket.length === 1 &&
+          childBucket[0]!.threadId === parentBucket[0]!.threadId;
+        if (!sameSingleThread) {
+          let edgeKind: SharedWorktreeOverlapKind = "directory_containment";
+          for (const node of childBucket) {
+            hasConflictEdge[node.index] = 1;
+            if (node.hasRenameEndpoint) edgeKind = "rename_pair";
+          }
+          for (const node of parentBucket) {
+            hasConflictEdge[node.index] = 1;
+            if (node.hasRenameEndpoint) edgeKind = "rename_pair";
+          }
+          union(childBucket[0]!.index, parentBucket[0]!.index, edgeKind);
+        }
+      }
+      slashIdx = canonicalKey.lastIndexOf("/", slashIdx - 1);
+    }
+  }
+
+  // Group conflicting nodes by connected component root.
+  const components = new Map<number, Array<AggregatedOverlapNode>>();
+  for (const node of nodes) {
+    if (hasConflictEdge[node.index] === 0) continue;
+    const root = find(node.index);
+    let group = components.get(root);
+    if (group === undefined) {
+      group = [];
+      components.set(root, group);
+    }
+    group.push(node);
+  }
+
   const overlaps: Array<SharedWorktreePathOverlap> = [];
 
-  for (let start = 0; start < entries.length; start += 1) {
-    if (visited.has(start) || !adjacency.has(start)) continue;
-    const queue = [start];
-    const component: Array<number> = [];
-    visited.add(start);
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      component.push(current);
-      const neighbors = adjacency.get(current);
-      if (!neighbors) continue;
-      for (const next of neighbors) {
-        if (!visited.has(next)) {
-          visited.add(next);
-          queue.push(next);
-        }
-      }
-    }
-
-    const componentEntries = component.map((idx) => entries[idx]!);
-    const distinctThreads = new Set(componentEntries.map((item) => item.threadId));
-    if (distinctThreads.size < 2) continue;
-
-    let kind: SharedWorktreeOverlapKind = "exact";
-    for (let a = 0; a < component.length; a += 1) {
-      for (let b = a + 1; b < component.length; b += 1) {
-        const edgeKind = pairKinds.get(pairKey(component[a]!, component[b]!));
-        if (edgeKind === "rename_pair") {
-          kind = "rename_pair";
-          break;
-        }
-        if (edgeKind === "directory_containment") {
-          kind = "directory_containment";
-        }
-      }
-      if (kind === "rename_pair") break;
-    }
-
+  for (const [root, componentNodes] of components.entries()) {
     const byThread = new Map<
       ThreadId,
       {
@@ -270,25 +387,42 @@ export function computePathOverlaps(
       }
     >();
 
-    for (const item of componentEntries) {
-      let existing = byThread.get(item.threadId);
-      if (!existing) {
+    let representativePath: string | null = null;
+
+    for (const node of componentNodes) {
+      let existing = byThread.get(node.threadId);
+      if (existing === undefined) {
         existing = {
-          threadId: item.threadId,
-          threadTitle: item.threadTitle,
-          runId: item.runId,
+          threadId: node.threadId,
+          threadTitle: node.threadTitle,
+          runId: node.runId,
           layers: new Set(),
           rawPaths: new Set(),
         };
-        byThread.set(item.threadId, existing);
+        byThread.set(node.threadId, existing);
       }
-      if (existing.runId === null && item.runId !== null) {
-        existing.runId = item.runId;
+      if (existing.runId === null && node.runId !== null) {
+        existing.runId = node.runId;
       }
-      existing.layers.add(item.layer);
-      existing.rawPaths.add(item.normalizedPath);
+      for (const layer of node.layers) {
+        existing.layers.add(layer);
+      }
+      for (const normalizedPath of node.normalizedPaths) {
+        existing.rawPaths.add(normalizedPath);
+        if (
+          representativePath === null ||
+          normalizedPath.length < representativePath.length ||
+          (normalizedPath.length === representativePath.length &&
+            normalizedPath.localeCompare(representativePath) < 0)
+        ) {
+          representativePath = normalizedPath;
+        }
+      }
     }
 
+    if (byThread.size < 2 || representativePath === null) continue;
+
+    const kind = componentKind[root] ?? "exact";
     const participants: Array<SharedWorktreePathOverlapParticipant> = [...byThread.values()]
       .sort((a, b) => a.threadId.localeCompare(b.threadId))
       .map((participant) => ({
@@ -301,11 +435,6 @@ export function computePathOverlaps(
 
     const hasReservation = participants.some((p) => p.layers.includes("reserved"));
     const severity: SharedWorktreeOverlapSeverity = hasReservation ? "blocking" : "warning";
-
-    // Shortest normalized path represents the common/parent scope cleanly.
-    const representativePath = [...componentEntries]
-      .map((item) => item.normalizedPath)
-      .sort((a, b) => a.length - b.length || a.localeCompare(b))[0]!;
 
     const recommendedAction =
       severity === "blocking"

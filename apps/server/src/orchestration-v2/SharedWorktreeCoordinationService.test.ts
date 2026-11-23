@@ -45,7 +45,12 @@ interface FakeDirtyFile {
   readonly deletions: number;
 }
 
-function makeHarness(dirtyFilesRef: { files: ReadonlyArray<FakeDirtyFile> }) {
+function makeHarness(
+  dirtyFilesRef: { files: ReadonlyArray<FakeDirtyFile> },
+  hooks?: {
+    readonly onLocalStatus?: () => Effect.Effect<void>;
+  },
+) {
   const driver = ProviderDriverKind.make("codex");
   const instanceId = ProviderInstanceId.make(driver);
   const modelSelection = { instanceId, model: "model-alpha" };
@@ -102,18 +107,23 @@ function makeHarness(dirtyFilesRef: { files: ReadonlyArray<FakeDirtyFile> }) {
 
   const gitWorkflowStub = Layer.succeed(GitWorkflowService.GitWorkflowService, {
     localStatus: ({ cwd }: { readonly cwd: string }) =>
-      Effect.succeed({
-        isRepo: true,
-        hasOriginRemote: false,
-        isDefaultBranch: true,
-        refName: "develop",
-        hasWorkingTreeChanges: dirtyFilesRef.files.length > 0,
-        workingTree: {
-          rootPath: cwd,
-          files: dirtyFilesRef.files.map((file) => ({ ...file })),
-          insertions: dirtyFilesRef.files.reduce((sum, f) => sum + f.insertions, 0),
-          deletions: dirtyFilesRef.files.reduce((sum, f) => sum + f.deletions, 0),
-        },
+      Effect.gen(function* () {
+        if (hooks?.onLocalStatus !== undefined) {
+          yield* hooks.onLocalStatus();
+        }
+        return {
+          isRepo: true,
+          hasOriginRemote: false,
+          isDefaultBranch: true,
+          refName: "develop",
+          hasWorkingTreeChanges: dirtyFilesRef.files.length > 0,
+          workingTree: {
+            rootPath: cwd,
+            files: dirtyFilesRef.files.map((file) => ({ ...file })),
+            insertions: dirtyFilesRef.files.reduce((sum, f) => sum + f.insertions, 0),
+            deletions: dirtyFilesRef.files.reduce((sum, f) => sum + f.deletions, 0),
+          },
+        };
       }),
   } as unknown as GitWorkflowService.GitWorkflowService["Service"]);
 
@@ -733,6 +743,121 @@ describe("SharedWorktreeCoordinationService", () => {
           const attrA = snap.threads.find((t) => t.threadId === childAId);
           assert.equal(attrA?.plannedPaths.length ?? 0, 0);
           assert.equal(snap.activeReservations.length, 0);
+        }),
+      ).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.live(
+    "coalesces concurrent checkout snapshots with per-caller family projection and invalidates on mutations",
+    () => {
+      const dirtyFiles = { files: [] as ReadonlyArray<FakeDirtyFile> };
+      let localStatusCalls = 0;
+      let gate: Deferred.Deferred<void> | null = null;
+      let startedGate: Deferred.Deferred<void> | null = null;
+      const harness = makeHarness(dirtyFiles, {
+        onLocalStatus: () =>
+          Effect.gen(function* () {
+            localStatusCalls += 1;
+            if (startedGate !== null) {
+              yield* Deferred.succeed(startedGate, undefined);
+            }
+            if (gate !== null) {
+              yield* Deferred.await(gate);
+            }
+          }),
+      });
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tmpDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-shared-wt-cache-" });
+          yield* fs.makeDirectory(path.join(tmpDir, "src"), { recursive: true });
+          yield* fs.writeFileString(path.join(tmpDir, "src", "file.ts"), "v0\n");
+
+          const { projectId, rootId, childAId } = yield* seedSharedFamily({
+            modelSelection: harness.modelSelection,
+            workspaceRoot: tmpDir,
+          });
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const otherRootId = ThreadId.make("thread:other-root");
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("cmd:create-other-root"),
+            projectId,
+            threadId: otherRootId,
+            title: "Other Root",
+            modelSelection: harness.modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            worktreePath: tmpDir,
+            branch: "develop",
+            createdBy: "user",
+            creationSource: "web",
+          });
+
+          const coord = yield* SharedWorktreeCoordinationService.SharedWorktreeCoordinationService;
+
+          // 1. Concurrent getSnapshot calls from two different families sharing the same checkout
+          //    coalesce onto a single localStatus + base computation, while projecting caller-specific fields.
+          gate = yield* Deferred.make<void>();
+          startedGate = yield* Deferred.make<void>();
+          const fiber1 = yield* Effect.forkChild(coord.getSnapshot(childAId));
+          yield* Deferred.await(startedGate);
+          const fiber2 = yield* Effect.forkChild(coord.getSnapshot(otherRootId));
+          yield* Deferred.succeed(gate, undefined);
+          gate = null;
+          startedGate = null;
+
+          const [snapA, snapOther] = yield* Effect.all([Fiber.join(fiber1), Fiber.join(fiber2)]);
+          assert.equal(localStatusCalls, 1);
+          assert.equal(snapA.rootThreadId, rootId);
+          assert.equal(snapOther.rootThreadId, otherRootId);
+          assert.isTrue(snapA.threads.find((t) => t.threadId === rootId)?.inFamily);
+          assert.isFalse(snapA.threads.find((t) => t.threadId === otherRootId)?.inFamily);
+          assert.isFalse(snapOther.threads.find((t) => t.threadId === rootId)?.inFamily);
+          assert.isTrue(snapOther.threads.find((t) => t.threadId === otherRootId)?.inFamily);
+
+          // 2. Immediate follow-up read hits the checkout snapshot cache without calling localStatus again.
+          const cachedSnap = yield* coord.getSnapshot(rootId);
+          assert.equal(localStatusCalls, 1);
+          assert.equal(cachedSnap.generatedAt, snapA.generatedAt);
+
+          // 3. Policy and planned path mutations invalidate the checkout snapshot cache immediately.
+          yield* coord.setPolicy({
+            threadId: rootId,
+            serializationMode: "serialize_checkout_writes",
+            updatedBy: "user",
+          });
+          const afterPolicy = yield* coord.getSnapshot(rootId);
+          assert.equal(afterPolicy.policy.serializationMode, "serialize_checkout_writes");
+          // Git localStatus cache is still valid across policy-only change.
+          assert.equal(localStatusCalls, 1);
+
+          yield* coord.setPlannedPaths({ threadId: childAId, paths: ["src/file.ts"] });
+          const afterPlan = yield* coord.getSnapshot(rootId);
+          assert.equal(
+            afterPlan.threads.find((t) => t.threadId === childAId)?.plannedPaths[0]?.normalizedPath,
+            "src/file.ts",
+          );
+
+          // 4. Controlled write invalidates both snapshot and git localStatus caches.
+          dirtyFiles.files = [{ path: "src/file.ts", insertions: 1, deletions: 1 }];
+          yield* coord.controlledWriteFile({
+            threadId: childAId,
+            path: "src/file.ts",
+            contents: "v1\n",
+          });
+          const afterWrite = yield* coord.getSnapshot(rootId);
+          assert.equal(localStatusCalls, 2);
+          assert.isTrue(
+            afterWrite.threads
+              .find((t) => t.threadId === childAId)
+              ?.confirmedWritePaths.some((entry) => entry.normalizedPath === "src/file.ts") ??
+              false,
+          );
+          assert.equal(afterWrite.observedUnverifiedPaths.length, 0);
         }),
       ).pipe(Effect.provide(harness.layer));
     },
