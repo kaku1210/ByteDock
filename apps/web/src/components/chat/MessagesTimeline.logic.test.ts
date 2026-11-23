@@ -3330,7 +3330,29 @@ describe("v2 run and attempt history", () => {
       supportsConversationRollback: false,
     };
 
-    const collapsedRows = deriveMessagesTimelineRows(common);
+    const expandedRows = deriveMessagesTimelineRows(common);
+    expect(expandedRows.map((row) => row.id)).toEqual([
+      "context-handoff-entry",
+      "initial-user-entry",
+      `attempt-fold:${supersededAttemptId}`,
+      "superseded-assistant-entry",
+      "superseded-work-entry",
+      "superseded-thread-created-entry",
+      "steer-user-entry",
+      "active-assistant-entry",
+    ]);
+    expect(expandedRows.find((row) => row.kind === "attempt-fold")).toMatchObject({
+      attemptId: supersededAttemptId,
+      runId,
+      label: "Superseded attempt",
+      expanded: true,
+      deferredWorkItemIds: ["old-work-anchor"],
+    });
+
+    const collapsedRows = deriveMessagesTimelineRows({
+      ...common,
+      collapsedAttemptIds: new Set([supersededAttemptId]),
+    });
     expect(collapsedRows.map((row) => row.id)).toEqual([
       "context-handoff-entry",
       "initial-user-entry",
@@ -3346,21 +3368,6 @@ describe("v2 run and attempt history", () => {
       expanded: false,
       deferredWorkItemIds: ["old-work-anchor"],
     });
-
-    const expandedRows = deriveMessagesTimelineRows({
-      ...common,
-      expandedAttemptIds: new Set([supersededAttemptId]),
-    });
-    expect(expandedRows.map((row) => row.id)).toEqual([
-      "context-handoff-entry",
-      "initial-user-entry",
-      `attempt-fold:${supersededAttemptId}`,
-      "superseded-assistant-entry",
-      "superseded-work-entry",
-      "superseded-thread-created-entry",
-      "steer-user-entry",
-      "active-assistant-entry",
-    ]);
     const settledRows = deriveMessagesTimelineRows({
       ...common,
       latestRun: { ...common.latestRun, status: "completed", completedAt: "2026-01-01T00:00:08Z" },
@@ -3462,9 +3469,11 @@ describe("v2 run and attempt history", () => {
       toolCallVisibility: "showAll" | "zen" = "showAll",
       phase?: "commentary" | "partial_answer" | "final_answer",
       nativeSteer = false,
+      collapsedAttemptIds?: ReadonlySet<RunAttemptId>,
     ) =>
       deriveMessagesTimelineRows({
         toolCallVisibility,
+        ...(collapsedAttemptIds ? { collapsedAttemptIds } : {}),
         timelineEntries: (
           [
             {
@@ -3536,7 +3545,21 @@ describe("v2 run and attempt history", () => {
         for (const runStatus of ["running", "completed"] as const) {
           for (const visibility of ["showAll", "zen"] as const) {
             const rows = rowsFor(completedSecond, runStatus, visibility, phase);
-            expect(rows.some((row) => row.id === "old-reply-entry")).toBe(retained);
+            const expectedVisibleByDefault =
+              retained || (runStatus === "running" && visibility === "showAll");
+            expect(rows.some((row) => row.id === "old-reply-entry")).toBe(expectedVisibleByDefault);
+            expect(rows.some((row) => row.kind === "attempt-fold")).toBe(
+              !retained && runStatus === "running" && visibility === "showAll",
+            );
+            const collapsedRows = rowsFor(
+              completedSecond,
+              runStatus,
+              visibility,
+              phase,
+              false,
+              new Set([supersededAttempt.id]),
+            );
+            expect(collapsedRows.some((row) => row.id === "old-reply-entry")).toBe(retained);
             if (phase !== undefined && runStatus === "completed") {
               const nativeRows = rowsFor(completedSecond, runStatus, visibility, phase, true);
               expect(nativeRows.some((row) => row.id === "old-reply-entry")).toBe(retained);
@@ -4976,7 +4999,7 @@ describe("live subagents after their parent turn settles", () => {
       ).map(projected),
       optimisticMessages: [],
     }).map((entry) => ({ ...entry, attempt }));
-    const rows = deriveMessagesTimelineRows({
+    const expandedRows = deriveMessagesTimelineRows({
       timelineEntries: entries,
       latestRun: {
         runId,
@@ -4988,7 +5011,25 @@ describe("live subagents after their parent turn settles", () => {
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     });
-    expect(rows.map((row) => row.id)).toEqual([`attempt-fold:${attempt.id}`, "child"]);
+    expect(expandedRows.map((row) => row.id)).toEqual([
+      `attempt-fold:${attempt.id}`,
+      "command",
+      "child",
+    ]);
+    const collapsedRows = deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      latestRun: {
+        runId,
+        status: "running",
+        startedAt: DateTime.formatIso(at(0)),
+        completedAt: null,
+      },
+      collapsedAttemptIds: new Set([attempt.id]),
+      isWorking: false,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(collapsedRows.map((row) => row.id)).toEqual([`attempt-fold:${attempt.id}`, "child"]);
   });
 });
 

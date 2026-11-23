@@ -477,8 +477,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(
     () => listState.rememberedPosition?.disclosures?.workGroups ?? new Set(),
   );
-  const [expandedAttemptIds, setExpandedAttemptIds] = useState<ReadonlySet<RunAttemptId>>(
-    () => listState.rememberedPosition?.disclosures?.attempts ?? new Set(),
+  const [collapsedAttemptIds, setCollapsedAttemptIds] = useState<ReadonlySet<RunAttemptId>>(
+    () => listState.rememberedPosition?.disclosures?.collapsedAttempts ?? new Set(),
   );
   // A list that opens on a thread with find open takes the opening step below,
   // so the restore runs and releases follow once for find.
@@ -494,7 +494,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [fullscreenAppRowId, setFullscreenAppRowId] = useState<string | null>(null);
   let paintedExpandedRunIds = expandedRunIds;
   let paintedExpandedWorkGroupIds = expandedWorkGroupIds;
-  let paintedExpandedAttemptIds = expandedAttemptIds;
+  let paintedCollapsedAttemptIds = collapsedAttemptIds;
   const identityChanged = listState.identity !== listIdentityKey;
   const { rememberedPosition, workGroupViewState } = identityChanged
     ? timelineListStateFor(listIdentityKey)
@@ -514,10 +514,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
     setFullscreenAppRowId(null);
     paintedExpandedRunIds = rememberedPosition?.disclosures?.runs ?? new Set();
     paintedExpandedWorkGroupIds = rememberedPosition?.disclosures?.workGroups ?? new Set();
-    paintedExpandedAttemptIds = rememberedPosition?.disclosures?.attempts ?? new Set();
+    paintedCollapsedAttemptIds = rememberedPosition?.disclosures?.collapsedAttempts ?? new Set();
     setExpandedRunIds(paintedExpandedRunIds);
     setExpandedWorkGroupIds(paintedExpandedWorkGroupIds);
-    setExpandedAttemptIds(paintedExpandedAttemptIds);
+    setCollapsedAttemptIds(paintedCollapsedAttemptIds);
   }
   const citationThreadRef = parseScopedThreadKey(routeThreadKey);
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
@@ -628,7 +628,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   };
   const onToggleAttemptFold = (attemptId: RunAttemptId) => {
     preserveDisclosurePosition(`attempt-fold:${attemptId}`);
-    setExpandedAttemptIds((existing) => {
+    setCollapsedAttemptIds((existing) => {
       const next = new Set(existing);
       if (next.has(attemptId)) {
         next.delete(attemptId);
@@ -764,9 +764,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
     }
     const citedAttempt = citedEntry.attempt;
     if (citedAttempt?.status === "superseded") {
-      setExpandedAttemptIds((previous) =>
-        previous.has(citedAttempt.id) ? previous : new Set(previous).add(citedAttempt.id),
-      );
+      setCollapsedAttemptIds((previous) => {
+        if (!previous.has(citedAttempt.id)) return previous;
+        const next = new Set(previous);
+        next.delete(citedAttempt.id);
+        return next;
+      });
     }
   }
   const visibleExpandedRunIds =
@@ -781,15 +784,22 @@ const ConversationTimeline = memo(function ConversationTimeline({
   if (expandedFindAttemptId !== activeFindAttemptId) {
     setExpandedFindAttemptId(activeFindAttemptId);
     if (activeFindAttemptId) {
-      setExpandedAttemptIds((previous) =>
-        previous.has(activeFindAttemptId) ? previous : new Set(previous).add(activeFindAttemptId),
-      );
+      setCollapsedAttemptIds((previous) => {
+        if (!previous.has(activeFindAttemptId)) return previous;
+        const next = new Set(previous);
+        next.delete(activeFindAttemptId);
+        return next;
+      });
     }
   }
-  const visibleExpandedAttemptIds =
-    activeFindAttemptId && !paintedExpandedAttemptIds.has(activeFindAttemptId)
-      ? new Set(paintedExpandedAttemptIds).add(activeFindAttemptId)
-      : paintedExpandedAttemptIds;
+  const visibleCollapsedAttemptIds =
+    activeFindAttemptId && paintedCollapsedAttemptIds.has(activeFindAttemptId)
+      ? (() => {
+          const next = new Set(paintedCollapsedAttemptIds);
+          next.delete(activeFindAttemptId);
+          return next;
+        })()
+      : paintedCollapsedAttemptIds;
 
   const isVisiblePendingApproval = (approval: PendingApproval) =>
     !heldApprovalRequestIds?.has(approval.requestId);
@@ -813,7 +823,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     usageLimitRunId,
     runningRunId,
     expandedRunIds: visibleExpandedRunIds,
-    expandedAttemptIds: visibleExpandedAttemptIds,
+    collapsedAttemptIds: visibleCollapsedAttemptIds,
     expandedWorkGroupIds,
     ...(revealedWorkEntryId ? { revealedWorkEntryId } : {}),
     isWorking,
@@ -1086,7 +1096,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
           disclosures: {
             runs: paintedExpandedRunIds,
             workGroups: paintedExpandedWorkGroupIds,
-            attempts: paintedExpandedAttemptIds,
+            collapsedAttempts: paintedCollapsedAttemptIds,
             workGroupState: workGroupViewState,
           },
         };

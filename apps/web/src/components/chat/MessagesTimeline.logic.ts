@@ -1621,7 +1621,7 @@ export function deriveMessagesTimelineRows(
     usageLimitRunId?: RunId | null;
     runningRunId?: RunId | null;
     expandedRunIds?: ReadonlySet<RunId>;
-    expandedAttemptIds?: ReadonlySet<RunAttemptId>;
+    collapsedAttemptIds?: ReadonlySet<RunAttemptId>;
     expandedWorkGroupIds?: ReadonlySet<string>;
     revealedWorkEntryId?: string;
     isWorking: boolean;
@@ -1721,7 +1721,7 @@ export function deriveMessagesTimelineRows(
   }
   const collapsedSupersededEntryIds = new Set<string>();
   for (const fold of supersededFoldsByAnchorEntryId.values()) {
-    if (!input.expandedAttemptIds?.has(fold.attemptId)) {
+    if (input.collapsedAttemptIds?.has(fold.attemptId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedSupersededEntryIds.add(entryId);
       }
@@ -2001,7 +2001,7 @@ export function deriveMessagesTimelineRows(
         runId: supersededFold.runId,
         attemptId: supersededFold.attemptId,
         label: resolve(msg("Superseded attempt")),
-        expanded: input.expandedAttemptIds?.has(supersededFold.attemptId) ?? false,
+        expanded: !(input.collapsedAttemptIds?.has(supersededFold.attemptId) ?? false),
       });
     }
 
@@ -2584,7 +2584,7 @@ function replaceStreamingMessageRows(
     latestRun: previousRun,
     turnDiffSummaries: previousCheckpoints,
     expandedRunIds: previousExpandedRuns,
-    expandedAttemptIds: previousExpandedAttempts,
+    collapsedAttemptIds: previousCollapsedAttempts,
     expandedWorkGroupIds: previousExpandedGroups,
     pendingApprovalRequestIds: previousPendingApprovalRequestIds,
     availableRevertTurnCounts: previousAvailableRevertTurnCounts,
@@ -2595,7 +2595,7 @@ function replaceStreamingMessageRows(
     latestRun,
     turnDiffSummaries,
     expandedRunIds,
-    expandedAttemptIds,
+    collapsedAttemptIds,
     expandedWorkGroupIds,
     pendingApprovalRequestIds,
     availableRevertTurnCounts,
@@ -2607,7 +2607,7 @@ function replaceStreamingMessageRows(
     !shallow(previousContext, context) ||
     !shallow(previousRun, latestRun) ||
     !shallow(previousExpandedRuns, expandedRunIds) ||
-    !shallow(previousExpandedAttempts, expandedAttemptIds) ||
+    !shallow(previousCollapsedAttempts, collapsedAttemptIds) ||
     !shallow(previousExpandedGroups, expandedWorkGroupIds) ||
     !shallow(previousPendingApprovalRequestIds, pendingApprovalRequestIds) ||
     !shallow(previousAvailableRevertTurnCounts, availableRevertTurnCounts) ||

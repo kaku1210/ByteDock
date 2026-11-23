@@ -1528,6 +1528,58 @@ describe("MessagesTimeline citations", () => {
     );
   });
 
+  it("keeps a superseded attempt expanded by default with its interrupted marker and toggles collapse on click", async () => {
+    const runId = RunId.make("run-steered-default-open");
+    const attempt = (id: string, ordinal: number, status: "superseded" | "running") => ({
+      id: RunAttemptId.make(id),
+      runId,
+      attemptOrdinal: ordinal,
+      rootNodeId: `node-${id}` as never,
+      status,
+      completedAt: null,
+    });
+    const superseded = attempt("attempt-1", 1, "superseded");
+    const active = attempt("attempt-2", 2, "running");
+    const inAttempt = (entry: Entry, entryAttempt: typeof superseded): Entry => ({
+      ...entry,
+      attempt: entryAttempt,
+    });
+    await using _screen = await renderTimeline(
+      [
+        inAttempt(message("Build it", { runId }, "question"), superseded),
+        inAttempt(
+          message("partial interrupted answer", { role: "assistant", runId }, "superseded-reply"),
+          superseded,
+        ),
+        inAttempt(message("Change direction", { runId }, "steer"), active),
+        inAttempt(message("Current response", { role: "assistant", runId }, "current"), active),
+      ],
+      {
+        latestRun: { runId, status: "running", startedAt: CREATED_AT, completedAt: null },
+      },
+    );
+    const toggle = document.querySelector<HTMLButtonElement>(
+      `[data-superseded-attempt-id="${superseded.id}"]`,
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle?.textContent).toContain("Superseded attempt");
+    expect(toggle?.textContent).toContain("Cut off by a steer");
+    expect(document.body.textContent).toContain("partial interrupted answer");
+
+    toggle?.click();
+    await vi.waitFor(() => {
+      expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+      expect(document.body.textContent).not.toContain("partial interrupted answer");
+    });
+
+    toggle?.click();
+    await vi.waitFor(() => {
+      expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+      expect(document.body.textContent).toContain("partial interrupted answer");
+    });
+  });
+
   it("waits for cited history to load before giving up on a response outside the window", async () => {
     using toast = vi.spyOn(toastManager, "add");
     const props = baseProps();

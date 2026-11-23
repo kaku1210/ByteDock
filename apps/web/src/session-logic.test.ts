@@ -1568,7 +1568,31 @@ describe("HTML renders in the timeline", () => {
     ).map((entry) =>
       entry.kind === "message" && entry.message.role === "user" ? entry : { ...entry, attempt },
     );
-    expect(rowsFor(entries, true)).toEqual(["message", "turn-fold", "attempt-fold", "html-render"]);
+    expect(rowsFor(entries, true)).toEqual([
+      "message",
+      "turn-fold",
+      "attempt-fold",
+      "work",
+      "html-render",
+      "work",
+      "message",
+    ]);
+    expect(
+      deriveMessagesTimelineRows({
+        timelineEntries: entries,
+        latestRun: {
+          runId,
+          status: "completed",
+          startedAt: DateTime.formatIso(at(0)),
+          completedAt: DateTime.formatIso(at(4)),
+        },
+        expandedRunIds: new Set([runId]),
+        collapsedAttemptIds: new Set([attempt.id]),
+        isWorking: false,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      }).map((row) => row.kind),
+    ).toEqual(["message", "turn-fold", "attempt-fold", "html-render"]);
   });
 
   it.each([
