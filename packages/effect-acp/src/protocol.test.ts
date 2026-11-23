@@ -1,10 +1,12 @@
 import * as Path from "effect/Path";
 import * as AcpError from "./errors.ts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
@@ -1414,6 +1416,51 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         );
         assert.strictEqual(failure, error);
         assert.equal(yield* Queue.size(output), 0);
+      }),
+  );
+
+  it.effect(
+    "closing the protocol scope interrupts a blocked onTermination callback from an outgoing writer failure",
+    () =>
+      Effect.gen(function* () {
+        const input = yield* Queue.unbounded<Uint8Array, Cause.Done<void>>();
+        const terminationStarted = yield* Deferred.make<AcpError.AcpError>();
+        const protocolScope = yield* Scope.make();
+        const stdio = Stdio.make({
+          args: Effect.succeed([]),
+          stdin: Stream.fromQueue(input),
+          stdout: () =>
+            Sink.forEach(() =>
+              Effect.fail(
+                PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "Stdio",
+                  method: "stdout",
+                  description: "EPIPE: broken pipe while writing to child stdin",
+                }),
+              ),
+            ),
+          stderr: () => Sink.drain,
+        });
+        const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
+          stdio,
+          serverRequestMethods: new Set(),
+          onTermination: (error) =>
+            Deferred.succeed(terminationStarted, error).pipe(Effect.andThen(Effect.never)),
+        }).pipe(Effect.provideService(Scope.Scope, protocolScope));
+
+        yield* transport.notify("session/cancel", { sessionId: "session-1" });
+        const error = yield* Deferred.await(terminationStarted);
+        assert.equal(error._tag, "AcpTransportError");
+
+        const closeFiber = yield* Scope.close(protocolScope, Exit.void).pipe(
+          Effect.as(true),
+          Effect.timeoutOption("2 seconds"),
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("2 seconds");
+        const closed = yield* Fiber.join(closeFiber);
+        assert.equal(closed._tag, "Some");
       }),
   );
 });

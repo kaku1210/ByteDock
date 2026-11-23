@@ -947,41 +947,64 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
               : "Failed to write an outgoing ACP message",
             cause,
           });
-          return failOutgoingWrites(error).pipe(
-            Effect.andThen(
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : handleTermination(() => Effect.succeed(error)),
-            ),
-          );
+          return failOutgoingWrites(error);
         },
         onSuccess: () =>
           Ref.get(outgoingWriterState).pipe(
             Effect.flatMap((state) => {
-              const handled = state.intentionalEnd
-                ? completeOutgoingWrites()
-                : (() => {
-                    const error = new AcpError.AcpTransportError({
-                      detail: "ACP output writer ended before the protocol closed",
-                      cause: "Output writer ended",
-                    });
-                    return failOutgoingWrites(error).pipe(
-                      Effect.andThen(handleTermination(() => Effect.succeed(error))),
-                    );
-                  })();
-              return handled.pipe(
-                Effect.andThen(
-                  options.testHooks?.onOutgoingWriterExit === undefined
-                    ? Effect.void
-                    : options.testHooks.onOutgoingWriterExit({
-                        intentionalEnd: state.intentionalEnd,
-                      }),
-                ),
-              );
+              if (state.intentionalEnd) {
+                return completeOutgoingWrites();
+              }
+              const error = new AcpError.AcpTransportError({
+                detail: "ACP output writer ended before the protocol closed",
+                cause: "Output writer ended",
+              });
+              return failOutgoingWrites(error);
             }),
           ),
       }),
     ),
+    // Run termination callbacks outside uninterruptible onExit so closing the
+    // protocol scope can interrupt a blocked onTermination handler instead of deadlocking.
+    Effect.matchCauseEffect({
+      onFailure: (cause) =>
+        Ref.get(outgoingWriterState).pipe(
+          Effect.flatMap((state) => {
+            const error =
+              state.terminalError ??
+              new AcpError.AcpTransportError({
+                detail: "Failed to write an outgoing ACP message",
+                cause,
+              });
+            return handleTermination(() => Effect.succeed(error));
+          }),
+        ),
+      onSuccess: () =>
+        Ref.get(outgoingWriterState).pipe(
+          Effect.flatMap((state) => {
+            const termination = state.intentionalEnd
+              ? Effect.void
+              : handleTermination(() =>
+                  Effect.succeed(
+                    state.terminalError ??
+                      new AcpError.AcpTransportError({
+                        detail: "ACP output writer ended before the protocol closed",
+                        cause: "Output writer ended",
+                      }),
+                  ),
+                );
+            return termination.pipe(
+              Effect.andThen(
+                options.testHooks?.onOutgoingWriterExit === undefined
+                  ? Effect.void
+                  : options.testHooks.onOutgoingWriterExit({
+                      intentionalEnd: state.intentionalEnd,
+                    }),
+              ),
+            );
+          }),
+        ),
+    }),
     Effect.forkScoped,
   );
 

@@ -7250,6 +7250,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeSessionId?: string,
         ) {
           if (runtimeScope !== undefined) {
+            yield* runtimeCallbackPermit.withPermit(advanceRuntimeCallbackGeneration);
             yield* Scope.close(runtimeScope, Exit.void);
           }
           runtimeScope = yield* Scope.make();
@@ -7371,6 +7372,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return yield* Effect.failCause(replacementExit.cause);
           }
 
+          let committedReplacement = false;
           yield* runtimeCallbackPermit
             .withPermit(
               Effect.uninterruptible(
@@ -7401,6 +7403,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
                   openAgentRequests = replacementAgentRequests;
+                  committedReplacement = true;
                   yield* Ref.set(runtimeCallbackGeneration, replacementGeneration);
                   prepareTerminalEnvironment(
                     yield* readMcpContext(threadId),
@@ -7430,31 +7433,31 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     );
                   }
                   yield* cancelPendingRuntimeRequests();
-                  if (previousScope !== undefined) {
-                    yield* Scope.close(previousScope, Exit.void).pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logError("failed to close replaced ACP runtime scope", {
-                          driver,
-                          cause,
-                        }),
-                      ),
-                    );
-                  }
                 }),
               ),
             )
             .pipe(
-              Effect.onExit((exit) =>
-                Exit.isFailure(exit)
-                  ? Ref.get(candidateLifecycle).pipe(
-                      Effect.flatMap((lifecycle) =>
-                        lifecycle._tag === "Committed"
-                          ? Effect.void
-                          : Scope.close(replacementScope, Exit.void).pipe(Effect.ignore),
-                      ),
-                    )
-                  : Effect.void,
-              ),
+              Effect.onExit((exit) => {
+                if (committedReplacement) {
+                  // Close the replaced scope after releasing runtimeCallbackPermit so stale
+                  // teardown callbacks (for example, Windows tree-kill before transport close)
+                  // can acquire the permit and exit as a no-op instead of deadlocking.
+                  return previousScope === undefined
+                    ? Effect.void
+                    : Scope.close(previousScope, Exit.void).pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logError("failed to close replaced ACP runtime scope", {
+                            driver,
+                            cause,
+                          }),
+                        ),
+                      );
+                }
+                if (Exit.isFailure(exit)) {
+                  return Scope.close(replacementScope, Exit.void).pipe(Effect.ignore);
+                }
+                return Effect.void;
+              }),
             );
           return replacementExit.value.started;
         });

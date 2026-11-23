@@ -11019,6 +11019,260 @@ describe("AcpAdapterV2", () => {
         );
       }).pipe(Effect.provide(layerTest)),
   );
+
+  it.live(
+    "replaces the ACP runtime after stale resume fallback without deadlocking when closing the previous runtime invokes onTermination",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* bundledMockAgentPath;
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const instanceId = ProviderInstanceId.make("acp-test-replacement-on-termination-deadlock");
+        const baseMakeRuntime = makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          protocolEvents,
+          environment: (runtimeOrdinal) =>
+            runtimeOrdinal === 1 ? { T3_ACP_FAIL_LOAD_SESSION: "1" } : {},
+          wrapRuntime: (runtime, ordinal) => ({
+            ...runtime,
+            start: () =>
+              runtime.start().pipe(
+                Effect.map((started) => ({
+                  ...started,
+                  sessionId: `mock-replacement-session-${ordinal}`,
+                })),
+              ),
+          }),
+        });
+        let runtimeCount = 0;
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: (runtimeInput) =>
+              Effect.gen(function* () {
+                runtimeCount += 1;
+                const runtime = yield* baseMakeRuntime(runtimeInput);
+                // Simulate a scope finalizer (such as Windows Antigravity tree kill) whose
+                // uninterruptible teardown triggers onTermination before the runtime stops.
+                yield* Effect.addFinalizer(() =>
+                  runtimeInput
+                    .onTermination(
+                      new EffectAcpErrors.AcpTransportError({
+                        detail: "Replaced runtime closed during teardown",
+                        cause: undefined,
+                      }),
+                    )
+                    .pipe(Effect.ignore),
+                );
+                return runtime;
+              }),
+          },
+          selfInvocation,
+        });
+        const threadId = ThreadId.make("thread-acp-replacement-on-termination-deadlock");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(
+            "provider-session-acp-replacement-on-termination-deadlock",
+          ),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: "stale-session",
+        });
+        const initialThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const staleThread: OrchestrationV2ProviderThread = {
+          ...initialThread,
+          nativeMetadata: null,
+          nativeThreadRef: {
+            driver: ACP_TEST_DRIVER,
+            nativeId: "stale-session",
+            strength: "strong",
+          },
+        };
+        const resumeError = yield* runtime
+          .resumeThread({ providerThread: staleThread, modelSelection, runtimePolicy })
+          .pipe(Effect.flip);
+        assert.equal(resumeError._tag, "ProviderAdapterResumeThreadError");
+
+        const rebuilt = yield* runtime
+          .ensureThread({
+            threadId,
+            modelSelection,
+            runtimePolicy,
+            existingProviderThread: staleThread,
+            forceNewNativeThread: true,
+          })
+          .pipe(Effect.timeoutOption("5 seconds"));
+        assert.equal(rebuilt._tag, "Some");
+        if (rebuilt._tag !== "Some") return;
+        assert.notEqual(rebuilt.value.nativeThreadRef?.nativeId, "stale-session");
+        assert.notEqual(
+          rebuilt.value.nativeThreadRef?.nativeId,
+          initialThread.nativeThreadRef?.nativeId,
+        );
+        assert.equal(runtimeCount, 3);
+
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread: rebuilt.value,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+            ordinal: 1,
+          }),
+        );
+        const terminal = Array.from(
+          yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(terminal?.status, "completed");
+        assert.equal(runtimeCount, 3);
+        const methods = yield* pollProtocolMethods(protocolEvents);
+        assert.equal(methods.filter((method) => method === "session/resume").length, 1);
+        assert.equal(methods.filter((method) => method === "session/new").length, 2);
+      }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live(
+    "rolls back an ACP thread without deadlocking when closing the replaced runtime invokes onTermination",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* bundledMockAgentPath;
+        const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+        const instanceId = ProviderInstanceId.make("acp-test-rollback-on-termination-deadlock");
+        const baseMakeRuntime = makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          protocolEvents,
+          wrapRuntime: (runtime, ordinal) => ({
+            ...runtime,
+            start: () =>
+              runtime.start().pipe(
+                Effect.map((started) => ({
+                  ...started,
+                  sessionId: `mock-rollback-session-${ordinal}`,
+                })),
+              ),
+          }),
+        });
+        let runtimeCount = 0;
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: (runtimeInput) =>
+              Effect.gen(function* () {
+                runtimeCount += 1;
+                const runtime = yield* baseMakeRuntime(runtimeInput);
+                yield* Effect.addFinalizer(() =>
+                  runtimeInput
+                    .onTermination(
+                      new EffectAcpErrors.AcpTransportError({
+                        detail: "Rolled-back runtime closed during teardown",
+                        cause: undefined,
+                      }),
+                    )
+                    .pipe(Effect.ignore),
+                );
+                return runtime;
+              }),
+          },
+          selfInvocation,
+        });
+        const threadId = ThreadId.make("thread-acp-rollback-on-termination-deadlock");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(
+            "provider-session-acp-rollback-on-termination-deadlock",
+          ),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+            ordinal: 1,
+          }),
+        );
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runDrain,
+        );
+
+        const rolledBack = yield* runtime
+          .rollbackThread({
+            providerThread,
+            providerThreadTurns: [],
+            target: {
+              type: "thread_start",
+              checkpointId: CheckpointId.make("checkpoint-acp-rollback-on-termination"),
+              appRunOrdinal: 0,
+            },
+          })
+          .pipe(Effect.timeoutOption("5 seconds"));
+        assert.equal(rolledBack._tag, "Some");
+        if (rolledBack._tag !== "Some") return;
+        assert.notEqual(
+          rolledBack.value.providerThread.nativeThreadRef?.nativeId,
+          providerThread.nativeThreadRef?.nativeId,
+        );
+        assert.equal(runtimeCount, 2);
+
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread: rolledBack.value.providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+            ordinal: 2,
+          }),
+        );
+        const terminal = Array.from(
+          yield* runtime.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(terminal?.status, "completed");
+        assert.equal(runtimeCount, 2);
+      }).pipe(Effect.provide(layerTest)),
+  );
 });
 
 describe("acpPostSettleContinuationOfferEvidence", () => {

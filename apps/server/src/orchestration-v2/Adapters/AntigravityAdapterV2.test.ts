@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   ChatFileAttachment,
+  CheckpointId,
   MessageId,
   NodeId,
   ProjectId,
@@ -1445,6 +1446,155 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           assert.notInclude(append, "systemPrompt");
           assert.include(sent, "<pull_request_linking>");
         }
+      }).pipe(Effect.provide(layerSession)),
+  );
+});
+
+describe("AntigravityAdapterV2 Windows runtime replacement", () => {
+  it.live(
+    "rebuilds after stale session resume failure and rolls back cleanly under Windows tree-kill teardown",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const crypto = yield* SecureRandom.SecureRandom;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-antigravity-win-replace-",
+        });
+        const instanceId = ProviderInstanceId.make("antigravity-win-replace-test");
+        let spawnCount = 0;
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) => {
+            spawnCount += 1;
+            const currentSpawn = spawnCount;
+            return makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: {
+                  T3_ACP_ANTIGRAVITY: "1",
+                  ...(currentSpawn === 1 ? { T3_ACP_FAIL_RESUME_SESSION: "1" } : {}),
+                },
+              },
+            }).pipe(
+              Effect.provideService(SecureRandom.SecureRandom, crypto),
+              Effect.provideService(HostProcess.Platform, "win32"),
+            );
+          },
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.undefined,
+        });
+        const threadId = ThreadId.make("thread-antigravity-win-replace");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-win-replace"),
+          modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: "stale-session",
+        });
+        const initialThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const staleThread = {
+          ...initialThread,
+          nativeMetadata: null,
+          nativeThreadRef: {
+            driver: initialThread.driver,
+            nativeId: "stale-session",
+            strength: "strong" as const,
+          },
+        };
+        const resumeError = yield* session
+          .resumeThread({ providerThread: staleThread, modelSelection, runtimePolicy })
+          .pipe(Effect.flip);
+        assert.equal(resumeError._tag, "ProviderAdapterResumeThreadError");
+
+        const rebuilt = yield* session
+          .ensureThread({
+            threadId,
+            modelSelection,
+            runtimePolicy,
+            existingProviderThread: staleThread,
+            forceNewNativeThread: true,
+          })
+          .pipe(Effect.timeoutOption("15 seconds"));
+        assert.equal(rebuilt._tag, "Some");
+        if (rebuilt._tag !== "Some") return;
+        assert.notEqual(rebuilt.value.nativeThreadRef?.nativeId, "stale-session");
+        assert.equal(spawnCount, 3);
+
+        yield* session.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread: rebuilt.value,
+            instanceId,
+            runtimePolicy,
+            modelSelection,
+            now: yield* DateTime.now,
+            ordinal: 1,
+          }),
+        );
+        const firstTerminal = Array.from(
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(firstTerminal?.status, "completed");
+        assert.equal(spawnCount, 3);
+
+        const rolledBack = yield* session
+          .rollbackThread({
+            providerThread: rebuilt.value,
+            providerThreadTurns: [],
+            target: {
+              type: "thread_start",
+              checkpointId: CheckpointId.make("checkpoint-antigravity-win-replace"),
+              appRunOrdinal: 0,
+            },
+          })
+          .pipe(Effect.timeoutOption("15 seconds"));
+        assert.equal(rolledBack._tag, "Some");
+        if (rolledBack._tag !== "Some") return;
+        assert.isString(rolledBack.value.providerThread.nativeThreadRef?.nativeId);
+        assert.equal(spawnCount, 4);
+
+        yield* session.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread: rolledBack.value.providerThread,
+            instanceId,
+            runtimePolicy,
+            modelSelection,
+            now: yield* DateTime.now,
+            ordinal: 2,
+          }),
+        );
+        const secondTerminal = Array.from(
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(secondTerminal?.status, "completed");
+        assert.equal(spawnCount, 4);
       }).pipe(Effect.provide(layerSession)),
   );
 });
