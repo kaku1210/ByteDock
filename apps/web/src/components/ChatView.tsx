@@ -57,7 +57,6 @@ import { pendingMergeBacksBannerItem } from "./chat/ComposerPendingMergeBacks";
 import { armFreshSession, disarmFreshSession, useFreshSessionArmed } from "./chat/freshSessionArms";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
-import { SharedWorktreeCoordinationBanner } from "./chat/SharedWorktreeCoordinationBanner";
 import { isThreadCoordinatorControlVisible } from "./chat/coordinatorModeControl.logic";
 import { WorktreeApprovalBanner } from "./chat/WorktreeApprovalBanner";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
@@ -3769,7 +3768,6 @@ export default function ChatView(props: ChatViewProps) {
                   >
                     <ChildThreadApprovals threadRef={activeThreadRef} />
                     <WorktreeApprovalBanner threadRef={activeThreadRef} />
-                    <SharedWorktreeCoordinationBanner threadRef={activeThreadRef} />
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
                         <ComposerSurface.Host

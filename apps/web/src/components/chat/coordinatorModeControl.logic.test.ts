@@ -14,9 +14,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   coordinatorDelegationStrategyLabel,
+  coordinatorDelegationStrategyShortLabel,
   coordinatorTierRoleLabel,
+  coordinatorTierShortRoleLabel,
+  coordinatorTierShortSourceLabel,
   coordinatorTierSourceLabel,
   formatCoordinatorModelSelectionLabel,
+  formatCoordinatorModelShortName,
   isThreadCoordinatorControlVisible,
   resolveCoordinatorControlState,
 } from "./coordinatorModeControl.logic";
@@ -243,12 +247,27 @@ describe("resolveCoordinatorControlState", () => {
     expect(state.enabled).toBe(false);
     expect(state.hasUnavailableTier).toBe(true);
     expect(formatCoordinatorModelSelectionLabel(null, [])).toBe("Unavailable");
+    expect(formatCoordinatorModelShortName(null, [])).toBe("Unavailable");
+    expect(
+      formatCoordinatorModelShortName(
+        createModelSelection(ProviderInstanceId.make("primary"), "vendor-balanced-standard"),
+        providers,
+      ),
+    ).toBe("Vendor Balanced Standard");
     expect(coordinatorTierRoleLabel("L0")).toBe("L0 Coordinator");
     expect(coordinatorTierRoleLabel("L1")).toBe("L1 Task Lead");
     expect(coordinatorTierRoleLabel("L2")).toBe("L2 Worker");
+    expect(coordinatorTierShortRoleLabel("L0")).toBe("Plan & coordinate");
+    expect(coordinatorTierShortRoleLabel("L1")).toBe("Module lead");
+    expect(coordinatorTierShortRoleLabel("L2")).toBe("Light execution");
     expect(coordinatorTierSourceLabel("template_configured")).toBe("Template override");
     expect(coordinatorTierSourceLabel("fallback_available")).toBe("Fallback");
+    expect(coordinatorTierShortSourceLabel("root_thread")).toBe("Follows current");
+    expect(coordinatorTierShortSourceLabel("dynamic_available")).toBe("Auto");
+    expect(coordinatorTierShortSourceLabel("template_configured")).toBe("Pinned");
     expect(coordinatorDelegationStrategyLabel("tiered")).toContain("L0 / L1 / L2");
     expect(coordinatorDelegationStrategyLabel("inherit_root")).toContain("L0");
+    expect(coordinatorDelegationStrategyShortLabel("tiered")).toBe("Tiered models");
+    expect(coordinatorDelegationStrategyShortLabel("inherit_root")).toBe("Inherit main model");
   });
 });

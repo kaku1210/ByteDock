@@ -109,6 +109,21 @@ export function formatCoordinatorModelSelectionLabel(
   return `${providerLabel} · ${modelLabel}`;
 }
 
+export function formatCoordinatorModelShortName(
+  selection: ModelSelection | null,
+  providers: ReadonlyArray<ServerProvider>,
+): string {
+  if (selection === null) {
+    return "Unavailable";
+  }
+  const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+  const model = provider?.models.find(
+    (candidate) =>
+      candidate.slug === selection.model || candidate.aliases?.includes(selection.model),
+  );
+  return model?.name ?? selection.model;
+}
+
 export function coordinatorTierRoleLabel(tier: CoordinatorTier): string {
   switch (tier) {
     case "L0":
@@ -117,6 +132,17 @@ export function coordinatorTierRoleLabel(tier: CoordinatorTier): string {
       return "L1 Task Lead";
     case "L2":
       return "L2 Worker";
+  }
+}
+
+export function coordinatorTierShortRoleLabel(tier: CoordinatorTier): string {
+  switch (tier) {
+    case "L0":
+      return "Plan & coordinate";
+    case "L1":
+      return "Module lead";
+    case "L2":
+      return "Light execution";
   }
 }
 
@@ -135,6 +161,21 @@ export function coordinatorTierSourceLabel(source: CoordinatorTierResolutionSour
   }
 }
 
+export function coordinatorTierShortSourceLabel(source: CoordinatorTierResolutionSource): string {
+  switch (source) {
+    case "template_configured":
+      return "Pinned";
+    case "root_thread":
+      return "Follows current";
+    case "dynamic_available":
+      return "Auto";
+    case "fallback_available":
+      return "Fallback";
+    case "unavailable":
+      return "Unavailable";
+  }
+}
+
 export function coordinatorDelegationStrategyLabel(
   strategy: CoordinatorDelegationStrategy,
 ): string {
@@ -143,5 +184,16 @@ export function coordinatorDelegationStrategyLabel(
       return "Tiered models (L0 / L1 / L2)";
     case "inherit_root":
       return "Inherit L0 model";
+  }
+}
+
+export function coordinatorDelegationStrategyShortLabel(
+  strategy: CoordinatorDelegationStrategy,
+): string {
+  switch (strategy) {
+    case "tiered":
+      return "Tiered models";
+    case "inherit_root":
+      return "Inherit main model";
   }
 }

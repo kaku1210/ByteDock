@@ -292,6 +292,7 @@ import {
 import { ComposerControlsBar } from "./ComposerControlsBar";
 import { ComposerControl } from "./ComposerControl";
 import { CoordinatorModeControl } from "./CoordinatorModeControl";
+import { SharedWorktreeCoordinationBanner } from "./SharedWorktreeCoordinationBanner";
 import { Kbd } from "../ui/kbd";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { usePromptSuggestion } from "./usePromptSuggestion";
@@ -3479,6 +3480,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />
+          <SharedWorktreeCoordinationBanner
+            threadRef={routeKind === "server" ? routeThreadRef : null}
+          />
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">

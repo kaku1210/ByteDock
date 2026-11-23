@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
+import { UiLanguageContext } from "../../i18n/useUiLanguage";
 import "../../index.css";
 
 import { SharedWorktreeCoordinationBannerView } from "./SharedWorktreeCoordinationBanner";
@@ -20,6 +21,7 @@ function makeSnapshot(
 ): SharedWorktreeCoordinationSnapshot {
   const threadA = ThreadId.make("thread:l1-a");
   const threadB = ThreadId.make("thread:l1-b");
+  const threadIdle = ThreadId.make("thread:idle-1");
   const resA = SharedWorktreeReservationId.make("swr:a");
   const resB = SharedWorktreeReservationId.make("swr:b");
   return {
@@ -41,7 +43,7 @@ function makeSnapshot(
       updatedAt: IsoDateTime.make("2026-06-20T00:00:00.000Z"),
       updatedBy: "system",
     },
-    sharedThreadCount: 3,
+    sharedThreadCount: 4,
     threads: [
       {
         threadId: threadA,
@@ -67,9 +69,42 @@ function makeSnapshot(
             oldNormalizedPath: null,
             operation: "update",
             runId: RunId.make("run:a"),
-            turnItemId: TurnItemId.make("item:fc-a"),
+            turnItemId: TurnItemId.make("item:fc-a-1"),
             source: "turn_item",
             updatedAt: IsoDateTime.make("2026-06-20T00:00:02.000Z"),
+          },
+          {
+            path: "docs/deploy.md",
+            normalizedPath: "docs/deploy.md",
+            oldPath: null,
+            oldNormalizedPath: null,
+            operation: "update",
+            runId: RunId.make("run:a"),
+            turnItemId: TurnItemId.make("item:fc-a-2"),
+            source: "turn_item",
+            updatedAt: IsoDateTime.make("2026-06-20T00:00:03.000Z"),
+          },
+          {
+            path: "docs/deploy.md",
+            normalizedPath: "docs/deploy.md",
+            oldPath: null,
+            oldNormalizedPath: null,
+            operation: "update",
+            runId: RunId.make("run:a"),
+            turnItemId: TurnItemId.make("item:fc-a-3"),
+            source: "turn_item",
+            updatedAt: IsoDateTime.make("2026-06-20T00:00:04.000Z"),
+          },
+          {
+            path: "docs/deploy.md",
+            normalizedPath: "docs/deploy.md",
+            oldPath: null,
+            oldNormalizedPath: null,
+            operation: "update",
+            runId: RunId.make("run:a"),
+            turnItemId: TurnItemId.make("item:fc-a-4"),
+            source: "turn_item",
+            updatedAt: IsoDateTime.make("2026-06-20T00:00:05.000Z"),
           },
         ],
         activeReservations: [
@@ -102,6 +137,17 @@ function makeSnapshot(
             declaredAt: IsoDateTime.make("2026-06-20T00:00:01.000Z"),
           },
         ],
+        confirmedWritePaths: [],
+        activeReservations: [],
+      },
+      {
+        threadId: threadIdle,
+        title: "Idle History Thread",
+        depth: 0,
+        activeRunId: null,
+        status: "idle",
+        inFamily: false,
+        plannedPaths: [],
         confirmedWritePaths: [],
         activeReservations: [],
       },
@@ -176,7 +222,7 @@ function makeSnapshot(
 }
 
 describe("SharedWorktreeCoordinationBannerView", () => {
-  it("renders three-layer attribution, overlap alerts, observed_unverified edits, and shell coverage disclosure", async () => {
+  it("defaults to a compact single-line strip and expands to show deduplicated files, collapsed idle threads, and restore safety", async () => {
     const onSetSerializationMode = vi.fn(async () => null);
     const snapshot = makeSnapshot();
 
@@ -189,35 +235,47 @@ describe("SharedWorktreeCoordinationBannerView", () => {
     try {
       const banner = page.getByTestId("shared-worktree-coordination-banner");
       await expect.element(banner).toBeVisible();
-      await expect
-        .element(page.getByTestId("shared-worktree-status-badge"))
-        .toHaveTextContent("Blocking overlap");
-      await expect
-        .element(page.getByTestId("shared-worktree-count-planned"))
-        .toHaveTextContent("Planned: 2");
-      await expect
-        .element(page.getByTestId("shared-worktree-count-confirmed"))
-        .toHaveTextContent("Confirmed writes: 1");
-      await expect
-        .element(page.getByTestId("shared-worktree-count-observed"))
-        .toHaveTextContent("Observed (unverified): 1");
+      await expect.element(banner).toHaveAttribute("data-expanded", "false");
+      const summaryText = page.getByTestId("shared-worktree-summary").element().textContent ?? "";
+      expect(summaryText).toContain("2 active threads conflict on");
+      expect(summaryText).toContain("src/shared.ts");
+      expect(document.querySelector('[data-testid="shared-worktree-scroll-body"]')).toBeNull();
+
+      // Expand details
+      await userEvent.click(page.getByTestId("shared-worktree-expand-toggle"));
+      await expect.element(banner).toHaveAttribute("data-expanded", "true");
 
       const overlapText = page.getByTestId("shared-worktree-overlaps").element().textContent ?? "";
       expect(overlapText).toContain("src/shared.ts");
       expect(overlapText).toContain("Subtask A");
       expect(overlapText).toContain("Subtask B");
 
+      // Only the 2 changed threads are rendered; the idle unchanged thread is collapsed into footer count
+      const threadRows = Array.from(
+        document.querySelectorAll('[data-testid="shared-worktree-thread-row"]'),
+      );
+      expect(threadRows).toHaveLength(2);
+      const threadAText = threadRows[0]?.textContent ?? "";
+      expect(threadAText).toContain("Subtask A");
+      expect(threadAText).toContain("docs/deploy.md");
+      expect(threadAText).toContain("×3");
+
+      await expect
+        .element(page.getByTestId("shared-worktree-unchanged-count"))
+        .toHaveTextContent("And 2 unchanged threads");
+
       const observedText =
         page.getByTestId("shared-worktree-observed-unverified").element().textContent ?? "";
       expect(observedText).toContain("README.local.md");
-      expect(observedText).toContain("Not attributed to any subtask");
 
-      const coverageText =
-        page.getByTestId("shared-worktree-shell-coverage").element().textContent ?? "";
-      expect(coverageText).toContain("git worktree add");
-      const restoreText =
-        page.getByTestId("shared-worktree-restore-safety").element().textContent ?? "";
-      expect(restoreText).toContain("Shared checkout restore safety active");
+      await page.getByTestId("shared-worktree-shell-coverage").hover();
+      const coverageTooltip = page.getByTestId("shared-worktree-shell-coverage-tooltip");
+      await expect.element(coverageTooltip).toBeVisible();
+      expect(coverageTooltip.element().textContent ?? "").toContain("git worktree add");
+
+      await expect
+        .element(page.getByTestId("shared-worktree-restore-safety"))
+        .toHaveTextContent("Restore safety active");
     } finally {
       await view.unmount();
     }
@@ -272,11 +330,69 @@ describe("SharedWorktreeCoordinationBannerView", () => {
     }
   });
 
-  it("stays hidden in default ChatView mode when no coordination activity exists", async () => {
-    const quiet = makeSnapshot({
-      sharedThreadCount: 1,
-      overlaps: [],
-      observedUnverifiedPaths: [],
+  it("stays hidden when no active conflict exists, including historical idle-only overlaps", async () => {
+    const idleA = ThreadId.make("thread:hist-a");
+    const idleB = ThreadId.make("thread:hist-b");
+    const historicalOnly = makeSnapshot({
+      sharedThreadCount: 2,
+      threads: [
+        {
+          threadId: idleA,
+          title: "Old Thread A",
+          depth: 0,
+          activeRunId: null,
+          status: "idle",
+          inFamily: false,
+          plannedPaths: [],
+          confirmedWritePaths: [],
+          activeReservations: [],
+        },
+        {
+          threadId: idleB,
+          title: "Old Thread B",
+          depth: 0,
+          activeRunId: null,
+          status: "idle",
+          inFamily: false,
+          plannedPaths: [],
+          confirmedWritePaths: [],
+          activeReservations: [],
+        },
+      ],
+      overlaps: [
+        {
+          normalizedPath: ".gitignore",
+          kind: "exact",
+          severity: "warning",
+          participants: [
+            {
+              threadId: idleA,
+              threadTitle: "Old Thread A",
+              runId: null,
+              layers: ["confirmed_write"],
+              rawPaths: [".gitignore"],
+            },
+            {
+              threadId: idleB,
+              threadTitle: "Old Thread B",
+              runId: null,
+              layers: ["confirmed_write"],
+              rawPaths: [".gitignore"],
+            },
+          ],
+          recommendedAction: "Historical overlap",
+        },
+      ],
+      observedUnverifiedPaths: [
+        {
+          path: "README.local.md",
+          normalizedPath: "README.local.md",
+          attribution: "observed_unverified",
+          reason: "external_or_unattributed",
+          insertions: 1,
+          deletions: 0,
+        },
+      ],
       activeReservations: [],
       waitingReservations: [],
       activeSerializedRun: null,
@@ -285,7 +401,7 @@ describe("SharedWorktreeCoordinationBannerView", () => {
 
     const view = await render(
       <SharedWorktreeCoordinationBannerView
-        snapshot={quiet}
+        snapshot={historicalOnly}
         onSetSerializationMode={vi.fn(async () => null)}
       />,
     );
@@ -293,6 +409,88 @@ describe("SharedWorktreeCoordinationBannerView", () => {
       expect(
         document.querySelector('[data-testid="shared-worktree-coordination-banner"]'),
       ).toBeNull();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("caps expanded body height and enables scrolling when many changed threads are listed", async () => {
+    const manyChangedThreads = Array.from({ length: 12 }, (_, index) => ({
+      threadId: ThreadId.make(`thread:many-${index}`),
+      title: `Shared thread ${index + 1}`,
+      depth: index === 0 ? 0 : 1,
+      activeRunId: RunId.make(`run:many-${index}`),
+      status: "running" as const,
+      inFamily: true,
+      plannedPaths: [],
+      confirmedWritePaths: [
+        {
+          path: `src/module-${index}.ts`,
+          normalizedPath: `src/module-${index}.ts`,
+          oldPath: null,
+          oldNormalizedPath: null,
+          operation: "update" as const,
+          runId: RunId.make(`run:many-${index}`),
+          turnItemId: TurnItemId.make(`item:many-${index}`),
+          source: "turn_item" as const,
+          updatedAt: IsoDateTime.make("2026-06-20T00:00:02.000Z"),
+        },
+      ],
+      activeReservations: [],
+    }));
+    const snapshot = makeSnapshot({
+      sharedThreadCount: manyChangedThreads.length,
+      threads: manyChangedThreads,
+    });
+
+    const view = await render(
+      <SharedWorktreeCoordinationBannerView
+        snapshot={snapshot}
+        onSetSerializationMode={vi.fn(async () => null)}
+      />,
+    );
+    try {
+      await userEvent.click(page.getByTestId("shared-worktree-expand-toggle"));
+      const scrollBody = page.getByTestId("shared-worktree-scroll-body").element();
+      expect(getComputedStyle(scrollBody).overflowY).toBe("auto");
+      expect(scrollBody.scrollHeight).toBeGreaterThan(scrollBody.clientHeight);
+      expect(scrollBody.getBoundingClientRect().height).toBeLessThanOrEqual(300);
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it("renders concise Chinese copy in zh-CN mode", async () => {
+    const view = await render(
+      <UiLanguageContext.Provider value="zh-CN">
+        <SharedWorktreeCoordinationBannerView
+          snapshot={makeSnapshot()}
+          onSetSerializationMode={vi.fn(async () => null)}
+        />
+      </UiLanguageContext.Provider>,
+    );
+    try {
+      const collapsedSummary =
+        page.getByTestId("shared-worktree-summary").element().textContent ?? "";
+      expect(collapsedSummary).toContain("2 个活跃会话冲突");
+      await expect
+        .element(page.getByTestId("shared-worktree-serialize-toggle"))
+        .toHaveTextContent("排队写入");
+      await expect
+        .element(page.getByTestId("shared-worktree-expand-toggle"))
+        .toHaveTextContent("详情");
+
+      await userEvent.click(page.getByTestId("shared-worktree-expand-toggle"));
+      await expect
+        .element(page.getByTestId("shared-worktree-unchanged-count"))
+        .toHaveTextContent("另有 2 个无改动会话");
+      const expandedSummary =
+        page.getByTestId("shared-worktree-summary").element().textContent ?? "";
+      expect(expandedSummary).toContain("共享目录协作");
+      expect(expandedSummary).toContain("1 处文件冲突");
+      await expect
+        .element(page.getByTestId("shared-worktree-restore-safety"))
+        .toHaveTextContent("回滚防误伤已启用");
     } finally {
       await view.unmount();
     }
