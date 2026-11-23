@@ -1111,7 +1111,7 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
 }
 
 // Bytecode caches vary with the bundled modules; allow modest growth while rejecting loose dependency trees.
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 96;
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 128;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
