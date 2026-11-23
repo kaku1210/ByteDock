@@ -15,7 +15,7 @@ import { toastManager } from "../ui/toast";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SETTINGS_PICKER_TRIGGER_CLASSNAME, SettingsRow, SettingsSection } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import {
   useScopedSettings,
@@ -26,6 +26,7 @@ import {
 /** Environment-specific controls for the background suggestion model. */
 export function NextPromptSuggestionSettings() {
   const { t } = useUiLanguage();
+  const searchableSetting = useSearchableSetting();
   const { environment, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();

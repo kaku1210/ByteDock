@@ -23,6 +23,7 @@ import {
   isAntigravitySignInRequiredError,
 } from "../provider/antigravityAuthSupport.ts";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { collectSessionConfigOptionValues } from "@t3tools/provider-acp/server/runtimeModel";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
 
@@ -88,14 +89,20 @@ export const isAntigravityTextGenerationAvailable = Effect.fn(
     if (info.type !== "File" || info.size > 64_000n) {
       return false;
     }
+    // CLI 1.5.8 writes a 0-byte mcp_config.json before any server exists.
     const empty = yield* fs.readFileString(configurationPath).pipe(
-      Effect.flatMap(decodeConfiguration),
-      Effect.flatMap((configuration) =>
-        decodeConfigurationObject(
-          configuration[name === "hooks.json" ? "hooks" : "mcpServers"] ?? configuration,
-        ),
+      Effect.flatMap((text) =>
+        text.trim().length === 0
+          ? Effect.succeed(true)
+          : decodeConfiguration(text).pipe(
+              Effect.flatMap((configuration) =>
+                decodeConfigurationObject(
+                  configuration[name === "hooks.json" ? "hooks" : "mcpServers"] ?? configuration,
+                ),
+              ),
+              Effect.map((configuration) => Object.keys(configuration).length === 0),
+            ),
       ),
-      Effect.map((configuration) => Object.keys(configuration).length === 0),
       Effect.orElseSucceed(() => false),
     );
     if (!empty) return false;
@@ -300,22 +307,37 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
                       cause,
                     }),
                 });
-                const thinking = antigravityThinkingConfig(yield* runtime.getConfigOptions);
-                const selection = input.modelSelection.options?.find(
-                  (option) => option.id === thinking?.id,
-                );
-                if (selection) {
-                  yield* runtime.setConfigOption(selection.id, selection.value).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new TextGenerationError({
-                          operation: input.operation,
-                          detail:
-                            "Could not apply the Antigravity thinking level for text generation.",
-                          cause,
-                        }),
-                    ),
-                  );
+                const savedOptions = input.modelSelection.options;
+                if (savedOptions?.length) {
+                  const thinking = antigravityThinkingConfig(yield* runtime.getConfigOptions);
+                  const selected = savedOptions.find((option) => option.id === thinking?.id)?.value;
+                  if (
+                    thinking !== undefined &&
+                    typeof selected === "string" &&
+                    selected !== thinking.currentValue &&
+                    collectSessionConfigOptionValues(thinking).includes(selected)
+                  ) {
+                    yield* runtime.setConfigOption(thinking.id, selected).pipe(
+                      Effect.catchTags({
+                        AcpRequestError: (error) =>
+                          error.code === -32602
+                            ? Effect.logDebug("Antigravity rejected the saved thinking level", {
+                                optionId: thinking.id,
+                                value: selected,
+                              })
+                            : Effect.fail(error),
+                      }),
+                      Effect.mapError(
+                        (cause) =>
+                          new TextGenerationError({
+                            operation: input.operation,
+                            detail:
+                              "Could not apply the Antigravity thinking level for text generation.",
+                            cause,
+                          }),
+                      ),
+                    );
+                  }
                 }
                 const prompt = runtime.prompt({
                   prompt: [

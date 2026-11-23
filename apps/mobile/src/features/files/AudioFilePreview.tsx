@@ -1,6 +1,6 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { Button } from "../../components/ui/Button";
 import { useAudioPlayerStatus } from "expo-audio";
+import { T, useGT } from "gt-react-native";
 import { useEffect, useState } from "react";
 import { AppState, View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -14,8 +14,8 @@ function timestamp(seconds: number) {
 }
 
 export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
-  const { text: uiText } = useUiLanguage();
   const player = usePlaybackAudioPlayer(props.uri);
+  const gt = useGT();
   const status = useAudioPlayerStatus(player);
   const [playbackRequested, setPlaybackRequested] = useState(false);
   const playback = createAudioPlaybackSession(player, false, setPlaybackRequested);
@@ -51,17 +51,17 @@ export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
         <Button
           label="−15s"
           tone="text"
-          accessibilityLabel={uiText("Back 15 seconds")}
+          accessibilityLabel={gt("Back 15 seconds")}
           disabled={!status.isLoaded}
           onPress={() => seek(Math.max(0, status.currentTime - 15))}
         />
         <Button
           label={
             playbackRequested || status.playing
-              ? uiText("Pause")
+              ? gt("Pause")
               : !status.isLoaded
-                ? uiText("Loading…")
-                : uiText("Play")
+                ? gt("Loading…")
+                : gt("Play")
           }
           tone="secondary"
           disabled={!status.isLoaded && !playbackRequested}
@@ -82,7 +82,7 @@ export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
         <Button
           label="+15s"
           tone="text"
-          accessibilityLabel={uiText("Forward 15 seconds")}
+          accessibilityLabel={gt("Forward 15 seconds")}
           disabled={!status.isLoaded}
           onPress={() => seek(Math.min(status.duration, status.currentTime + 15))}
         />
@@ -90,10 +90,10 @@ export function AudioFilePreview(props: { uri: string; onRetry: () => void }) {
       {status.error || seekError ? (
         <View className="items-center gap-3">
           <Text className="text-center text-foreground">
-            {uiText("This audio could not be played. Try again or save it to open in another app.")}
+            <T>This audio could not be played. Try again or save it to open in another app.</T>
           </Text>
           <View className="items-center">
-            <Button label={uiText("Try again")} tone="secondary" onPress={props.onRetry} />
+            <Button label={gt("Try again")} tone="secondary" onPress={props.onRetry} />
           </View>
         </View>
       ) : null}

@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { T, useMessages } from "gt-react";
 import {
   getClientSettings,
   updateClientSettings,
@@ -15,12 +15,14 @@ import {
 
 /** Menu body that shows and hides thread details items. The card's context menu and Settings share it. */
 export function ThreadDetailsItemsMenuItems() {
-  const { text: uiText } = useUiLanguage();
   const visibility = useClientSettings(resolveThreadDetailsVisibility);
+  const m = useMessages();
   return (
     <>
       <MenuGroup>
-        <MenuGroupLabel>{uiText("Show in thread details")}</MenuGroupLabel>
+        <MenuGroupLabel>
+          <T>Show in thread details</T>
+        </MenuGroupLabel>
         {THREAD_DETAILS_ITEMS.map((item) => (
           <MenuCheckboxItem
             key={item.id}
@@ -31,7 +33,7 @@ export function ThreadDetailsItemsMenuItems() {
               })
             }
           >
-            {uiText(item.label)}
+            {m(item.label)}
           </MenuCheckboxItem>
         ))}
       </MenuGroup>
@@ -40,7 +42,7 @@ export function ThreadDetailsItemsMenuItems() {
         disabled={isDefaultThreadDetailsVisibility(visibility)}
         onClick={() => updateClientSettings(RESET_THREAD_DETAILS_ITEMS)}
       >
-        {uiText("Reset to default")}
+        <T>Reset to default</T>
       </MenuItem>
     </>
   );

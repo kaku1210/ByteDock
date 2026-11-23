@@ -64,6 +64,8 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
     readonly rejectAdmission?: boolean;
     readonly sessionId?: string;
     readonly startupSkills?: boolean;
+    readonly initialModel?: string;
+    readonly rejectThinkingUpdate?: boolean;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -88,6 +90,8 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
     selectedModels: [] as Array<string>,
     selectedModes: [] as Array<string>,
     selectedOptions: [] as Array<{ id: string; value: string | boolean }>,
+    promptThinkingLevels: [] as Array<string>,
+    thinkingUpdates: [] as Array<string>,
     nativeFilesAtClose: [] as Array<boolean>,
     cancellations: 0,
     sessionIds: [] as Array<string>,
@@ -139,6 +143,8 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       );
       let sessionUpdate: Parameters<TextRuntime["handleSessionUpdate"]>[0] = () => Effect.void;
       let currentSessionId = nativeSessionId;
+      let currentModel = options.initialModel ?? modelSelection.model;
+      let thinkingLevel = "high";
 
       return {
         start: () =>
@@ -183,40 +189,59 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
               modelConfigId: "model",
             };
           }),
-        getConfigOptions: Effect.succeed([
-          {
-            id: "model",
-            name: "Model",
-            category: "model",
-            type: "select",
-            currentValue: modelSelection.model,
-            options: [{ value: modelSelection.model, name: "Gemini test" }],
-          },
-          {
-            id: "thinking_level",
-            name: "Thinking level",
-            category: "thought_level",
-            type: "select",
-            currentValue: "high",
-            options: [
-              { value: "low", name: "Low" },
-              { value: "high", name: "High" },
-            ],
-          },
-        ]),
+        getConfigOptions: Effect.sync(() => {
+          const config: Array<AcpSchema.SessionConfigOption> = [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: currentModel,
+              options: [
+                { value: modelSelection.model, name: "Gemini test" },
+                { value: "gemini-native-default", name: "Gemini native default" },
+              ],
+            },
+          ];
+          if (currentModel === modelSelection.model) {
+            config.push({
+              id: "thinking_level",
+              name: "Thinking level",
+              category: "thought_level",
+              type: "select",
+              currentValue: thinkingLevel,
+              options: [
+                { value: "low", name: "Low" },
+                { value: "high", name: "High" },
+              ],
+            });
+          }
+          return config;
+        }),
         getEvents: () => Stream.fromQueue(events),
         setModel: (model) =>
           Effect.sync(() => {
             state.selectedModels.push(model);
+            currentModel = model;
           }),
         setConfigOption: (id, value) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             state.selectedOptions.push({ id, value });
+            if (id === "thinking_level" && typeof value === "string") {
+              state.thinkingUpdates.push(value);
+              if (options.rejectThinkingUpdate) {
+                return yield* AcpRequestError.invalidParams(
+                  "Thinking level is no longer available.",
+                );
+              }
+              thinkingLevel = value;
+            }
             return { configOptions: [] };
           }),
         prompt: (request) =>
           Effect.gen(function* () {
             state.prompts.push(request);
+            state.promptThinkingLevels.push(thinkingLevel);
             yield* Deferred.succeed(enteredPrompt, undefined);
             const emit: PromptContext["emit"] = (update, sessionId = currentSessionId) =>
               sessionUpdate({ sessionId, update });
@@ -677,17 +702,49 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
       }),
   );
 
-  it.effect("uses the native default without sending T3's default selection as a model ID", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture();
-      const result = yield* fixture.textGeneration.generateThreadTitle({
-        ...fixture.titleInput,
-        modelSelection: { ...modelSelection, model: ANTIGRAVITY_DEFAULT_MODEL },
-      });
-      expect(result).toEqual({ title: "Repair login" });
-      expect(fixture.state.selectedModels).toEqual([]);
-      yield* fixture.assertCleaned;
-    }),
+  it.effect.each([
+    { name: "native default", selected: undefined, expected: "high", updates: [] },
+    {
+      name: "after switching models",
+      selected: "low",
+      expected: "low",
+      updates: ["low"],
+      initialModel: "gemini-native-default",
+    },
+    { name: "when not advertised", selected: "medium", expected: "high", updates: [] },
+    {
+      name: "when rejected",
+      selected: "low",
+      expected: "high",
+      updates: ["low"],
+      rejectThinkingUpdate: true,
+    },
+  ])(
+    "generates a title with the thinking level $name",
+    ({ selected, expected, updates, initialModel, rejectThinkingUpdate }) =>
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture({
+          initialModel: initialModel ?? modelSelection.model,
+          rejectThinkingUpdate: rejectThinkingUpdate === true,
+        });
+        const result = yield* fixture.textGeneration.generateThreadTitle({
+          ...fixture.titleInput,
+          modelSelection: {
+            ...modelSelection,
+            model: initialModel === undefined ? ANTIGRAVITY_DEFAULT_MODEL : modelSelection.model,
+            ...(selected === undefined
+              ? {}
+              : { options: [{ id: "thinking_level", value: selected }] }),
+          },
+        });
+        expect(result).toEqual({ title: "Repair login" });
+        expect(fixture.state.selectedModels).toEqual(
+          initialModel === undefined ? [] : [modelSelection.model],
+        );
+        expect(fixture.state.thinkingUpdates).toEqual(updates);
+        expect(fixture.state.promptThinkingLevels).toEqual([expected]);
+        yield* fixture.assertCleaned;
+      }),
   );
 
   it.effect.each([
@@ -706,6 +763,7 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
     { name: "hooks.json", value: "{}", available: true },
     { name: "hooks.json", value: '{"hooks":{}}', available: true },
     { name: "mcp_config.json", value: '{"mcpServers":{}}', available: true },
+    { name: "mcp_config.json", value: "", available: true },
   ])("checks $name before starting a helper, available=$available", ({ name, value, available }) =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture();

@@ -102,11 +102,27 @@ import Migration0091 from "./Migrations/091_AuthConnectDeniedRequests.ts";
 import Migration0092 from "./Migrations/092_QueuedTurnInputIndexJsonValid.ts";
 import Migration0093 from "./Migrations/093_ProviderTurnAttemptIndex.ts";
 import Migration0094 from "./Migrations/094_TurnItemMessageOrdinalIndex.ts";
-import Migration0095 from "./Migrations/095_ThreadParentIndex.ts";
-import Migration0096 from "./Migrations/096_WorktreeApprovalRequests.ts";
-import Migration0097 from "./Migrations/097_SubtaskEscalationRequests.ts";
-import Migration0098 from "./Migrations/098_SharedWorktreeCoordination.ts";
-import Migration0099 from "./Migrations/099_SubtaskSummaryCache.ts";
+import Migration0095 from "./Migrations/095_TurnItemInlineWorkOutput.ts";
+import Migration0096 from "./Migrations/096_RepairStaleTitleRegeneration.ts";
+import Migration0097 from "./Migrations/097_IssueTrackerBindings.ts";
+import Migration0098 from "./Migrations/098_ActiveShellIndexIndexes.ts";
+import Migration0099 from "./Migrations/099_BackgroundRecoveryIndexes.ts";
+import Migration0100 from "./Migrations/100_TurnStartReadIndexes.ts";
+import Migration0101 from "./Migrations/101_DelegatedTaskReadIndexes.ts";
+import Migration0102 from "./Migrations/102_ThreadItemCounts.ts";
+import Migration0103 from "./Migrations/103_IssueTrackerAdditionalScopes.ts";
+import Migration0104 from "./Migrations/104_ProjectionProjectsTrackedFolders.ts";
+import Migration0105 from "./Migrations/105_TaskFolders.ts";
+import Migration0106 from "./Migrations/106_WorktreePathKeyIndex.ts";
+import Migration0107 from "./Migrations/107_DeferredSlashCommandIndex.ts";
+import Migration0108 from "./Migrations/108_AgentFeedback.ts";
+import Migration0109 from "./Migrations/109_IssueTrackerAccounts.ts";
+import Migration0110 from "./Migrations/110_Workflows.ts";
+import Migration0111 from "./Migrations/111_ThreadParentIndex.ts";
+import Migration0112 from "./Migrations/112_WorktreeApprovalRequests.ts";
+import Migration0113 from "./Migrations/113_SubtaskEscalationRequests.ts";
+import Migration0114 from "./Migrations/114_SharedWorktreeCoordination.ts";
+import Migration0115 from "./Migrations/115_SubtaskSummaryCache.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -204,11 +220,27 @@ const migrationEntries = [
   [92, "QueuedTurnInputIndexJsonValid", Migration0092],
   [93, "ProviderTurnAttemptIndex", Migration0093],
   [94, "TurnItemMessageOrdinalIndex", Migration0094],
-  [95, "ThreadParentIndex", Migration0095],
-  [96, "WorktreeApprovalRequests", Migration0096],
-  [97, "SubtaskEscalationRequests", Migration0097],
-  [98, "SharedWorktreeCoordination", Migration0098],
-  [99, "SubtaskSummaryCache", Migration0099],
+  [95, "TurnItemInlineWorkOutput", Migration0095],
+  [96, "RepairStaleTitleRegeneration", Migration0096],
+  [97, "IssueTrackerBindings", Migration0097],
+  [98, "ActiveShellIndexIndexes", Migration0098],
+  [99, "BackgroundRecoveryIndexes", Migration0099],
+  [100, "TurnStartReadIndexes", Migration0100],
+  [101, "DelegatedTaskReadIndexes", Migration0101],
+  [102, "ThreadItemCounts", Migration0102],
+  [103, "IssueTrackerAdditionalScopes", Migration0103],
+  [104, "ProjectionProjectsTrackedFolders", Migration0104],
+  [105, "TaskFolders", Migration0105],
+  [106, "WorktreePathKeyIndex", Migration0106],
+  [107, "DeferredSlashCommandIndex", Migration0107],
+  [108, "AgentFeedback", Migration0108],
+  [109, "IssueTrackerAccounts", Migration0109],
+  [110, "Workflows", Migration0110],
+  [111, "ThreadParentIndex", Migration0111],
+  [112, "WorktreeApprovalRequests", Migration0112],
+  [113, "SubtaskEscalationRequests", Migration0113],
+  [114, "SharedWorktreeCoordination", Migration0114],
+  [115, "SubtaskSummaryCache", Migration0115],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -223,6 +255,49 @@ const makeMigrationLoader = (throughId?: number) =>
   );
 
 const FIRST_V2_MIGRATION_ID = 55;
+const FIRST_PLUS_PRE_SYNC_MIGRATION_ID = 95;
+
+// Pre-sync Plus builds recorded 5 Plus migrations at ids 95-99 before upstream added 95-110.
+// Remove only those matching ledger rows (leaving tables/indexes/data untouched) so upstream
+// 095-110 run normally and the renumbered idempotent Plus migrations 111-115 re-record cleanly.
+const reconcilePlusPreSyncMigrations = Effect.fn("reconcilePlusPreSyncMigrations")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const tables = yield* sql`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+        `;
+      if (tables.length === 0) return 0;
+      const stale = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+          SELECT migration_id, name FROM effect_sql_migrations
+          WHERE
+            (migration_id = 95 AND name = 'ThreadParentIndex') OR
+            (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
+            (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
+            (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
+            (migration_id = 99 AND name = 'SubtaskSummaryCache')
+        `;
+      if (stale.length === 0) return 0;
+      yield* sql`
+          DELETE FROM effect_sql_migrations
+          WHERE
+            (migration_id = 95 AND name = 'ThreadParentIndex') OR
+            (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
+            (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
+            (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
+            (migration_id = 99 AND name = 'SubtaskSummaryCache')
+        `;
+      yield* Effect.log(
+        "Reconciled pre-sync Plus migration tracking rows so upstream 095-110 and renumbered Plus 111-115 can run.",
+      ).pipe(
+        Effect.annotateLogs({
+          removed: stale.map((row) => `${row.migration_id}_${row.name}`),
+        }),
+      );
+      return stale.length;
+    }),
+  );
+});
 
 export function skippedV2Migrations(
   recorded: ReadonlyArray<{ readonly id: number; readonly name: string }>,
@@ -269,21 +344,36 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
 
 const latestMigrationId = Math.max(...migrationEntries.map(([id]) => id));
 
-// Mirrors the Migrator, which runs only ids above the highest recorded, plus the V2-preview reconciliation.
+// Mirrors the Migrator, which runs only ids above the highest recorded, plus V2-preview and Plus pre-sync reconciliations.
 export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tables = yield* sql`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
   `;
   if (tables.length === 0) return true;
-  const rows = yield* sql<{ readonly latestId: number | null; readonly previewRows: number }>`
+  const rows = yield* sql<{
+    readonly latestId: number | null;
+    readonly previewRows: number;
+    readonly plusPreSyncRows: number;
+  }>`
     SELECT
       MAX(migration_id) AS latestId,
-      SUM(name = 'OrchestrationV2' AND migration_id IN (53, 54)) AS previewRows
+      SUM(name = 'OrchestrationV2' AND migration_id IN (53, 54)) AS previewRows,
+      SUM(
+        (migration_id = 95 AND name = 'ThreadParentIndex') OR
+        (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
+        (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
+        (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
+        (migration_id = 99 AND name = 'SubtaskSummaryCache')
+      ) AS plusPreSyncRows
     FROM effect_sql_migrations
   `;
   const row = rows[0];
-  return (row?.latestId ?? 0) < latestMigrationId || (row?.previewRows ?? 0) > 0;
+  return (
+    (row?.latestId ?? 0) < latestMigrationId ||
+    (row?.previewRows ?? 0) > 0 ||
+    (row?.plusPreSyncRows ?? 0) > 0
+  );
 });
 
 const run = Migrator.make({});
@@ -296,10 +386,17 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   // The desktop waits past its readiness budget until the finished line follows this one.
-  if (yield* hasPendingMigrations()) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
+  const hasPending = yield* hasPendingMigrations();
+  if (hasPending) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
-  const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
+  const includesPlusPreSync =
+    toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_PLUS_PRE_SYNC_MIGRATION_ID;
+  // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
+  const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
+  if (includesPlusPreSync && hasPending) {
+    yield* reconcilePlusPreSyncMigrations();
+  }
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }

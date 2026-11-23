@@ -135,10 +135,11 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           cause: forkableSourceRunStatusError(sourceRun),
         });
       }
-      // The remote parent delegated the source thread, not its forks, and L0 coordinator mode is
-      // never inherited by subtasks, side chats, or forked threads.
+      // The remote parent delegated the source thread, not its forks; neither workflowRun nor
+      // L0 coordinator mode is inherited by subtasks, side chats, or forked threads.
       const {
         delegatedFrom: _delegatedFrom,
+        workflowRun: _workflowRun,
         sourceAnchor: _sourceAnchor,
         coordinatorMode: _coordinatorMode,
         ...inherited
@@ -181,8 +182,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         title:
           input.title ??
           (input.subtask ? "New subtask" : `${input.sourceProjection.thread.title} fork`),
-        // The source's title job completes only on the source thread.
+        // The source's title job and rename stay with the source thread.
         titleRegeneration: null,
+        titleRenamed: false,
         activeProviderThreadId: null,
         lineage: {
           parentThreadId: input.sideChat

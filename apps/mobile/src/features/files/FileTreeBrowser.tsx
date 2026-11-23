@@ -1,12 +1,12 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { Button } from "../../components/ui/Button";
 import { LegendList } from "@legendapp/list/react-native";
 import type { ProjectEntry } from "@t3tools/contracts";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { T, useGT } from "gt-react-native";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 import { RefreshControl } from "../../components/ui/RefreshControl";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -43,6 +43,7 @@ const FileTreeRow = function FileTreeRow(props: {
   readonly onPressFile: (path: string) => void;
 }) {
   const { node, depth } = props.item;
+  const gt = useGT();
 
   return (
     <Pressable
@@ -62,7 +63,7 @@ const FileTreeRow = function FileTreeRow(props: {
         props.onPressFile(node.path);
       }}
       className={cn(
-        "mx-2 min-h-[42px] flex-row items-center gap-2 rounded-[12px] px-2 active:bg-subtle",
+        "mx-2 min-h-[46px] flex-row items-center gap-2 rounded-[12px] px-2 active:bg-subtle android:min-h-[48px]",
         props.selected && "bg-thread-selected",
       )}
       style={{ paddingLeft: 8 + depth * 18 }}
@@ -92,7 +93,10 @@ const FileTreeRow = function FileTreeRow(props: {
         {node.name}
       </Text>
       {node.kind === "directory" && props.expanded && props.loading ? (
-        <AppActivityIndicator size="small" accessibilityLabel={`Loading ${node.name}`} />
+        <AppActivityIndicator
+          size="small"
+          accessibilityLabel={gt("Loading {name}", { name: node.name })}
+        />
       ) : null}
     </Pressable>
   );
@@ -118,8 +122,8 @@ export function FileTreeBrowser(props: {
   readonly onRefresh: () => void;
   readonly onSelectFile: (path: string) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
   const { expandedPaths, setExpandedPaths } = props;
+  const gt = useGT();
   const [pendingSelection, setPendingSelection] = useState<{
     readonly path: string;
     readonly selectedPathAtPress: string | null;
@@ -228,7 +232,7 @@ export function FileTreeBrowser(props: {
       automaticallyAdjustsScrollIndicatorInsets
       keyboardDismissMode="on-drag"
       keyboardShouldPersistTaps="handled"
-      estimatedItemSize={42}
+      estimatedItemSize={Platform.OS === "android" ? 48 : 46}
       recycleItems
       maintainVisibleContentPosition
       extraData={extraData}
@@ -246,7 +250,7 @@ export function FileTreeBrowser(props: {
           ) : null}
           {props.searchTruncated ? (
             <Text className="mx-4 my-2 text-xs text-foreground-muted">
-              {uiText("More search results available. Refine your search to see them.")}
+              <T>More search results available. Refine your search to see them.</T>
             </Text>
           ) : null}
         </>
@@ -256,7 +260,7 @@ export function FileTreeBrowser(props: {
           {props.error && props.entries.length === 0 ? (
             <>
               <Text className="text-sm font-t3-bold text-foreground">
-                {uiText("Files unavailable")}
+                <T>Files unavailable</T>
               </Text>
               <Text
                 accessibilityRole="alert"
@@ -266,7 +270,7 @@ export function FileTreeBrowser(props: {
               </Text>
               <View className="mt-3">
                 <Button
-                  label={uiText("Try again")}
+                  label={gt("Try again")}
                   tone="secondary"
                   onPress={props.onRefresh}
                   disabled={props.isPending}
@@ -278,12 +282,12 @@ export function FileTreeBrowser(props: {
           ) : (
             <>
               <Text className="text-sm font-t3-bold text-foreground">
-                {uiText("No files found")}
+                <T>No files found</T>
               </Text>
               <Text className="mt-1 text-xs leading-normal text-foreground-muted">
                 {props.searchQuery.trim().length > 0
-                  ? uiText("Try a different search.")
-                  : uiText("The workspace is empty.")}
+                  ? gt("Try a different search.")
+                  : gt("The workspace is empty.")}
               </Text>
             </>
           )}

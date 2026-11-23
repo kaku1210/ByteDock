@@ -56,13 +56,24 @@ vi.mock(import("~/i18n/runtime"), async () => {
   const { getClientSettings, subscribeClientSettings } = await import("~/hooks/useSettings");
   const { resolveLanguagePreference } = await import("@t3tools/shared/uiLanguage");
   const zh = (await import("~/i18n/translations/zh.json")).default;
-  const english = { locale: "en", translations: { en: {} } };
-  const chinese = { locale: "zh", translations: { zh } };
+  const english = {
+    locale: "en",
+    formattingLocale: undefined,
+    translations: { en: {} },
+  };
+  const chinese = {
+    locale: "zh",
+    formattingLocale: undefined,
+    translations: { zh },
+  } as unknown as typeof english;
   return {
     getI18nSnapshot: () =>
       resolveLanguagePreference(getClientSettings()).startsWith("zh") ? chinese : english,
     subscribeI18n: subscribeClientSettings,
     persistGTLocale: () => {},
+    startI18n: () => {},
+    whenLocaleReady: () => Promise.resolve(),
+    getFormattingLocale: () => undefined,
   };
 });
 
@@ -341,7 +352,7 @@ it("displays multiple pending merge-backs in the parent composer banner and revo
   });
 });
 
-it("shows L0 root-scoped side chats inside L1 subtask details and brings back to L0", async () => {
+it("shows L0 root-scoped side chats inside L1 subtask details and adds them to chat", async () => {
   using _details = pinThreadDetailsOpen();
   const l0 = threadWithHistory("side-root-l0", 1);
   const l1: FakeThread = {
@@ -372,29 +383,29 @@ it("shows L0 root-scoped side chats inside L1 subtask details and brings back to
   await expect.element(sideChatRow).toBeVisible();
   await sideChatRow.click();
 
-  // Clicking it opens the SideChatPane in L1's right panel.
+  // Clicking it opens the SideThreadPane in L1's right panel.
   await expect
     .element(screen.getByRole("textbox", { name: `Message ${rootSideChat.title}`, exact: true }))
     .toBeVisible();
 
-  // Clicking "Bring back" targets L0 (the root thread), not L1.
-  const bringBackButton = screen.getByRole("button", { name: "Bring back", exact: true });
-  await expect.element(bringBackButton).toBeVisible();
-  await bringBackButton.click();
+  // Clicking "Add to chat" attaches the side chat as an @-mention context in the host composer.
+  const addToChatButton = screen.getByRole("button", { name: "Add to chat", exact: true });
+  await expect.element(addToChatButton).toBeVisible();
+  await addToChatButton.click();
 
+  const l1Ref = scopeThreadRef(ENVIRONMENT_ID, l1.id);
   await vi.waitFor(() =>
-    expect(
-      dispatchedCommands().filter((command) => command.type === "thread.merge_back"),
-    ).toHaveLength(1),
+    expect(useComposerDraftStore.getState().getComposerDraft(l1Ref)?.threadContexts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "thread",
+          threadId: rootSideChat.id,
+          title: rootSideChat.title,
+        }),
+      ]),
+    ),
   );
-  expect(
-    dispatchedCommands().find((command) => command.type === "thread.merge_back"),
-  ).toMatchObject({
-    sourceThreadId: rootSideChat.id,
-    targetThreadId: l0.id,
-    sourcePoint: { type: "run", runId: RunId.make(`${rootSideChat.id}-run-0`) },
-  });
-  useRightPanelStore.getState().close(scopeThreadRef(ENVIRONMENT_ID, l1.id));
+  useRightPanelStore.getState().close(l1Ref);
 });
 
 it("warns about subtasks, side chats, and pending bring-backs before cascade-deleting L0 and clears descendant drafts", async () => {
@@ -605,28 +616,29 @@ it("opens L0 root-scoped side chat from an isolated-worktree L2, blocks nesting,
   expect(sideChatPane).not.toBeNull();
   await expect.element(screen.getByText("Side chat root insight.", { exact: true })).toBeVisible();
 
-  // 2. Bring back button explicitly indicates targeting L0's next message and dispatches merge_back -> L0.
-  const bringBackButton = screen.getByRole("button", { name: "Bring back", exact: true });
-  await expect.element(bringBackButton).toBeVisible();
-  await userEvent.hover(bringBackButton);
+  // 2. Add to chat button attaches the side chat to the host composer's next message.
+  const addToChatButton = screen.getByRole("button", { name: "Add to chat", exact: true });
+  await expect.element(addToChatButton).toBeVisible();
+  await userEvent.hover(addToChatButton);
   await expect
     .element(
-      page.getByText(`Adds this side chat to "${l0.title}"'s next message.`, { exact: true }),
+      page.getByText("Adds this side chat to the main thread's next message.", { exact: true }),
     )
     .toBeVisible();
 
-  await bringBackButton.click();
+  await addToChatButton.click();
+  const l2Ref = scopeThreadRef(ENVIRONMENT_ID, l2.id);
   await vi.waitFor(() =>
-    expect(
-      dispatchedCommands().filter((command) => command.type === "thread.merge_back"),
-    ).toHaveLength(1),
+    expect(useComposerDraftStore.getState().getComposerDraft(l2Ref)?.threadContexts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "thread",
+          threadId: rootSideChat.id,
+          title: rootSideChat.title,
+        }),
+      ]),
+    ),
   );
-  expect(
-    dispatchedCommands().find((command) => command.type === "thread.merge_back"),
-  ).toMatchObject({
-    sourceThreadId: rootSideChat.id,
-    targetThreadId: l0.id,
-  });
 
   // 3. Inside Side Chat: cannot split a nested subtask or open a nested Side Chat.
   await userEvent.tripleClick(screen.getByText("Side chat root insight.", { exact: true }));

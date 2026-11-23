@@ -29,6 +29,7 @@ import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMoc
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -155,6 +156,7 @@ function makeHarness(options: { readonly ttlMs?: number } = {}) {
       isScratchProject: () => Effect.succeed(false),
       folderForThread: () => Effect.succeedNone,
     }),
+    Layer.mock(TaskFolders.TaskFolders)({ plan: () => Effect.succeed(null) }),
   );
 
   const layerLaunch = ThreadLaunch.layer.pipe(

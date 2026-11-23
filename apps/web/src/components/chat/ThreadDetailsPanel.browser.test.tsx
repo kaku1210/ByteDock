@@ -102,7 +102,11 @@ import { ChatCanvasContext } from "./ChatCanvasContext";
 import { resolveChatCanvasLayout } from "./chatCanvasLayout";
 import { ThreadDetailsPanel } from "./ThreadDetailsPanel";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
-import { UiLanguageContext } from "../../i18n/useUiLanguage";
+import { GTProvider } from "gt-react";
+import type { ComponentProps } from "react";
+import { initializeI18n } from "../../i18n/initializeI18n";
+import { UiLanguageProvider } from "../../i18n/UiLanguageProvider";
+import zh from "../../i18n/translations/zh.json";
 import { ThreadDetailsItemsRow } from "../settings/ThreadDetailsItemsRow";
 import { __setClientSettingsForTests, getClientSettings } from "../../hooks/useSettings";
 
@@ -209,7 +213,7 @@ function Panel({
         onAddProjectScript={scriptResult}
         onUpdateProjectScript={scriptResult}
         onDeleteProjectScript={scriptResult}
-        usage={{ providerInstanceId: null, providers: [], sources: [] }}
+        usage={{ providerInstanceId: null, model: null, providers: [], sources: [] }}
         context={{ usage: null }}
       />
     </ChatCanvasContext>
@@ -370,11 +374,17 @@ it("hides tasks from the Chinese card menu and restores them from appearance set
   const previousSettings = getClientSettings();
   using _settings = { [Symbol.dispose]: () => __setClientSettingsForTests(previousSettings) };
   __setClientSettingsForTests({ ...previousSettings, threadDetailsItems: {} });
+  initializeI18n(() => undefined);
+  const translations = { en: {}, zh } as unknown as ComponentProps<
+    typeof GTProvider
+  >["translations"];
   await using screen = await render(
-    <UiLanguageContext value="zh-CN">
-      <Panel fixture={fixture} />
-      <ThreadDetailsItemsRow />
-    </UiLanguageContext>,
+    <GTProvider locale="zh" translations={translations}>
+      <UiLanguageProvider>
+        <Panel fixture={fixture} />
+        <ThreadDetailsItemsRow />
+      </UiLanguageProvider>
+    </GTProvider>,
   );
   const addTask = screen.getByRole("button", { name: "手动添加任务" });
   await addTask.click({ button: "right" });
@@ -388,6 +398,11 @@ it("hides tasks from the Chinese card menu and restores them from appearance set
   await expect.element(tasks).not.toBeChecked();
   await tasks.click();
   await expect.element(addTask).toBeVisible();
+  await screen.rerender(
+    <GTProvider locale="en" translations={{ en: {} }}>
+      <span />
+    </GTProvider>,
+  );
 });
 
 it("saves each thread's note on leaving it and restores it when the note is shown again", async () => {

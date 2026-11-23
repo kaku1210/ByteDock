@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { T, useGT, useMessages } from "gt-react";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -35,12 +35,17 @@ export function ComposerCodeBlockLanguagePicker(props: {
   disabled: boolean;
   onChange: (language: string) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
+  const messages = useMessages();
   const [query, setQuery] = useState("");
   const current = codeLanguageEntry(props.language)?.id ?? props.language;
-  const items: CodeBlockLanguage[] = CODE_BLOCK_LANGUAGES.some((entry) => entry.id === current)
-    ? [...CODE_BLOCK_LANGUAGES]
-    : [{ id: current, label: current }, ...CODE_BLOCK_LANGUAGES];
+  const languages = CODE_BLOCK_LANGUAGES.map((entry) => ({
+    ...entry,
+    label: messages(entry.label),
+  }));
+  const items: CodeBlockLanguage[] = languages.some((entry) => entry.id === current)
+    ? languages
+    : [{ id: current, label: current }, ...languages];
   const needle = query.trim().toLowerCase();
   const filteredItems = needle
     ? items.filter(
@@ -72,22 +77,26 @@ export function ComposerCodeBlockLanguagePicker(props: {
               variant="ghost-muted"
               size="xs"
               disabled={props.disabled}
-              aria-label={`Code language: ${codeLanguageLabel(props.language)}`}
+              aria-label={gt("Code language: {language}", {
+                language: codeLanguageLabel(props.language, messages),
+              })}
             />
           }
         >
           <LanguageIcon language={current} theme={props.theme} />
-          <span className="max-w-40 truncate">{codeLanguageLabel(props.language)}</span>
+          <span className="max-w-40 truncate">{codeLanguageLabel(props.language, messages)}</span>
           <ChevronDownIcon className="opacity-60" />
         </ComboboxTrigger>
         <ComboboxPopup align="start" className="w-56">
           <ComboboxSearchInput
-            aria-label={uiText("Search languages")}
-            placeholder={uiText("Search languages")}
+            aria-label={gt("Search languages")}
+            placeholder={gt("Search languages")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <ComboboxEmpty>{uiText("No matching languages.")}</ComboboxEmpty>
+          <ComboboxEmpty>
+            <T>No matching languages.</T>
+          </ComboboxEmpty>
           <ComboboxList>
             {(entry: CodeBlockLanguage) => (
               <ComboboxItem key={entry.id || "plain"} value={entry}>

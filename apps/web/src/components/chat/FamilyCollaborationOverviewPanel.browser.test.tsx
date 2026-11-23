@@ -51,11 +51,18 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
 }));
 
 vi.mock(import("~/i18n/runtime"), async () => {
-  const english = { locale: "en", translations: { en: {} } };
+  const english = {
+    locale: "en",
+    formattingLocale: undefined,
+    translations: { en: {} },
+  };
   return {
     getI18nSnapshot: () => english,
     subscribeI18n: () => () => {},
     persistGTLocale: () => {},
+    startI18n: () => {},
+    whenLocaleReady: () => Promise.resolve(),
+    getFormattingLocale: () => undefined,
   };
 });
 

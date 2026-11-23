@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../../i18n/useUiLanguage";
+import { useGT } from "gt-react-native";
 import { Platform } from "react-native";
 
 import { AppBar } from "../../../components/ui/AppBar";
@@ -16,7 +16,7 @@ export function WorkspaceListEmptyDetail(props: {
   readonly onAddConnection: () => void;
   readonly onStartNewTask: () => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   const { panes } = useWorkspacePaneState();
   return (
     <>
@@ -32,12 +32,12 @@ export function WorkspaceListEmptyDetail(props: {
       />
       <Toolbar placement="left">
         <Toolbar.Button
-          accessibilityLabel={uiText("New task")}
+          accessibilityLabel={gt("New task")}
           icon="square.and.pencil"
           onPress={props.onStartNewTask}
         />
       </Toolbar>
-      <AppBar embedded title={uiText("Threads")} />
+      <AppBar embedded title={gt("Threads", { $context: "screen title, list of chat threads" })} />
       <WorkspaceEmptyDetail
         onAddConnection={
           Platform.OS === "android" && !props.hasConnections ? props.onAddConnection : undefined

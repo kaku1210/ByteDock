@@ -44,13 +44,24 @@ vi.mock(import("~/i18n/runtime"), async () => {
   const { getClientSettings, subscribeClientSettings } = await import("~/hooks/useSettings");
   const { resolveLanguagePreference } = await import("@t3tools/shared/uiLanguage");
   const zh = (await import("~/i18n/translations/zh.json")).default;
-  const english = { locale: "en", translations: { en: {} } };
-  const chinese = { locale: "zh", translations: { zh } };
+  const english = {
+    locale: "en",
+    formattingLocale: undefined,
+    translations: { en: {} },
+  };
+  const chinese = {
+    locale: "zh",
+    formattingLocale: undefined,
+    translations: { zh },
+  } as unknown as typeof english;
   return {
     getI18nSnapshot: () =>
       resolveLanguagePreference(getClientSettings()).startsWith("zh") ? chinese : english,
     subscribeI18n: subscribeClientSettings,
     persistGTLocale: () => {},
+    startI18n: () => {},
+    whenLocaleReady: () => Promise.resolve(),
+    getFormattingLocale: () => undefined,
   };
 });
 

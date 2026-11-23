@@ -1,6 +1,6 @@
-import { useUiLanguage } from "../i18n/useUiLanguage";
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Platform, View } from "react-native";
 
@@ -11,6 +11,7 @@ import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
+const WORDMARK_SUFFIX = "Code Plus";
 
 export function brandTitleOffset(): number {
   if (Platform.OS !== "ios") return 0;
@@ -25,7 +26,7 @@ export function CompactBrandTitle(
     readonly fit?: boolean;
   } = {},
 ) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
   const titleOffset = brandTitleOffset();
   const { scale } = useAndroidControlSizing();
@@ -41,7 +42,7 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? `T3 Code Plus, ${uiText("Threads")}`}
+      accessibilityLabel={props.accessibilityLabel ?? gt("T3 Code Plus, Threads")}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -59,7 +60,7 @@ export function CompactBrandTitle(
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        Code Plus
+        {WORDMARK_SUFFIX}
       </Text>
       {showStage ? (
         <View

@@ -1,20 +1,25 @@
 import { createContext, useContext, useMemo } from "react";
-import { translate, type MessageKey, type MessageValues } from "@t3tools/shared/i18n/messages";
+import { useLocale } from "gt-react-native";
+import {
+  translate,
+  translateUiText,
+  type MessageKey,
+  type MessageValues,
+} from "@t3tools/shared/i18n/messages";
 import type { UiLanguage } from "@t3tools/shared/uiLanguage";
 
-import { translateMobileText } from "./messages";
+export const UiLanguageContext = createContext<UiLanguage | null>(null);
 
-export const UiLanguageContext = createContext<UiLanguage>("en");
-
-/** Translates interface copy only, preserving agent output, code, project names and model IDs. */
+/** Translates Plus-only interface copy in sync with the active GT locale. */
 export function useUiLanguage() {
-  const language = useContext(UiLanguageContext);
+  const override = useContext(UiLanguageContext);
+  const gtLocale = useLocale();
+  const language: UiLanguage = override ?? (gtLocale?.startsWith("zh") ? "zh-CN" : "en");
   return useMemo(
     () => ({
       language,
-      t: (key: MessageKey, values?: MessageValues) =>
-        translate(language, key, values, (source) => translateMobileText(language, source)),
-      text: (source: string) => translateMobileText(language, source),
+      t: (key: MessageKey, values?: MessageValues) => translate(language, key, values),
+      text: (source: string) => translateUiText(language, source),
     }),
     [language],
   );

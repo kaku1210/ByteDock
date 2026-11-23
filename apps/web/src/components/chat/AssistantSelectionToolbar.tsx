@@ -4,6 +4,7 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import { useGT } from "gt-react";
 import { ArrowUpRightIcon, GitBranchPlusIcon, PanelRightIcon, QuoteIcon } from "lucide-react";
 import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -44,6 +45,7 @@ export function AssistantSelectionToolbar({
   const [isCiting, setIsCiting] = useState(false);
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
   const backgroundThread = use(BackgroundThreadContext);
+  const gt = useGT();
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures the toolbar DOM node and clamps its position inside the window before paint
   useLayoutEffect(() => {
@@ -148,6 +150,7 @@ export function AssistantSelectionToolbar({
       element: viewport,
       getActionElement: () => toolbarRef.current,
       restoreAfterScroll: true,
+      immediateMultiClick: true,
       onSelection: update,
       onDismiss: clear,
     });
@@ -233,7 +236,7 @@ export function AssistantSelectionToolbar({
     <div
       ref={toolbarRef}
       role="group"
-      aria-label="Citation actions"
+      aria-label={gt("Citation actions")}
       className="fixed z-50 flex max-w-[calc(100vw-1rem)] gap-1"
       style={{ left: selection.position.x, top: selection.position.y }}
       onPointerDown={(event) => event.preventDefault()}
@@ -250,11 +253,15 @@ export function AssistantSelectionToolbar({
         size="xs"
         variant="glass"
         disabled={tooLong || isCiting}
-        aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
+        aria-label={
+          tooLong ? gt("Selection is too long to cite") : gt("Cite selection in composer")
+        }
         onClick={cite}
       >
         <QuoteIcon aria-hidden="true" className="size-3.5" />
-        {tooLong ? "Shorten selection" : "Cite"}
+        {tooLong
+          ? gt("Shorten selection")
+          : gt("Cite", { $context: "verb, button that quotes the selected text" })}
       </Button>
       {onSlidCite && (
         <Button
@@ -262,11 +269,11 @@ export function AssistantSelectionToolbar({
           size="xs"
           variant="glass"
           disabled={tooLong || isCiting}
-          aria-label="Cite selection in side chat"
+          aria-label={gt("Cite selection in side chat")}
           onClick={slidCite}
         >
           <PanelRightIcon aria-hidden="true" className="size-3.5" />
-          Slid Cite
+          {gt("Slid Cite")}
         </Button>
       )}
       {onSplitSubtask && (
@@ -275,11 +282,11 @@ export function AssistantSelectionToolbar({
           size="xs"
           variant="glass"
           disabled={tooLong || isCiting}
-          aria-label="Split selection into subtask"
+          aria-label={gt("Split selection into subtask")}
           onClick={splitSubtask}
         >
           <GitBranchPlusIcon aria-hidden="true" className="size-3.5" />
-          Split subtask
+          {gt("Split subtask")}
         </Button>
       )}
       {onEscalateSubtask && (
@@ -288,11 +295,11 @@ export function AssistantSelectionToolbar({
           size="xs"
           variant="glass"
           disabled={tooLong || isCiting}
-          aria-label="Escalate selection to new L1 under root"
+          aria-label={gt("Escalate selection to new L1 under root")}
           onClick={escalateSubtask}
         >
           <ArrowUpRightIcon aria-hidden="true" className="size-3.5" />
-          Escalate to L1
+          {gt("Escalate to L1")}
         </Button>
       )}
     </div>,

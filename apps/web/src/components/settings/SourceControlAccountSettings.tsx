@@ -1,7 +1,7 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { EnvironmentId, SourceControlProviderAuth } from "@t3tools/contracts";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useState } from "react";
+import { T, useGT, Var } from "gt-react";
 
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { serverEnvironment } from "../../state/server";
@@ -25,7 +25,7 @@ function RedactedLogin(props: {
   readonly revealed: boolean;
   readonly label?: string;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   return props.revealed ? (
     <span className="min-w-0 truncate font-mono text-2xs">{props.account}</span>
   ) : (
@@ -33,7 +33,7 @@ function RedactedLogin(props: {
       <span className="select-none blur-xs" aria-hidden>
         {redactedPlaceholder(props.account)}
       </span>
-      <span className="sr-only">{props.label ?? uiText("Hidden account")}</span>
+      <span className="sr-only">{props.label ?? gt("Hidden account")}</span>
     </span>
   );
 }
@@ -51,7 +51,7 @@ export function SourceControlAccountSettings({
   readonly auth: SourceControlProviderAuth;
   readonly onSaved: () => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   const { hosts } = useEnvironmentSettings(environmentId, (settings) =>
     readHostCredentialSettings(settings, definition.kind),
   );
@@ -86,9 +86,13 @@ export function SourceControlAccountSettings({
   if (groups.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        {uiText("Sign in with")}{" "}
-        <code className="rounded bg-muted px-1 py-px text-2xs">{credentials.loginCommand}</code>
-        {uiText(" on the server host, then rescan to choose accounts here.")}
+        <T>
+          Sign in with{" "}
+          <code className="rounded bg-muted px-1 py-px text-2xs">
+            <Var>{credentials.loginCommand}</Var>
+          </code>{" "}
+          on the server host, then rescan to choose accounts here.
+        </T>
       </p>
     );
   }
@@ -97,11 +101,13 @@ export function SourceControlAccountSettings({
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-3">
         <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-          {uiText("Choose which ")}
-          <code className="rounded bg-muted px-1 py-px text-2xs">{cliName}</code>
-          {uiText(" login each ")}
-          {label}
-          {uiText(" host uses, or turn a host off.")}
+          <T>
+            Choose which{" "}
+            <code className="rounded bg-muted px-1 py-px text-2xs">
+              <Var>{cliName}</Var>
+            </code>{" "}
+            login each <Var>{label}</Var> host uses, or turn a host off.
+          </T>
         </p>
         <Button
           size="icon-xs"
@@ -109,8 +115,8 @@ export function SourceControlAccountSettings({
           onClick={() => setRevealed((current) => !current)}
           aria-label={
             revealed
-              ? uiText("Hide {value0} accounts", { value0: label })
-              : uiText("Reveal {value0} accounts", { value0: label })
+              ? gt("Hide {label} accounts", { label })
+              : gt("Reveal {label} accounts", { label })
           }
           aria-pressed={revealed}
         >
@@ -130,7 +136,9 @@ export function SourceControlAccountSettings({
                 <span className="text-xs font-medium text-foreground">{group.host}</span>
                 {group.selectable.length === 1 && group.selectable[0] !== undefined ? (
                   <p className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                    <span>{uiText("Signed in as")}</span>
+                    <span>
+                      <T>Signed in as</T>
+                    </span>
                     <RedactedLogin revealed={revealed} account={group.selectable[0]} />
                   </p>
                 ) : null}
@@ -138,16 +146,15 @@ export function SourceControlAccountSettings({
               <Switch
                 checked={enabled}
                 disabled={saving}
-                aria-label={uiText("Use {value0} on {value1}", {
-                  value0: label,
-                  value1: group.host,
-                })}
+                aria-label={gt("Use {label} on {host}", { label, host: group.host })}
                 onCheckedChange={(checked) => void save(group.host, { enabled: checked })}
               />
             </div>
             {group.selectable.length > 1 ? (
               <div className="flex items-center justify-between gap-3">
-                <span className="text-xs text-muted-foreground">{uiText("Account")}</span>
+                <span className="text-xs text-muted-foreground">
+                  <T>Account</T>
+                </span>
                 <div className="w-64 max-w-full">
                   <Select
                     value={pinned}
@@ -161,28 +168,26 @@ export function SourceControlAccountSettings({
                   >
                     <SelectTrigger
                       size="sm"
-                      aria-label={uiText("{value0} account for {value1}", {
-                        value0: label,
-                        value1: group.host,
-                      })}
+                      aria-label={gt("{label} account for {host}", { label, host: group.host })}
                     >
                       <SelectValue>
                         {(value: string) =>
                           value === ACTIVE_ACCOUNT ? (
                             <span className="flex min-w-0 items-center gap-1">
-                              {uiText("Active ")}
-                              {cliName}
-                              {uiText(" account")}
                               {group.activeAccount ? (
-                                <>
-                                  (
+                                <T>
+                                  Active <Var>{cliName}</Var> account (
                                   <RedactedLogin
                                     revealed={revealed}
                                     account={group.activeAccount}
                                   />
                                   )
-                                </>
-                              ) : null}
+                                </T>
+                              ) : (
+                                <T>
+                                  Active <Var>{cliName}</Var> account
+                                </T>
+                              )}
                             </span>
                           ) : (
                             <RedactedLogin revealed={revealed} account={value} />
@@ -193,14 +198,16 @@ export function SourceControlAccountSettings({
                     <SelectPopup align="end" alignItemWithTrigger={false}>
                       <SelectItem value={ACTIVE_ACCOUNT}>
                         <span className="flex min-w-0 items-center gap-1">
-                          {uiText("Active ")}
-                          {cliName}
-                          {uiText(" account")}
                           {group.activeAccount ? (
-                            <>
-                              (<RedactedLogin revealed={revealed} account={group.activeAccount} />)
-                            </>
-                          ) : null}
+                            <T>
+                              Active <Var>{cliName}</Var> account (
+                              <RedactedLogin revealed={revealed} account={group.activeAccount} />)
+                            </T>
+                          ) : (
+                            <T>
+                              Active <Var>{cliName}</Var> account
+                            </T>
+                          )}
                         </span>
                       </SelectItem>
                       {group.selectable.map((account, index) => (
@@ -208,7 +215,7 @@ export function SourceControlAccountSettings({
                           <RedactedLogin
                             revealed={revealed}
                             account={account}
-                            label={uiText("Account {value0}", { value0: index + 1 })}
+                            label={gt("Account {number}", { number: index + 1 })}
                           />
                         </SelectItem>
                       ))}
@@ -220,9 +227,10 @@ export function SourceControlAccountSettings({
             {stalePin ? (
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-warning">
-                  {uiText("The chosen login is no longer signed in, so the active ")}
-                  {cliName}
-                  {uiText(" login is used.")}
+                  <T>
+                    The chosen login is no longer signed in, so the active <Var>{cliName}</Var>{" "}
+                    login is used.
+                  </T>
                 </p>
                 <Button
                   size="xs"
@@ -230,7 +238,7 @@ export function SourceControlAccountSettings({
                   disabled={saving}
                   onClick={() => void save(group.host, { account: null })}
                 >
-                  {uiText("Use active login")}
+                  <T>Use active login</T>
                 </Button>
               </div>
             ) : null}
@@ -239,20 +247,29 @@ export function SourceControlAccountSettings({
                 key={entry.account}
                 className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground/70"
               >
-                <RedactedLogin revealed={revealed} account={entry.account} />
-                <span>
-                  {uiText("can't be used: ")}
-                  {entry.error ??
-                    uiText("{value0} reports this login as invalid.", { value0: cliName })}
-                </span>
+                {entry.error ? (
+                  <T>
+                    <RedactedLogin revealed={revealed} account={entry.account} />{" "}
+                    <span>
+                      can&apos;t be used: <Var>{entry.error}</Var>
+                    </span>
+                  </T>
+                ) : (
+                  <T>
+                    <RedactedLogin revealed={revealed} account={entry.account} />{" "}
+                    <span>
+                      can&apos;t be used: <Var>{cliName}</Var> reports this login as invalid.
+                    </span>
+                  </T>
+                )}
               </p>
             ))}
             {group.environmentVariable ? (
               <p className="text-xs text-warning">
-                {group.environmentVariable}
-                {uiText(
-                  " is set on the server, so it overrides the account chosen here until it is unset.",
-                )}
+                <T>
+                  <Var>{group.environmentVariable}</Var> is set on the server, so it overrides the
+                  account chosen here until it is unset.
+                </T>
               </p>
             ) : null}
           </div>

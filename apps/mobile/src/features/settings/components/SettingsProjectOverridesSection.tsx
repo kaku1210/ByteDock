@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../../i18n/useUiLanguage";
+import { useGT } from "gt-react-native";
 import { View } from "react-native";
 
 import { Button } from "../../../components/ui/Button";
@@ -12,17 +12,17 @@ export function SettingsProjectOverridesSection(props: {
   readonly disabled?: boolean;
   readonly onClear: () => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   return (
-    <SettingsSection title={uiText("Project")}>
+    <SettingsSection title={gt("Project")}>
       <View className="min-h-16 flex-row items-center gap-3 px-4 py-3">
         <Text className="min-w-0 flex-1 text-base text-foreground" numberOfLines={2}>
           {props.projectLabel}
         </Text>
         {!props.pending && props.hasOverrides ? (
           <Button
-            label={uiText("Use defaults")}
-            accessibilityHint={uiText("Use environment defaults for this project")}
+            label={gt("Use defaults")}
+            accessibilityHint={gt("Use environment defaults for this project")}
             tone="text"
             disabled={props.disabled}
             onPress={props.onClear}

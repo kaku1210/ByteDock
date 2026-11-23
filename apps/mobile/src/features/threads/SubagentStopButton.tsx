@@ -1,6 +1,6 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
+import { useGT, useMessages } from "gt-react-native";
 import { useState } from "react";
 import { View } from "react-native";
 
@@ -19,7 +19,8 @@ export function SubagentStopButton(props: {
   readonly subagent: OrchestrationV2Subagent;
   readonly className?: string;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
+  const messages = useMessages();
   const target = resolveSubagentStopTarget(props.subagent);
   const canStop = useAtomValue(
     orchestrationEnvironment.stopWorkflow.permissionAtom(props.environmentId),
@@ -32,7 +33,8 @@ export function SubagentStopButton(props: {
 
   const workflow = target.kind === "workflow";
   const label =
-    props.subagent.workflow?.name ?? resolveSubagentRowPresentation(props.subagent).title;
+    props.subagent.workflow?.name ??
+    resolveSubagentRowPresentation(props.subagent, false, messages).title;
   const stop = async () => {
     setStopping(true);
     const result = await (
@@ -41,7 +43,7 @@ export function SubagentStopButton(props: {
         : interruptTurn({ environmentId: props.environmentId, input: target.input })
     ).finally(() => setStopping(false));
     if (result._tag === "Failure") {
-      Dialog.alert(workflow ? "Could not stop workflow" : "Could not stop agent");
+      Dialog.alert(workflow ? gt("Could not stop workflow") : gt("Could not stop agent"));
     }
   };
 
@@ -50,13 +52,23 @@ export function SubagentStopButton(props: {
       <IconButton
         icon="stop.fill"
         variant="danger"
-        accessibilityLabel={`${stopping ? uiText("Stopping") : uiText("Stop")} ${workflow ? uiText("workflow") : uiText("agent")} ${label}`}
+        accessibilityLabel={
+          workflow
+            ? stopping
+              ? gt("Stopping workflow {label}", { label })
+              : gt("Stop workflow {label}", { label })
+            : stopping
+              ? gt("Stopping agent {label}", { label })
+              : gt("Stop agent {label}", { label })
+        }
         disabled={stopping}
         onPress={() =>
           Dialog.confirm({
-            title: workflow ? "Stop workflow?" : "Stop agent?",
-            message: workflow ? `Every running agent in ${label} stops.` : `Stop ${label}?`,
-            confirmText: "Stop",
+            title: workflow ? gt("Stop workflow?") : gt("Stop agent?"),
+            message: workflow
+              ? gt("Every running agent in {label} stops.", { label })
+              : gt("Stop {label}?", { label }),
+            confirmText: gt("Stop", { $context: "verb, confirm button" }),
             destructive: true,
             onConfirm: () => void stop(),
           })

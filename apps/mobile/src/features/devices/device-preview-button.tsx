@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { Plural, T, useGT, Var } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { AppText } from "../../components/ui/AppText";
@@ -9,13 +9,15 @@ export function DevicePreviewButton(props: {
   readonly onPress: () => void;
   readonly compact?: boolean;
 }) {
-  const { text: uiText } = useUiLanguage();
   const compact = props.compact ?? true;
+  const gt = useGT();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={props.count === 1 ? uiText("View device") : `View ${props.count} devices`}
-      accessibilityHint={uiText("Watch and control devices open in this thread")}
+      accessibilityLabel={gt("{count, plural, =1 {View device} other {View {count} devices}}", {
+        count: props.count,
+      })}
+      accessibilityHint={gt("Watch and control devices open in this thread")}
       onPress={props.onPress}
       className={
         compact
@@ -31,7 +33,17 @@ export function DevicePreviewButton(props: {
       />
       {!compact ? (
         <AppText className="font-t3-medium text-xs text-foreground">
-          {props.count === 1 ? uiText("One device open") : `${props.count} devices open`}
+          <T>
+            <Plural
+              n={props.count}
+              singular="One device open"
+              other={
+                <>
+                  <Var>{props.count}</Var> devices open
+                </>
+              }
+            />
+          </T>
         </AppText>
       ) : props.count > 1 ? (
         <View className="absolute right-1.5 top-1.5 min-w-4 items-center rounded-full bg-primary px-1">

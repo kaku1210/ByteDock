@@ -1,8 +1,8 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { T, useGT, Var } from "gt-react";
 import { PlusIcon, SearchIcon } from "lucide-react";
 
 import { openCommandPalette } from "../../commandPaletteBus";
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { Button } from "../ui/button";
 import { PullRequestListGhost } from "./PullRequestGhosts";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
@@ -69,19 +69,24 @@ export function PullRequestListEmptyState({
   onLoadMore: () => void;
   onRefresh: () => void;
 }) {
-  const { t } = useUiLanguage();
+  const gt = useGT();
+  const shownQuery = query.length > 48 ? `${query.slice(0, 48)}…` : query;
   if (!hasProjects) {
     return (
       <Empty>
         <BranchMark joined={false} />
         <EmptyHeader>
-          <EmptyTitle>{t("pullRequests.noProjects")}</EmptyTitle>
-          <EmptyDescription>{t("pullRequests.addProjectDescription")}</EmptyDescription>
+          <EmptyTitle>
+            <T>No projects in this workspace</T>
+          </EmptyTitle>
+          <EmptyDescription>
+            <T>Add a project, and the pull requests from its repository appear here.</T>
+          </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <Button size="sm" onClick={() => openCommandPalette({ open: "add-project" })}>
             <PlusIcon className="size-3.5" />
-            {t("project.add")}
+            <T>Add project</T>
           </Button>
         </EmptyContent>
       </Empty>
@@ -92,7 +97,7 @@ export function PullRequestListEmptyState({
     return (
       <PullRequestListGhost
         rows={5}
-        caption={`Searching every host for “${query.length > 48 ? `${query.slice(0, 48)}…` : query}”`}
+        caption={gt("Searching every host for “{query}”", { query: shownQuery })}
       />
     );
   }
@@ -103,20 +108,25 @@ export function PullRequestListEmptyState({
         <BranchMark joined={false} />
         <EmptyHeader>
           <EmptyTitle>
-            Nothing matches “{query.length > 48 ? `${query.slice(0, 48)}…` : query}”
+            <T>
+              Nothing matches “<Var>{shownQuery}</Var>”
+            </T>
           </EmptyTitle>
           <EmptyDescription>
-            The hosts were searched for it. Try fewer words, or search by number, author or branch.
+            <T>
+              The hosts were searched for it. Try fewer words, or search by number, author or
+              branch.
+            </T>
           </EmptyDescription>
         </EmptyHeader>
         <div className="flex flex-wrap justify-center gap-2">
           <Button size="sm" variant="outline" onClick={onClearQuery}>
             <SearchIcon className="size-3.5" />
-            Clear search
+            <T>Clear search</T>
           </Button>
           <Button size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
             <RefreshIcon size="sm" refreshing={refreshing} />
-            {refreshing ? "Checking..." : "Check again"}
+            {refreshing ? gt("Checking...") : gt("Check again")}
           </Button>
         </div>
       </Empty>
@@ -127,20 +137,24 @@ export function PullRequestListEmptyState({
     <Empty>
       <BranchMark joined={false} />
       <EmptyHeader>
-        <EmptyTitle>{t(filtered ? "pullRequests.noFiltered" : "pullRequests.empty")}</EmptyTitle>
+        <EmptyTitle>
+          {filtered ? gt("Nothing under these filters") : gt("No pull requests")}
+        </EmptyTitle>
         <EmptyDescription>
-          {filtered ? t("pullRequests.noFilteredDescription") : t("pullRequests.emptyDescription")}
+          {filtered
+            ? gt("Widen the state, involvement or project filter to see more.")
+            : gt("Pull requests from every project in this workspace appear here.")}
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
         {canLoadMore ? (
           <Button size="sm" variant="outline" disabled={loadingMore} onClick={onLoadMore}>
-            {loadingMore ? "Loading..." : "Load more pull requests"}
+            {loadingMore ? gt("Loading...") : gt("Load more pull requests")}
           </Button>
         ) : null}
         <Button size="sm" variant="outline" disabled={refreshing} onClick={onRefresh}>
           <RefreshIcon size="sm" refreshing={refreshing} />
-          {refreshing ? "Checking..." : "Check again"}
+          {refreshing ? gt("Checking...") : gt("Check again")}
         </Button>
       </div>
     </Empty>

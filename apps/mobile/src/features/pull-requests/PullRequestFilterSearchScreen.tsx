@@ -1,4 +1,3 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
@@ -11,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Platform } from "react-native";
 
@@ -54,8 +54,8 @@ const optionsFamily = Atom.family((key: string) => {
 export function PullRequestFilterSearchScreen({
   route,
 }: StaticScreenProps<PullRequestFilterSearchParams>) {
-  const { text: uiText } = useUiLanguage();
   const navigation = useNavigation();
+  const gt = useGT();
   const { kind, environmentId, environmentIds, suggestions, labelColors } = route.params;
   const listControls = usePullRequestListControls();
   const controls = listControls.controlsFor(environmentId);
@@ -114,13 +114,17 @@ export function PullRequestFilterSearchScreen({
       },
     });
   };
-  const placeholder = kind === "labels" ? "Search labels" : "Search authors";
+  const placeholder = kind === "labels" ? gt("Search labels") : gt("Search authors");
   return (
     <PullRequestSearchSheet
-      title={kind === "labels" ? uiText("Filter by label") : uiText("Filter by author")}
+      title={kind === "labels" ? gt("Filter by label") : gt("Filter by author")}
       placeholder={placeholder}
-      closeAccessibilityLabel={kind === "labels" ? "Close label filter" : "Close author filter"}
-      clearAccessibilityLabel={kind === "labels" ? "Clear label search" : "Clear author search"}
+      closeAccessibilityLabel={
+        kind === "labels" ? gt("Close label filter") : gt("Close author filter")
+      }
+      clearAccessibilityLabel={
+        kind === "labels" ? gt("Clear label search") : gt("Clear author search")
+      }
       query={query}
       onQueryChange={setQuery}
     >
@@ -161,17 +165,17 @@ export function PullRequestFilterSearchScreen({
               <EmptyState
                 title={
                   hosted.failed
-                    ? uiText("Couldn't search the host")
+                    ? gt("Couldn't search the host")
                     : kind === "labels"
-                      ? uiText("No matching labels")
-                      : uiText("No matching authors")
+                      ? gt("No matching labels")
+                      : gt("No matching authors")
                 }
                 detail={
                   hosted.failed
-                    ? "The host didn't answer. Try again in a moment."
+                    ? gt("The host didn't answer. Try again in a moment.")
                     : kind === "labels"
-                      ? "Search the labels of the repositories this list covers."
-                      : "Search people by name or handle on the repositories' hosts."
+                      ? gt("Search the labels of the repositories this list covers.")
+                      : gt("Search people by name or handle on the repositories' hosts.")
                 }
                 variant="plain"
               />

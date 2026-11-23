@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useUiLanguage } from "../../../i18n/useUiLanguage";
+import { msg } from "gt-react-native";
 import { AsyncResult } from "effect/reactivity";
 import { Platform } from "react-native";
 import {
@@ -7,29 +7,30 @@ import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
   enabledNavigationTabs,
+  sharedSlotAbsentee,
   type NavigationTab,
 } from "./navigation-tab-order";
 import type { AppSymbolName } from "../../../components/ui/AppSymbol";
 import { mobilePreferencesAtom } from "../../../state/preferences";
 import { PullRequestGlyph } from "../../pull-requests/pullRequestGlyphs";
+import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { resolveWorkspaceTabOrder } from "./workspace-tabs-state";
 
-const WORKSPACE_TAB_LABELS = {
+export const WORKSPACE_TAB_LABELS = {
   ...NAVIGATION_TAB_LABELS,
-  ...(Platform.OS === "ios" ? { threads: "Chats", pullRequests: "PRs" } : {}),
+  ...(Platform.OS === "ios"
+    ? {
+        threads: msg("Chats", { $context: "navigation tab, list of chat threads" }),
+        pullRequests: msg("PRs", { $context: "navigation tab, pull requests" }),
+      }
+    : {}),
 };
-
-/** Resolves native navigation labels on each language change without rebuilding tab controllers. */
-export function useWorkspaceTabLabels() {
-  const { text } = useUiLanguage();
-  return Object.fromEntries(
-    Object.entries(WORKSPACE_TAB_LABELS).map(([key, value]) => [key, text(value)]),
-  ) as Record<keyof typeof WORKSPACE_TAB_LABELS, string>;
-}
 
 export const NAVIGATION_TAB_ICONS = {
   threads: "text.bubble",
   pullRequests: PullRequestGlyph.pullRequest,
+  issues: "git.issue",
+  workflows: "point.3.connected.trianglepath.dotted",
   usage: "chart.bar.xaxis",
 } as const satisfies Readonly<Record<NavigationTab, AppSymbolName>>;
 
@@ -43,10 +44,14 @@ export function useNavigationTabOrder() {
 
 export function useHiddenNavigationTabs() {
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const saved = AsyncResult.isSuccess(preferences)
-    ? preferences.value.hiddenNavigationTabs
-    : undefined;
-  return navigationCustomizationAvailable() ? resolveHiddenNavigationTabs(saved) : [];
+  const selected = useWorkspaceTabs()?.state.selectedTab ?? "threads";
+  const saved = AsyncResult.isSuccess(preferences) ? preferences.value : undefined;
+  return [
+    ...(navigationCustomizationAvailable()
+      ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
+      : []),
+    sharedSlotAbsentee(selected, saved?.sharedSlotTab),
+  ];
 }
 
 export function useEnabledNavigationTabs() {

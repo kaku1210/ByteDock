@@ -1,18 +1,20 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type {
   ProviderInstanceId,
   ServerProvider,
+  ServerProviderUsageLimits,
   ServerProviderUsageWindow,
   UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 import {
-  collectProviderUsageLimits,
-  formatDuration,
   type LimitPace,
-  limitsNotice,
+  type LimitPoolWindow,
   paceOf,
+  paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import { formatDuration, limitsNotice } from "@t3tools/shared/usageLimitsCopy";
+import { Link } from "@tanstack/react-router";
+import { msg, useGT, useMessages } from "gt-react";
 import type { ReactNode } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -25,69 +27,88 @@ import { cn } from "../../lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
+import { nextPoolReset, poolSources, resolveThreadDetailsLimits } from "./ThreadDetailsUsage.logic";
 
 const PACE_LABEL: Record<LimitPace, string> = {
-  ahead: "Ahead of pace",
-  on: "On pace",
-  under: "Under pace",
+  ahead: msg("Ahead of pace"),
+  on: msg("On pace"),
+  under: msg("Under pace"),
 };
 
 export interface ThreadDetailsUsageInput {
   readonly providerInstanceId: ProviderInstanceId | null;
+  readonly model: string | null;
   readonly providers: readonly ServerProvider[];
   readonly sources: UsageLimitSourceSnapshots;
 }
 
 type UsageTone = "error" | "warning" | null;
 
-/** The selected provider's limit windows. Each row reads as room left. */
+function limitTone(left: number): UsageTone {
+  if (left <= 10) return "error";
+  if (left <= 20) return "warning";
+  return null;
+}
+
+/** The selected provider's limit windows. Each row reads as room left and opens the usage page. */
 export function ThreadDetailsUsage({
   providerInstanceId,
+  model,
   providers,
   sources,
 }: ThreadDetailsUsageInput) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
-  const report =
-    providerInstanceId !== null
-      ? collectProviderUsageLimits(providerInstanceId, providers, sources, now)
-      : null;
-  // Only this instance's data: the report keeps one instance per login, and any other entry may be
-  // a different login or workspace, so fall back to the instance's own snapshot.
-  const limits =
-    report?.accounts.find((entry) => entry.instanceId === providerInstanceId)?.limits ??
-    providers.find((provider) => provider.instanceId === providerInstanceId)?.usageLimits;
-  if (!limits) return null;
-  const notice = limitsNotice(limits);
+  const resolved = resolveThreadDetailsLimits(providerInstanceId, model, providers, sources, now);
+  if (!resolved) return null;
 
   return (
     <ThreadDetailsSection
       headingId="thread-details-usage-heading"
-      title={uiText("Usage limits")}
+      title={gt("Usage limits")}
       showHeading={false}
     >
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
-        {notice ? (
-          <UsageRow
-            label={uiText("Limits")}
-            fill={null}
-            tone={null}
-            value="Unavailable"
-            details={<span className="text-foreground">{notice}</span>}
-          />
+        {resolved.kind === "pool" ? (
+          resolved.windows.map((window) => <PoolRow key={window.id} window={window} now={now} />)
         ) : (
-          limits.windows.map((window) => <LimitRow key={window.id} window={window} now={now} />)
+          <InstanceRows limits={resolved.limits} now={now} />
         )}
       </div>
     </ThreadDetailsSection>
   );
 }
 
+function InstanceRows({
+  limits,
+  now,
+}: {
+  readonly limits: ServerProviderUsageLimits;
+  readonly now: number;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const notice = limitsNotice(limits, m);
+  if (notice) {
+    return (
+      <UsageRow
+        label={gt("Limits", { $context: "usage limits row label" })}
+        fill={null}
+        tone={null}
+        value={gt("Unavailable")}
+        tooltip={<span className="text-foreground">{notice}</span>}
+        opensUsage
+      />
+    );
+  }
+  return limits.windows.map((window) => <LimitRow key={window.id} window={window} now={now} />);
+}
+
 /** The thread's context window. The bar fills as context is used; the tick marks auto-compaction. */
 export function ThreadDetailsContext(props: ContextWindowDetailsProps) {
   const { usage } = props;
-  const { text: uiText, t } = useUiLanguage();
+  const gt = useGT();
   const maxTokens = usage?.maxTokens != null && usage.maxTokens > 0 ? usage.maxTokens : null;
   const used =
     maxTokens !== null && usage?.usedPercentage != null
@@ -102,12 +123,12 @@ export function ThreadDetailsContext(props: ContextWindowDetailsProps) {
   return (
     <ThreadDetailsSection
       headingId="thread-details-context-heading"
-      title={uiText("Context window")}
+      title={gt("Context window")}
       showHeading={false}
     >
       <div className="grid grid-cols-[auto_minmax(3rem,1fr)_auto] gap-x-3 text-xs">
         <UsageRow
-          label={uiText("Context")}
+          label={gt("Context", { $context: "context window row label" })}
           fill={used}
           tone={used === null ? null : used >= 90 ? "error" : used >= 80 ? "warning" : null}
           tick={tick}
@@ -117,11 +138,13 @@ export function ThreadDetailsContext(props: ContextWindowDetailsProps) {
               ? `${usedTokens} / ${formatContextWindowTokens(maxTokens)}`
               : usedTokens
           }
-          ariaLabel={t("composer.contextWindowUsed", {
-            percentage: `${used ?? UNKNOWN_CONTEXT_VALUE}%`,
-          })}
+          ariaValue={
+            used !== null
+              ? gt("{used}% used", { used })
+              : gt("{usedTokens} tokens used", { usedTokens })
+          }
           interactive
-          details={<ContextWindowDetails {...props} />}
+          tooltip={<ContextWindowDetails {...props} />}
         />
       </div>
     </ThreadDetailsSection>
@@ -135,48 +158,118 @@ function LimitRow({
   readonly window: ServerProviderUsageWindow;
   readonly now: number;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
+  const m = useMessages();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const left = remainingPercent(window);
   const pace = paceOf(window, now);
+  const timeLeft = paceRemainingPercent(window, now);
   const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
   return (
     <UsageRow
       label={window.label}
       fill={left}
-      tone={left <= 10 ? "error" : left <= 20 ? "warning" : null}
+      tone={limitTone(left)}
+      tick={timeLeft}
       value={`${left}%`}
-      ariaLabel={`${window.label}: ${left}% left`}
-      details={
+      ariaValue={gt("{left}% left", { left })}
+      opensUsage
+      tooltip={
         <>
           <span className="text-foreground">
-            {window.label}: {left}
-            {uiText("% left")}
+            {gt("{label}: {left}% left", { label: window.label, left })}
           </span>
-          {window.resetsAt && resetsAt > now ? (
+          {pace && timeLeft !== null ? (
             <span className="text-muted-foreground">
-              {uiText("Resets in ")}
-              {formatDuration(resetsAt - now)} ·{" "}
-              {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)}
+              {m(PACE_LABEL[pace])} · {gt("{timeLeft}% of the window left", { timeLeft })}
             </span>
           ) : null}
-          {pace ? <span className="text-muted-foreground">{PACE_LABEL[pace]}</span> : null}
+          {window.resetsAt && resetsAt > now ? (
+            <span className="text-muted-foreground">
+              {gt("Resets in {duration} · {time}", {
+                duration: formatDuration(resetsAt - now, m),
+                time: formatUpcomingTimestamp(window.resetsAt, timestampFormat, now, undefined, m),
+              })}
+            </span>
+          ) : null}
         </>
       }
     />
   );
 }
 
+function PoolRow({ window, now }: { readonly window: LimitPoolWindow; readonly now: number }) {
+  const gt = useGT();
+  const m = useMessages();
+  const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
+  const left = window.remainingPercent;
+  const accounts = window.members.length;
+  const from = poolSources(window);
+  const sourceLabels = [...from.hubs, ...(from.signedIn ? [gt("Signed-in accounts")] : [])];
+  const next = nextPoolReset(window, now);
+  const resetsAt = next?.member.window.resetsAt;
+  const reset =
+    next && resetsAt
+      ? {
+          duration: formatDuration(next.at - now, m),
+          time: formatUpcomingTimestamp(resetsAt, timestampFormat, now, undefined, m),
+        }
+      : null;
+  return (
+    <UsageRow
+      label={window.label}
+      fill={left}
+      tone={limitTone(left)}
+      value={`${left}%`}
+      ariaValue={gt("{left}% left", { left })}
+      opensUsage
+      tooltip={
+        <>
+          <span className="text-foreground">
+            {accounts > 1
+              ? gt("{label}: {left}% left across {accounts} accounts", {
+                  label: window.label,
+                  left,
+                  accounts,
+                })
+              : gt("{label}: {left}% left", { label: window.label, left })}
+          </span>
+          {window.pace ? (
+            <span className="text-muted-foreground">{m(PACE_LABEL[window.pace])}</span>
+          ) : null}
+          {next && reset ? (
+            <span className="text-muted-foreground">
+              {accounts > 1
+                ? gt("+{percent}% in {duration} · {time}", {
+                    percent: next.restoresPercent,
+                    ...reset,
+                  })
+                : gt("Resets in {duration} · {time}", reset)}
+            </span>
+          ) : null}
+          {sourceLabels.length > 0 ? (
+            <span className="text-muted-foreground">
+              {gt("From {sources}", { sources: sourceLabels.join(", ") })}
+            </span>
+          ) : null}
+        </>
+      }
+    />
+  );
+}
+
+/** One label, hairline, and value row; the whole row opens the details tooltip or popover. With `opensUsage` it links to the usage page. */
 function UsageRow({
   label,
   fill,
   tone,
   tick = null,
   value,
-  ariaLabel = `${label}: ${value}`,
-  details,
+  ariaValue = value,
+  tooltip,
   interactive = false,
   muted = false,
+  opensUsage = false,
 }: {
   readonly label: string;
   /** Bar fill from 0 to 100. Null hides the bar. */
@@ -185,16 +278,27 @@ function UsageRow({
   /** A marker on the bar, from 0 to 100. */
   readonly tick?: number | null;
   readonly value: string;
-  readonly ariaLabel?: string;
-  readonly details: ReactNode;
+  readonly ariaValue?: string;
+  readonly tooltip: ReactNode;
   readonly interactive?: boolean;
   readonly muted?: boolean;
+  readonly opensUsage?: boolean;
 }) {
-  const rowClassName =
-    "col-span-3 grid h-6 grid-cols-subgrid items-center rounded-lg px-2.5 outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:data-popup-open:bg-white/[0.08]";
+  const gt = useGT();
+  const ariaLabel = gt("{label}: {value}", { label, value: ariaValue });
+  const rowClassName = cn(
+    "col-span-3 grid h-6 grid-cols-subgrid items-center rounded-lg px-2.5 outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:data-popup-open:bg-white/[0.08]",
+    opensUsage
+      ? "group cursor-pointer active:bg-black/[0.06] dark:active:bg-white/[0.12]"
+      : interactive
+        ? "cursor-pointer"
+        : "cursor-default",
+  );
   const content = (
     <>
-      <span className="max-w-28 truncate text-muted-foreground">{label}</span>
+      <span className="max-w-28 truncate text-muted-foreground group-hover:text-foreground">
+        {label}
+      </span>
       {fill !== null ? (
         <span className="relative h-[3px] rounded-full bg-muted-foreground/30 dark:bg-muted-foreground/20">
           {fill > 0 ? (
@@ -215,8 +319,8 @@ function UsageRow({
           {tick !== null ? (
             <span
               aria-hidden
-              className="absolute -top-[3px] h-[9px] w-px -translate-x-1/2 bg-foreground/60"
-              style={{ left: `${tick}%` }}
+              className="absolute -top-[3px] h-[9px] w-px -translate-x-1/2 bg-foreground/75"
+              style={{ left: `clamp(0.5px, ${tick}%, calc(100% - 0.5px))` }}
             />
           ) : null}
         </span>
@@ -243,7 +347,7 @@ function UsageRow({
     return (
       <Popover>
         <PopoverTrigger
-          render={<button type="button" className={cn(rowClassName, "cursor-pointer")} />}
+          render={<button type="button" className={rowClassName} />}
           aria-label={ariaLabel}
         >
           {content}
@@ -256,22 +360,29 @@ function UsageRow({
           tooltipStyle
           aria-label={label}
         >
-          {details}
+          {tooltip}
         </PopoverPopup>
       </Popover>
     );
   }
+  const rowProps = {
+    "aria-label": ariaLabel,
+    className: rowClassName,
+  };
   return (
     <Tooltip>
       <TooltipTrigger
         render={
-          <div tabIndex={0} aria-label={ariaLabel} className={cn(rowClassName, "cursor-default")} />
+          opensUsage ? <Link to="/usage" {...rowProps} /> : <div tabIndex={0} {...rowProps} />
         }
       >
         {content}
       </TooltipTrigger>
       <TooltipPopup side="left" sideOffset={16}>
-        <div className="flex flex-col gap-0.5">{details}</div>
+        <div className="flex flex-col gap-0.5">
+          {tooltip}
+          {opensUsage ? <span className="text-muted-foreground">{gt("Open usage")}</span> : null}
+        </div>
       </TooltipPopup>
     </Tooltip>
   );

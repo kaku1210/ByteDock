@@ -40,6 +40,7 @@ import {
   SquareIcon,
   UserIcon,
 } from "lucide-react";
+import { msg, useMessages } from "gt-react";
 import { useState } from "react";
 
 import { useUiLanguage } from "../../i18n/useUiLanguage";
@@ -64,42 +65,42 @@ function sessionStatusBadge(status: FamilyCollaborationSessionStatus): ToneClass
   switch (status) {
     case "running":
       return {
-        label: "Running",
+        label: msg("Running"),
         className: "bg-info/15 text-info border-info/30",
       };
     case "waiting_approval":
       return {
-        label: "Waiting approval",
+        label: msg("Waiting approval"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "waiting_input":
       return {
-        label: "Waiting input",
+        label: msg("Waiting input"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "queue_paused":
       return {
-        label: "Queue paused",
+        label: msg("Queue paused"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "awaiting_initial_send":
       return {
-        label: "Awaiting first send",
+        label: msg("Awaiting first send"),
         className: "bg-primary/10 text-primary border-primary/25",
       };
     case "error":
       return {
-        label: "Error",
+        label: msg("Error"),
         className: "bg-destructive/15 text-destructive border-destructive/30",
       };
     case "archived":
       return {
-        label: "Archived",
+        label: msg("Archived"),
         className: "bg-muted text-muted-foreground border-border",
       };
     case "idle":
       return {
-        label: "Idle",
+        label: msg("Idle"),
         className: "bg-muted/70 text-muted-foreground border-border",
       };
   }
@@ -109,47 +110,47 @@ function taskStatusBadge(status: FamilyCollaborationTaskStatus): ToneClass {
   switch (status) {
     case "running":
       return {
-        label: "Running",
+        label: msg("Running"),
         className: "bg-info/15 text-info border-info/30",
       };
     case "queued":
       return {
-        label: "Queued",
+        label: msg("Queued"),
         className: "bg-info/10 text-info border-info/25",
       };
     case "blocked":
       return {
-        label: "Blocked",
+        label: msg("Blocked"),
         className: "bg-destructive/15 text-destructive border-destructive/30",
       };
     case "completed":
       return {
-        label: "Completed",
+        label: msg("Completed"),
         className: "bg-success/15 text-success border-success/30",
       };
     case "failed":
       return {
-        label: "Failed",
+        label: msg("Failed"),
         className: "bg-destructive/15 text-destructive border-destructive/30",
       };
     case "cancelled":
       return {
-        label: "Cancelled",
+        label: msg("Cancelled"),
         className: "bg-muted text-muted-foreground border-border",
       };
     case "interrupted":
       return {
-        label: "Interrupted",
+        label: msg("Interrupted"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "draft":
       return {
-        label: "Draft",
+        label: msg("Draft"),
         className: "bg-primary/10 text-primary border-primary/25",
       };
     case "none":
       return {
-        label: "None",
+        label: msg("None"),
         className: "bg-muted/60 text-muted-foreground border-border",
       };
   }
@@ -159,42 +160,42 @@ function deliveryStatusBadge(status: FamilyCollaborationDeliveryStatus): ToneCla
   switch (status) {
     case "awaiting_delivery":
       return {
-        label: "Awaiting delivery",
+        label: msg("Awaiting delivery"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "pending_merge_back":
       return {
-        label: "Pending Bring back",
+        label: msg("Pending Bring back"),
         className: "bg-primary/10 text-primary border-primary/25",
       };
     case "bound_merge_back":
       return {
-        label: "Bound to next parent turn",
+        label: msg("Bound to next parent turn"),
         className: "bg-info/15 text-info border-info/30",
       };
     case "interim_reported":
       return {
-        label: "Interim reported",
+        label: msg("Interim reported"),
         className: "bg-info/15 text-info border-info/30",
       };
     case "delivered":
       return {
-        label: "Delivered",
+        label: msg("Delivered"),
         className: "bg-success/15 text-success border-success/30",
       };
     case "acknowledged":
       return {
-        label: "Acknowledged",
+        label: msg("Acknowledged"),
         className: "bg-success/15 text-success border-success/30",
       };
     case "superseded":
       return {
-        label: "Superseded",
+        label: msg("Superseded"),
         className: "bg-muted text-muted-foreground border-border",
       };
     case "none":
       return {
-        label: "None",
+        label: msg("None"),
         className: "bg-muted/60 text-muted-foreground border-border",
       };
   }
@@ -237,6 +238,7 @@ function FamilyCollaborationOverviewView({
   onSetSerializationMode,
 }: FamilyCollaborationOverviewViewProps) {
   const { text: uiText } = useUiLanguage();
+  const m = useMessages();
   const [expandedNodeIds, setExpandedNodeIds] = useState<ReadonlySet<ThreadId>>(() => new Set());
   const [showMarkdownDigest, setShowMarkdownDigest] = useState(false);
   const [copiedDigest, setCopiedDigest] = useState(false);
@@ -715,21 +717,21 @@ function FamilyCollaborationOverviewView({
                         className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium ${sessionTone.className}`}
                       >
                         <span className="opacity-75">{uiText("Session")}:</span>
-                        <span>{uiText(sessionTone.label)}</span>
+                        <span>{m(sessionTone.label)}</span>
                       </span>
                       <span
                         data-testid={`collaboration-node-task-${node.threadId}`}
                         className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium ${taskTone.className}`}
                       >
                         <span className="opacity-75">{uiText("Task")}:</span>
-                        <span>{uiText(taskTone.label)}</span>
+                        <span>{m(taskTone.label)}</span>
                       </span>
                       <span
                         data-testid={`collaboration-node-delivery-${node.threadId}`}
                         className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium ${deliveryTone.className}`}
                       >
                         <span className="opacity-75">{uiText("Delivery")}:</span>
-                        <span>{uiText(deliveryTone.label)}</span>
+                        <span>{m(deliveryTone.label)}</span>
                       </span>
                     </div>
 
@@ -937,7 +939,7 @@ function FamilyCollaborationOverviewView({
                       <span
                         className={`rounded-md border px-1.5 py-0.5 font-medium ${tone.className}`}
                       >
-                        {uiText(tone.label)}
+                        {m(tone.label)}
                       </span>
                     </div>
                   </button>
@@ -993,9 +995,7 @@ export function FamilyCollaborationOverviewPanel({
   };
 
   const handleSelectSideChat = (sideChat: FamilyCollaborationSideChatSummary) => {
-    useRightPanelStore
-      .getState()
-      .openSideChat(threadRef, sideChat.threadId, sideChat.temporary || undefined);
+    useRightPanelStore.getState().openThread(threadRef, sideChat.threadId);
   };
 
   const handleStopNode = async (node: FamilyCollaborationNode) => {

@@ -1,5 +1,5 @@
 import { GTProvider, T } from "gt-react";
-import { useState } from "react";
+import { type ComponentProps, useState } from "react";
 import { expect, it } from "vite-plus/test";
 import { render } from "../../test/render";
 import { initializeI18n } from "./initializeI18n";
@@ -23,8 +23,11 @@ function LanguageProbe() {
 
 function LanguageFixture() {
   const [locale, setLocale] = useState("zh");
+  const translations = { en: {}, zh } as unknown as ComponentProps<
+    typeof GTProvider
+  >["translations"];
   return (
-    <GTProvider locale={locale} translations={{ en: {}, zh }}>
+    <GTProvider locale={locale} translations={translations}>
       <UiLanguageProvider>
         <button onClick={() => setLocale("en")}>English</button>
         <button onClick={() => setLocale("zh")}>中文</button>
@@ -40,7 +43,7 @@ it("switches upstream and Plus together, preferring upstream Chinese and preserv
   await expect
     .element(screen.getByTestId("upstream"))
     .toHaveTextContent("系统默认跟随浏览器或操作系统的语言。");
-  await expect.element(screen.getByTestId("plus")).toHaveTextContent("最近一条用户消息");
+  await expect.element(screen.getByTestId("plus")).toHaveTextContent("最后一条用户消息");
   await expect.element(screen.getByTestId("supplement")).toHaveTextContent("屏幕阅读器");
   await expect.element(screen.getByTestId("project")).toHaveTextContent("移除 English project");
   await screen.getByRole("button", { name: "English", exact: true }).click();

@@ -1,5 +1,3 @@
-import type { UiLanguage } from "../uiLanguage.ts";
-
 import { settingsDetailMessages } from "./settingsDetailMessages.ts";
 
 type CopyPair = readonly [source: string, simplifiedChinese: string];
@@ -455,29 +453,6 @@ const settingCopy: Readonly<Partial<Record<string, SettingCopy>>> = {
     title: ["Interface language", "界面语言"],
   },
 };
-
-// A stable settings ID locates the copy. Match the source too so an upstream wording
-// change with new semantics cannot keep displaying an older translation.
-function translated(language: UiLanguage, copy: CopyPair | undefined, source: string): string {
-  return language === "zh-CN" && copy?.[0] === source ? copy[1] : source;
-}
-
-export function settingsSectionTitle(
-  language: UiLanguage,
-  id: string | undefined,
-  source: string,
-): string {
-  return translated(language, id === undefined ? undefined : sectionCopy[id], source);
-}
-
-export function settingsRowText(
-  language: UiLanguage,
-  id: string | undefined,
-  field: keyof SettingCopy,
-  source: string,
-): string {
-  return translated(language, id === undefined ? undefined : settingCopy[id]?.[field], source);
-}
 
 const sourceCopy = new Map<string, string>([
   ...Object.values(sectionCopy).filter((copy) => copy !== undefined),

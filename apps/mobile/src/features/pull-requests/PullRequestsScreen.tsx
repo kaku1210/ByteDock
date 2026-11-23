@@ -1,4 +1,3 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { usePaneRole } from "../../components/ui/Pane";
 import { Button } from "../../components/ui/Button";
 import {
@@ -8,6 +7,7 @@ import {
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
+import { useGT } from "gt-react-native";
 import { use, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { Keyboard, Platform, Pressable, View } from "react-native";
@@ -30,6 +30,8 @@ import {
   usePullRequestListFilters,
   type PullRequestFilterMenu,
 } from "./PullRequestListFilters";
+import { SavedViewsMenu } from "../layout/workspace/SavedViewsMenu";
+import { pullRequestViewMatches } from "./pullRequestSavedViews";
 import { usePullRequestList } from "./usePullRequestList";
 import { usePullRequestListControls } from "./usePullRequestListControls";
 import { usePullRequestListActions } from "./usePullRequestListActions";
@@ -94,8 +96,8 @@ export function PullRequestsScreen(
     readonly renderFrame?: (filters: PullRequestFilterMenu | null, list: ReactNode) => ReactNode;
   } = {},
 ) {
-  const { text: uiText } = useUiLanguage();
   const navigation = useNavigation();
+  const gt = useGT();
   const primaryColumn = use(NativePrimaryColumnContext);
   const workspace = useWorkspaceTabs()!;
   const { environments } = useWorkspaceState();
@@ -321,13 +323,49 @@ export function PullRequestsScreen(
         ListHeaderComponentStyle={{ zIndex: 1 }}
         ListHeaderComponent={
           <>
-            <PullRequestListFilters sidebar={sidebar} filters={filters} />
+            <PullRequestListFilters
+              sidebar={sidebar}
+              savedViewsMenu={
+                <SavedViewsMenu
+                  read={(preferences) => preferences.pullRequestSavedViews}
+                  write={(pullRequestSavedViews) => ({ pullRequestSavedViews })}
+                  list="pullRequest"
+                  suggestedName={
+                    controls.involvement === "reviewing" ? gt("PRs Requesting My Review") : ""
+                  }
+                  matches={pullRequestViewMatches}
+                  scope={{
+                    environmentId,
+                    controls,
+                    query: tab.searchMode === "resting" ? "" : tab.query,
+                  }}
+                  onApply={async (view) => {
+                    await listControls.applyView(view);
+                    workspace.dispatch(
+                      view.query.trim()
+                        ? { type: "search", tab: "pullRequests" }
+                        : { type: "cancel", tab: "pullRequests", scrollToTop: true },
+                    );
+                    workspace.dispatch({
+                      type: "query",
+                      tab: "pullRequests",
+                      query: view.query.trim(),
+                    });
+                    void listRef.current?.scrollToOffset({
+                      offset: Platform.OS === "ios" ? -insets.top : 0,
+                      animated: false,
+                    });
+                  }}
+                />
+              }
+              filters={filters}
+            />
             {result.data?.errors.length ? (
               <View key={JSON.stringify(targets)}>
                 {result.data.errors.map((error) => (
                   <PullRequestListError
                     key={`${error.environmentId} ${error.projectTitle} ${error.message}`}
-                    message={`${error.projectTitle || environments.find((environment) => environment.environmentId === error.environmentId)?.environmentLabel || "Environment"}: ${error.message}`}
+                    message={`${error.projectTitle || environments.find((environment) => environment.environmentId === error.environmentId)?.environmentLabel || gt("Environment", { $context: "fallback name for a server" })}: ${error.message}`}
                   />
                 ))}
               </View>
@@ -339,15 +377,15 @@ export function PullRequestsScreen(
             <View className="items-center py-5">
               <AppActivityIndicator
                 colorClassName="accent-icon"
-                accessibilityLabel={uiText("Loading more pull requests")}
+                accessibilityLabel={gt("Loading more pull requests")}
               />
             </View>
           ) : result.loadMoreError ? (
             <View className="items-center gap-2 px-8 py-4">
               <Text className="text-xs text-foreground-muted">{result.loadMoreError}</Text>
               <Button
-                label={uiText("Try again")}
-                accessibilityLabel={uiText("Retry loading more pull requests")}
+                label={gt("Try again")}
+                accessibilityLabel={gt("Retry loading more pull requests")}
                 onPress={() => void result.loadMore(true)}
               />
             </View>
@@ -355,8 +393,8 @@ export function PullRequestsScreen(
             // A filtered page can be too short to scroll, which leaves nothing to reach the end of.
             <View className="items-center py-4">
               <Button
-                label={uiText("Load more")}
-                accessibilityLabel={uiText("Load more pull requests")}
+                label={gt("Load more")}
+                accessibilityLabel={gt("Load more pull requests")}
                 onPress={() => void result.loadMore()}
               />
             </View>
@@ -372,22 +410,22 @@ export function PullRequestsScreen(
               <EmptyState
                 title={
                   result.error
-                    ? uiText("Couldn't load pull requests")
+                    ? gt("Couldn't load pull requests")
                     : targets.length && connectedTargets.length === 0
-                      ? uiText("Environment offline")
+                      ? gt("Environment offline")
                       : targets.length
                         ? query
-                          ? uiText("No results")
-                          : uiText("No matching pull requests")
-                        : uiText("Connect an environment")
+                          ? gt("No results")
+                          : gt("No matching pull requests")
+                        : gt("Connect an environment")
                 }
                 detail={
                   result.error ??
                   (targets.length && connectedTargets.length === 0
-                    ? "Reconnect to load pull requests that aren't saved on this device."
+                    ? gt("Reconnect to load pull requests that aren't saved on this device.")
                     : targets.length
-                      ? "Pull requests from the selected environments' projects appear here."
-                      : "Add an environment in Settings to browse its pull requests.")
+                      ? gt("Pull requests from the selected environments' projects appear here.")
+                      : gt("Add an environment in Settings to browse its pull requests."))
                 }
                 variant="plain"
               />

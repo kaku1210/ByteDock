@@ -5,9 +5,10 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { ThreadSnapshotLoader } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { AppState } from "react-native";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -148,20 +149,20 @@ export function installThreadPrefetcher(): () => void {
         continue;
       }
       inFlight.add(key);
-      void prefetchEnvironmentThreadSnapshot
-        .run(appAtomRegistry, { environmentId: next.environmentId, input: next.threadId })
-        .then((result) => {
-          inFlight.delete(key);
-          // Only a written or genuinely absent thread waits out the freshness window;
-          // skipped/unavailable results retry on the next trigger.
-          if (
-            AsyncResult.isSuccess(result) &&
-            (result.value === "saved" || result.value === "missing")
-          ) {
-            lastPrefetchedAt.set(key, Date.now());
-          }
-          pump();
-        });
+      void Effect.runPromiseExit(
+        prefetchEnvironmentThreadSnapshot.run(appAtomRegistry, {
+          environmentId: next.environmentId,
+          input: next.threadId,
+        }),
+      ).then((result) => {
+        inFlight.delete(key);
+        // Only a written or genuinely absent thread waits out the freshness window;
+        // skipped/unavailable results retry on the next trigger.
+        if (Exit.isSuccess(result) && (result.value === "saved" || result.value === "missing")) {
+          lastPrefetchedAt.set(key, Date.now());
+        }
+        pump();
+      });
     }
   };
 

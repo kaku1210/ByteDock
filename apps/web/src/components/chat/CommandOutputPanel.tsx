@@ -1,7 +1,7 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import type { CommandOutputView } from "@t3tools/client-runtime/state/command-output";
 import type { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { TERMINAL_PALETTES, terminalOutputSpans } from "@t3tools/shared/terminalOutput";
+import { T, Var } from "gt-react";
 import { useLayoutEffect, useRef } from "react";
 
 import { useTheme } from "../../hooks/useTheme";
@@ -31,7 +31,6 @@ export function CommandOutputPanel(props: {
   readonly itemId: TurnItemId;
   readonly source?: TurnItemSource["commandOutput"] | undefined;
 }) {
-  const { text: uiText } = useUiLanguage();
   const input = { threadId: props.threadId, itemId: props.itemId };
   const { data, error } = useEnvironmentQuery<CommandOutputView, unknown>(
     props.source
@@ -51,17 +50,26 @@ export function CommandOutputPanel(props: {
   });
 
   if (text.length === 0) {
-    if (error)
+    if (error) {
       return (
         <div className="text-destructive">
-          {uiText("Couldn't load output: ")}
-          {error}
+          <T>
+            Couldn&apos;t load output: <Var>{error}</Var>
+          </T>
         </div>
       );
-    if (data === null)
-      return <div className="text-muted-foreground italic">{uiText("Loading output…")}</div>;
+    }
+    if (data === null) {
+      return (
+        <div className="text-muted-foreground italic">
+          <T>Loading output…</T>
+        </div>
+      );
+    }
     return data.running ? null : (
-      <div className="text-muted-foreground italic">{uiText("No output.")}</div>
+      <div className="text-muted-foreground italic">
+        <T>No output.</T>
+      </div>
     );
   }
   // Parse after all hooks to preserve the text/theme compiler cache.
@@ -77,7 +85,9 @@ export function CommandOutputPanel(props: {
       className="max-h-80 overflow-auto text-muted-foreground"
     >
       {data?.output.truncated ? (
-        <div className="italic">{uiText("Earlier output not shown")}</div>
+        <div className="italic">
+          <T>Earlier output not shown</T>
+        </div>
       ) : null}
       {spans.map((span, index) =>
         span.style === null ? (

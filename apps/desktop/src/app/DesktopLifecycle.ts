@@ -22,7 +22,6 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
-import { prepareRendererExit } from "../window/RendererExit.ts";
 
 export class DesktopLifecycleRelaunchError extends Schema.TaggedError<DesktopLifecycleRelaunchError>()(
   "DesktopLifecycleRelaunchError",
@@ -96,16 +95,9 @@ function addScopedListener<Args extends ReadonlyArray<unknown>>(
 const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdownAndWait")(
   function* (
     afterBoundsFlush: Effect.Effect<void> = Effect.void,
-  ): Effect.fn.Return<
-    void,
-    never,
-    DesktopShutdown.DesktopShutdown | DesktopWindow.DesktopWindow | ElectronWindow.ElectronWindow
-  > {
+  ): Effect.fn.Return<void, never, DesktopShutdown.DesktopShutdown | DesktopWindow.DesktopWindow> {
     const shutdown = yield* DesktopShutdown.DesktopShutdown;
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
-    const windows = yield* ElectronWindow.ElectronWindow;
-    const main = yield* windows.main;
-    if (Option.isSome(main)) yield* prepareRendererExit(main.value);
     yield* desktopWindow.flushMainWindowBounds;
     yield* afterBoundsFlush;
     yield* shutdown.request;

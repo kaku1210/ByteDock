@@ -76,7 +76,7 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -456,6 +456,7 @@ function CoordinatorRoleTemplateEditorDialog({
 
 export function CoordinatorRoleTemplatesSettings() {
   const { text: uiText } = useUiLanguage();
+  const searchableSetting = useSearchableSetting();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { environment, connectedEnvironments } = useSettingsScope();
@@ -559,7 +560,7 @@ export function CoordinatorRoleTemplatesSettings() {
             hasServerTargets &&
             settings.defaultCoordinatorRoleTemplateId !== DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID ? (
               <SettingResetButton
-                label={uiText("default coordinator template")}
+                ariaLabel={uiText("Reset default coordinator template")}
                 onClick={() =>
                   updateSettings({
                     defaultCoordinatorRoleTemplateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,

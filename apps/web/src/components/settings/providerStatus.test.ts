@@ -1,6 +1,8 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import { decodeOptions } from "gt-react";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { MessageResolver } from "../../i18n/messages";
 import {
   getProviderSummary,
   getProviderVersionAdvisoryPresentation,
@@ -35,20 +37,27 @@ describe("getProviderSummary", () => {
     });
   });
 
-  it("localizes known diagnostics while preserving external details", () => {
+  it("passes headlines through a custom MessageResolver while preserving external details", () => {
     const unauthenticated: ServerProvider = {
       ...provider,
       auth: { status: "unauthenticated" },
       message: "Claude Code is not authenticated. Run `claude auth login` and try again.",
     };
-    expect(getProviderSummary(unauthenticated, "zh-CN")).toEqual({
+    const zhResolver = ((message: unknown) => {
+      const source =
+        typeof message === "string"
+          ? (decodeOptions(message)?.$_source ?? message)
+          : String(message);
+      return source === "Not authenticated" ? "未登录" : String(source);
+    }) as MessageResolver;
+    expect(getProviderSummary(unauthenticated, zhResolver)).toEqual({
       headline: "未登录",
-      detail: "Claude Code 尚未登录。请运行 `claude auth login` 后重试。",
+      detail: "Claude Code is not authenticated. Run `claude auth login` and try again.",
     });
     expect(
       getProviderSummary(
         { ...unauthenticated, message: "Error 401 from https://example.com" },
-        "zh-CN",
+        zhResolver,
       ).detail,
     ).toBe("Error 401 from https://example.com");
   });

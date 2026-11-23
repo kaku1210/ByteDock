@@ -79,8 +79,9 @@ const descriptor = {
   capabilities: {
     repositoryIdentity: true,
     sideChats: true,
-    temporarySideChats: true,
     subtasks: true,
+    freshContext: true,
+    fileAttachments: { maxUploadBytes: 10_000_000 },
   },
 };
 const auth = {
@@ -117,9 +118,15 @@ export const CLAUDE_PROVIDER = {
 };
 
 const decodeServerConfig = Schema.decodeUnknownSync(ServerConfig);
-const makeServerConfig = (providers: ReadonlyArray<unknown>): ServerConfig => ({
+const makeServerConfig = (
+  providers: ReadonlyArray<unknown>,
+  supportsIssues = false,
+): ServerConfig => ({
   ...decodeServerConfig({
-    environment: descriptor,
+    environment: {
+      ...descriptor,
+      capabilities: { ...descriptor.capabilities, issues: supportsIssues },
+    },
     auth,
     cwd: "/workspace/render",
     keybindingsConfigPath: "/workspace/.t3/keybindings.json",
@@ -240,6 +247,8 @@ export interface FakeThread {
   /** Explicit task-tree root when deeper than one hop (e.g. L2 -> L1 -> L0). */
   readonly rootThreadId?: ThreadId;
   readonly temporary?: boolean;
+  /** Makes this a subagent the provider started under that thread, which takes no messages. */
+  readonly providerSubagentOf?: ThreadId;
   /** Makes this an older settled thread the shell leaves out; only its family read returns it. */
   readonly olderSettled?: true;
   readonly id: ThreadId;
@@ -250,6 +259,7 @@ export interface FakeThread {
   readonly providerThreads?: ReadonlyArray<OrchestrationV2ProviderThread>;
   readonly worktreePath?: string | null;
   readonly branch?: string | null;
+  readonly issues?: OrchestrationV2ThreadShell["issues"];
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
   readonly subagents?: OrchestrationV2ThreadProjection["subagents"];
@@ -325,10 +335,13 @@ export function threadWithQuestion(name: string, question: string): FakeThread {
   };
 }
 
+const parentOf = (thread: FakeThread) =>
+  thread.sideChatOf ?? thread.subtaskOf ?? thread.providerSubagentOf;
+
 function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const latest = thread.runs.at(-1);
   const modelSelection = thread.modelSelection ?? MODEL;
-  const parentThreadId = thread.sideChatOf ?? thread.subtaskOf ?? null;
+  const parentThreadId = parentOf(thread) ?? null;
   const rootThreadId = thread.rootThreadId ?? parentThreadId ?? thread.id;
   return {
     id: thread.id,
@@ -341,16 +354,23 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     branch: thread.branch ?? "main",
     worktreePath: thread.worktreePath ?? null,
     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
+    ...(thread.issues === undefined ? {} : { issues: thread.issues }),
     lineage: {
       rootThreadId,
       parentThreadId,
-      relationshipToParent: thread.subtaskOf ? "subtask" : thread.sideChatOf ? "fork" : null,
+      relationshipToParent: thread.subtaskOf
+        ? "subtask"
+        : thread.providerSubagentOf
+          ? "subagent"
+          : thread.sideChatOf
+            ? "fork"
+            : null,
       ...(thread.sideChatOf ? { sideChat: true } : {}),
       ...(thread.temporary ? { temporary: true } : {}),
     },
     forkedFrom: null,
-    createdBy: "user",
-    creationSource: "web",
+    createdBy: thread.providerSubagentOf ? "agent" : "user",
+    creationSource: thread.providerSubagentOf ? "provider" : "web",
     latestRunId: latest?.id ?? null,
     activeRunId: latest?.status === "running" ? latest.id : null,
     // Idle reads as waiting on the user, which shows a per-second duration in the sidebar.
@@ -396,8 +416,8 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
       activeProviderThreadId: shell.activeProviderThreadId,
       lineage: shell.lineage,
       forkedFrom: null,
-      createdBy: "user",
-      creationSource: "web",
+      createdBy: shell.createdBy,
+      creationSource: shell.creationSource,
       createdAt: AT,
       updatedAt: AT,
       archivedAt: null,
@@ -466,8 +486,25 @@ const handlers: Record<string, (input: never) => unknown> = {
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
     Effect.suspend(() => {
       dispatched.push(command);
-      if (acceptCommands && !holdCommand(command))
-        return Effect.succeed({ sequence: sequence + 1 });
+      if (acceptCommands && !holdCommand(command)) {
+        if (command.type !== "thread.fork" || !command.sideChat || shellSubscriber === null)
+          return Effect.succeed({ sequence: sequence + 1 });
+        const fork: FakeThread = {
+          id: command.targetThreadId,
+          title: command.title ?? "Side chat",
+          sideChatOf: command.sourceThreadId,
+          runs: [],
+          items: [],
+        };
+        threads = [...threads, fork];
+        sequence += 1;
+        return Queue.offer(shellSubscriber, {
+          kind: "thread.updated",
+          sequence,
+          location: "active",
+          thread: shellOf(fork),
+        }).pipe(Effect.as({ sequence }));
+      }
       const reply = Deferred.makeUnsafe<never, OrchestrationV2DispatchCommandError>();
       pendingDispatches.push({ command, reply });
       return Deferred.await(reply);
@@ -572,8 +609,7 @@ const handlers: Record<string, (input: never) => unknown> = {
     return thread ? Effect.succeed(projectionOf(thread)) : Effect.never;
   },
   [ORCHESTRATION_V2_WS_METHODS.getThreadFamily]: (input: { readonly threadId: ThreadId }) => {
-    const rootOf = (thread: FakeThread) =>
-      thread.rootThreadId ?? thread.sideChatOf ?? thread.subtaskOf ?? thread.id;
+    const rootOf = (thread: FakeThread) => thread.rootThreadId ?? parentOf(thread) ?? thread.id;
     const requested = threads.find((candidate) => candidate.id === input.threadId);
     return Effect.succeed({
       snapshotSequence: sequence,
@@ -629,6 +665,7 @@ export const fakeDriver = {
         target: entry.target,
       },
       session,
+      refusedRouteIds: [],
     }),
   preflight: () => Effect.succeed(true),
   checkHost: () => Effect.succeed<RouteCheck>("unchecked"),
@@ -662,7 +699,10 @@ export function installFakeEnvironment(
 ): Disposable {
   threads = fixtures;
   baseServerConfig = {
-    ...makeServerConfig(options?.providers ?? [CODEX_PROVIDER]),
+    ...makeServerConfig(
+      options?.providers ?? [CODEX_PROVIDER],
+      fixtures.some((thread) => (thread.issues?.length ?? 0) > 0),
+    ),
     keybindings: options?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   };
   if (options?.providerInstances !== undefined) {
@@ -818,6 +858,18 @@ export async function addEnvironmentThread(thread: FakeThread): Promise<void> {
 }
 
 type ThreadEvent = Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }>["event"];
+
+/** Answers one RPC method with `handler` until disposed. */
+export function answerRpc(method: string, handler: (input: never) => unknown): Disposable {
+  const previous = handlers[method];
+  handlers[method] = handler;
+  return {
+    [Symbol.dispose]: () => {
+      if (previous) handlers[method] = previous;
+      else delete handlers[method];
+    },
+  };
+}
 
 export async function emitTerminalMetadata(event: TerminalMetadataStreamEvent): Promise<void> {
   if (terminalMetadataSubscriber === null) throw new Error("No terminal metadata subscription");

@@ -1,5 +1,7 @@
+import { decodeOptions } from "gt-react";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { MessageResolver } from "../i18n/messages";
 import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
@@ -66,7 +68,19 @@ describe("buildThreadActionMenuItems", () => {
   );
 
   it("keeps the same action IDs and targets across languages", () => {
-    const labels = buildThreadActionMenuItems({ ...baseState, isSettled: true, language: "zh-CN" });
+    const zhMap: Record<string, string> = {
+      "Un-settle thread": "取消收起会话",
+      "Custom…": "自定义…",
+    };
+    const labels = buildThreadActionMenuItems({ ...baseState, isSettled: true }, ((
+      message: unknown,
+    ) => {
+      const source =
+        typeof message === "string"
+          ? (decodeOptions(message)?.$_source ?? message)
+          : String(message);
+      return zhMap[String(source)] ?? String(source);
+    }) as MessageResolver);
     const original = buildThreadActionMenuItems({ ...baseState, isSettled: true });
     expect(labels.map(({ id }) => id)).toEqual(original.map(({ id }) => id));
     expect(labels.find(({ id }) => id === "unsettle")?.label).toBe("取消收起会话");
@@ -84,5 +98,10 @@ describe("buildThreadActionMenuItems", () => {
     });
     expect(items.find((item) => item.id === "archive")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "turn-into-project")?.disabled).toBe(true);
+  });
+
+  it("disables only rename where no inline title editor exists", () => {
+    const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
+    expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);
   });
 });

@@ -7,7 +7,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
+import Migration0111 from "./Migrations/111_ThreadParentIndex.ts";
+import Migration0112 from "./Migrations/112_WorktreeApprovalRequests.ts";
+import Migration0113 from "./Migrations/113_SubtaskEscalationRequests.ts";
+import Migration0114 from "./Migrations/114_SharedWorktreeCoordination.ts";
+import Migration0115 from "./Migrations/115_SubtaskSummaryCache.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -69,12 +74,18 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("upgrades a database at exactly 54", () =>
+  it.effect("upgrades a database at exactly 54, then rechecks it without a write lock", () =>
     Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
       yield* runMigrations({ toMigrationInclusive: 54 });
       assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.isAbove(yield* v2TableCount, 0);
+
+      // query_only rejects BEGIN IMMEDIATE, which CLI startup would otherwise take on the live database.
+      yield* sql`PRAGMA query_only = ON`;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* history, migrationManifest);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -191,6 +202,80 @@ describe("runMigrations", () => {
       `;
 
       assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "reconciles pre-sync Plus migrations 95-99 into 111-115 while preserving existing Plus tables and data",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 94 });
+
+        // Simulate a pre-sync Plus database that ran Plus migrations at ids 95-99.
+        yield* Migration0111;
+        yield* Migration0112;
+        yield* Migration0113;
+        yield* Migration0114;
+        yield* Migration0115;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name) VALUES
+            (95, 'ThreadParentIndex'),
+            (96, 'WorktreeApprovalRequests'),
+            (97, 'SubtaskEscalationRequests'),
+            (98, 'SharedWorktreeCoordination'),
+            (99, 'SubtaskSummaryCache')
+        `;
+
+        yield* sql`
+          INSERT INTO subtask_summary_cache (
+            parent_thread_id, source_cutoff_key, content_digest, strategy_version,
+            summary_json, created_at, updated_at, last_accessed_at
+          ) VALUES (
+            'thread-parent-1', 'cutoff-1', 'digest-1', 'v1',
+            '{"summary":"preserved"}', '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+          )
+        `;
+
+        assert.isTrue(yield* hasPendingMigrations());
+
+        const executed = yield* runMigrations();
+        assert.deepStrictEqual(
+          executed,
+          migrationManifest.filter(([id]) => id >= 95),
+        );
+        assert.deepStrictEqual(yield* history, migrationManifest);
+
+        const cachedRows = yield* sql<{ readonly summary_json: string }>`
+          SELECT summary_json FROM subtask_summary_cache WHERE parent_thread_id = 'thread-parent-1'
+        `;
+        assert.deepStrictEqual(cachedRows, [{ summary_json: '{"summary":"preserved"}' }]);
+
+        // Subsequent startup should see no pending work even in query_only mode.
+        assert.isFalse(yield* hasPendingMigrations());
+        yield* sql`PRAGMA query_only = ON`;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("does not delete unrelated unknown migrations recorded at 95-99", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 94 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (95, 'UnrelatedCustomMigration')
+      `;
+      const before = yield* history;
+
+      const exit = yield* Effect.exit(runMigrations());
+      assert.isTrue(Exit.isFailure(exit));
+      assert.include(
+        String(exit),
+        "95_TurnItemInlineWorkOutput (recorded: UnrelatedCustomMigration)",
+      );
+      assert.deepStrictEqual(yield* history, before);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });

@@ -52,7 +52,6 @@ vi.mock("./useHandleNewThread", () => ({
     router.state.location.href = "/draft/project";
   },
 }));
-vi.mock("../temporaryChats", () => ({ forgetTemporaryChat: () => {} }));
 vi.mock("../composerDraftStore", () => ({
   useComposerDraftStore: Object.assign(() => vi.fn(), {
     getState: () => ({ clearDraftThread: vi.fn() }),

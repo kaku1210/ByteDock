@@ -12,10 +12,13 @@ import sourceMessages from "./translations/en.json";
 
 import chineseMessages from "./translations/zh.json";
 
+const chineseRecord: Readonly<Record<string, unknown>> = chineseMessages;
 const upstreamChinese = new Map<string, string>(
   Object.entries(sourceMessages).flatMap(([key, source]) => {
-    const translated = (chineseMessages as Readonly<Record<string, string>>)[key];
-    return translated && translated !== source ? [[source, translated] as const] : [];
+    const translated = chineseRecord[key];
+    return typeof source === "string" && typeof translated === "string" && translated !== source
+      ? [[source, translated] as const]
+      : [];
   }),
 );
 

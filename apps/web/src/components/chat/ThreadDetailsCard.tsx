@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -7,9 +8,8 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { requestWorkspaceFocus, workspaceAreaProps } from "../../lib/workspaceFocus";
 import { useLayoutEffect, useState, type ReactNode, type RefObject } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { ScrollArea } from "../ui/scroll-area";
@@ -24,7 +24,6 @@ import {
   resolveThreadDetailsCardDensity,
 } from "./threadDetailsCardLayout";
 import { observeResize } from "../../lib/observeResize";
-import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 
 type MenuAnchor = "trigger" | { x: number; y: number };
 
@@ -46,9 +45,9 @@ export function ThreadDetailsCard({
   menuItems?: ReactNode;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
-  const { text } = useUiLanguage();
+  const gt = useGT();
   const preferences = useThreadDetailsPreferences();
-  const detailsArea = workspaceAreaProps("details", 3, "Thread details");
+  const detailsArea = workspaceAreaProps("details", 3, gt("Thread details"));
   const canvas = useChatCanvas();
   const preferredPlacement = canvas?.preferredDetailsCard ?? null;
   const placement = canvas?.detailsCardPlacement ?? null;
@@ -175,7 +174,7 @@ export function ThreadDetailsCard({
           onClick={() => preferences.setDetailsCollapsed(!preferences.detailsCollapsed)}
         >
           {preferences.detailsCollapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
-          {text("Thread details")}
+          {gt("Thread details")}
         </Button>
         <div className="flex gap-1">
           {menuItems ? (
@@ -185,8 +184,8 @@ export function ThreadDetailsCard({
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    aria-label={text("Choose what to show")}
-                    title={text("Choose what to show")}
+                    aria-label={gt("Choose what to show")}
+                    title={gt("Choose what to show")}
                   />
                 }
               >
@@ -207,7 +206,7 @@ export function ThreadDetailsCard({
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label={text(preferences.pinned ? "Unpin details panel" : "Pin details panel")}
+            aria-label={preferences.pinned ? gt("Unpin details panel") : gt("Pin details panel")}
             aria-pressed={preferences.pinned}
             onClick={() => preferences.setPinned(!preferences.pinned)}
           >
@@ -216,7 +215,7 @@ export function ThreadDetailsCard({
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label={text("Close details panel")}
+            aria-label={gt("Close details panel")}
             onClick={() => {
               if (preferences.pinned) preferences.setOpen(false);
               const store = useRightPanelStore.getState();
@@ -273,7 +272,7 @@ export function ThreadDetailsCard({
           {preferences.pinned ? (
             <div
               role="separator"
-              aria-label={text("Resize details panel")}
+              aria-label={gt("Resize details panel")}
               aria-orientation="vertical"
               aria-valuenow={placement.width}
               aria-valuemin={THREAD_DETAILS_CARD_WIDTH}

@@ -45,13 +45,8 @@
   - [ ] 完成 `T3 Zest` 品牌标识、图标与独立数据目录（`~/.t3-zest`，与官方 `~/.t3` 隔离共存）切换。
   - [ ] 打通 GitHub Actions 自动构建与发布 Windows（`.exe`/`.msi`）+ macOS（`.dmg`/`.zip`）双端安装包。
   - [ ] 精修 Windows 原生体验：标题栏/深色模式适配、PowerShell 与路径转义、中文输入法与剪贴板、系统通知（AUMID）。
-- [ ] 额度 Pace 刻度线与用量直达（`v0.1 首版 · P0`）：低成本解决周限额与窗口配额焦虑。
-  - [ ] 在周限额 / 5 小时窗口进度条上叠加时间节奏刻度（Pace Indicator），区分超前消耗（橙/红）与节奏健康（绿）。
-  - [ ] 补齐用量行点击交互，点击直接跳转完整 Usage 页面。
-- [ ] 安全 Custom CSS 主题系统（`v0.1 首版 · P0`）：兼容社区生态并打造高辨识度默认视觉。
-  - [ ] 兼容社区 T3 Themes JSON 一键导入/导出，支持自定义背景与样式变量。
-  - [ ] 内置 CSS 安全清洗器：过滤外链 `@import` 与远程 `url()`，安全放行内联 SVG（`data:image/svg+xml`）及动效。
-  - [ ] 内置默认主题 `Zest Dark / Light`（深灰底 + 柑橘橙高亮）。
+- [x] 额度 Pace 刻度线与用量直达（已随上游 `#38789` 原生合入）：周限额 / 5 小时窗口进度条时间节奏刻度（Pace Indicator）与用量行点击跳转完整 Usage 页面已由上游实现。
+- [ ] 内置 `Zest Dark / Light` 主题预设（`v0.1 首版 · P0`）：上游已具备主题系统与社区主题导入能力，后续仅补充高辨识度的默认 `Zest Dark / Light` 主题预设（深灰底 + 柑橘橙高亮）。
 - [ ] 长会话压缩防失忆与会话续接（`v0.1 首版 · P0`）：采用 Prompt / Hook 轻耦合方案，降低上游合并冲突。
   - [ ] 为 Claude（`systemPrompt.append` + `PreCompact` Hook）与 Codex（`developer_instructions`）注入压缩保留清单，留存任务目标、硬约束、已改文件路径、进行中子代理 `taskId` 与下一步计划。
   - [ ] 增加压缩后 / 续接会话恢复提示（如 `SessionStart[compact]`），提醒先通过 `t3_thread_read` / `t3_thread_list` 检查在跑子任务，避免失忆后重复派发。

@@ -11,11 +11,12 @@ import { getUpdateCenterBridge, useDesktopUpdateCenter } from "../../state/deskt
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { SettingsRow } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 
 export function UpdateCenterSettings() {
   const state = useDesktopUpdateCenter();
   const { t } = useUiLanguage();
+  const searchableSetting = useSearchableSetting();
   const startUpdateSession = useStartUpdateSession();
   const startingKind = useUpdateSessionStartingKind();
   const [pending, setPending] = useState(false);

@@ -1,4 +1,4 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
+import { T } from "gt-react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ComponentProps } from "react";
 import { View } from "react-native";
@@ -22,7 +22,6 @@ export function LocalEnvironmentList({
   readonly expandedId: EnvironmentId | null;
   readonly onToggle: (environmentId: EnvironmentId) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
   if (environments.length === 0) {
     return (
       <View
@@ -38,10 +37,11 @@ export function LocalEnvironmentList({
           />
         </View>
         <Text className="text-center text-sm leading-normal text-foreground-muted">
-          {uiText("No environments connected yet.")}
+          <T>No environments connected yet.</T>
           {"\n"}
-          {uiText("Tap")} <Text className="font-t3-bold text-foreground">+</Text>{" "}
-          {uiText("to add one.")}
+          <T>
+            Tap <Text className="font-t3-bold text-foreground">+</Text> to add one.
+          </T>
         </Text>
       </View>
     );

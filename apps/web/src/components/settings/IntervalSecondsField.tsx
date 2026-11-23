@@ -1,4 +1,3 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useState } from "react";
 import {
   NumberField,
@@ -10,19 +9,18 @@ import {
 import { normalizeIntervalSeconds } from "./SettingsPanels.logic";
 
 export function IntervalSecondsField({
-  label,
+  labels,
   value,
   min,
   step,
   onCommit,
 }: {
-  label: string;
+  labels: { readonly decrease: string; readonly input: string; readonly increase: string };
   value: number;
   min: number;
   step: number;
   onCommit: (seconds: number, options: { onFailed: () => void }) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
   const [field, setField] = useState({
     saved: value,
     draft: value as number | null,
@@ -68,14 +66,9 @@ export function IntervalSecondsField({
       }}
     >
       <NumberFieldGroup>
-        <NumberFieldDecrement aria-label={uiText("Decrease {value0}", { value0: label })} />
-        <NumberFieldInput
-          aria-label={uiText("{value0}{value1} in seconds", {
-            value0: label.charAt(0).toUpperCase(),
-            value1: label.slice(1),
-          })}
-        />
-        <NumberFieldIncrement aria-label={uiText("Increase {value0}", { value0: label })} />
+        <NumberFieldDecrement aria-label={labels.decrease} />
+        <NumberFieldInput aria-label={labels.input} />
+        <NumberFieldIncrement aria-label={labels.increase} />
       </NumberFieldGroup>
     </NumberField>
   );

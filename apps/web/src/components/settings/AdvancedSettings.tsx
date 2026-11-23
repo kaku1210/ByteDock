@@ -1,7 +1,7 @@
+import { T } from "gt-react";
 import { ChevronRightIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { useSettingsSearchTargetId } from "./settingsLayout";
 
@@ -17,7 +17,6 @@ export function AdvancedSettings({
   readonly children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const { t } = useUiLanguage();
   const searchTargetId = useSettingsSearchTargetId();
   const [seenSearchTargetId, setSeenSearchTargetId] = useState<string | null>(null);
   if (seenSearchTargetId !== searchTargetId) {
@@ -32,7 +31,7 @@ export function AdvancedSettings({
           aria-hidden
           className="size-3.5 shrink-0 transition-transform duration-150 group-data-panel-open:rotate-90 motion-reduce:transition-none"
         />
-        {t("settings.advanced")}
+        <T>Advanced</T>
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <div className="border-t border-border/50 *:not-first:border-t *:not-first:border-border/50">

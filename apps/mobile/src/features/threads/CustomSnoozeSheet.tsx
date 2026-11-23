@@ -1,4 +1,3 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import {
   DatePicker,
@@ -29,6 +28,7 @@ import {
   resolveCustomSnooze,
   type CustomSnoozeInput,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { msg, useGT, useMessages } from "gt-react-native";
 import { useState, type ReactNode } from "react";
 import { StandaloneStack } from "../layout/nested-stacks";
 import { ScrollView, useWindowDimensions, View } from "react-native";
@@ -37,20 +37,21 @@ import { useAppearancePreferences } from "../settings/appearance/AppearancePrefe
 
 const durationAmounts = Array.from({ length: 99 }, (_, index) => index + 1);
 const modes = [
-  { value: "date", label: "Date and time" },
-  { value: "duration", label: "Duration" },
+  { value: "date", label: msg("Date and time") },
+  { value: "duration", label: msg("Duration") },
 ] as const;
 const units = [
-  { value: "minutes", label: "Minutes" },
-  { value: "hours", label: "Hours" },
-  { value: "days", label: "Days" },
+  { value: "minutes", label: msg("Minutes") },
+  { value: "hours", label: msg("Hours") },
+  { value: "days", label: msg("Days") },
 ] as const;
 
 export function CustomSnoozeSheet(props: {
   readonly onClose: () => void;
   readonly onSnooze: (snoozedUntil: string) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
+  const m = useMessages();
   const { width, height } = useWindowDimensions();
   const [mode, setMode] = useState<CustomSnoozeInput["mode"]>("date");
   const [date, setDate] = useState(() => new Date(Date.now() + 3_600_000));
@@ -73,7 +74,9 @@ export function CustomSnoozeSheet(props: {
     const snoozedUntil = resolveCustomSnooze(input, new Date());
     if (!snoozedUntil) {
       setError(
-        mode === "date" ? "Choose a date and time in the future." : "Enter a positive duration.",
+        mode === "date"
+          ? gt("Choose a date and time in the future.")
+          : gt("Enter a positive duration."),
       );
       return;
     }
@@ -115,7 +118,7 @@ export function CustomSnoozeSheet(props: {
                 modifiers={[padding({ all: 16 }), foregroundStyle(colors["--color-foreground"])]}
               >
                 <Picker
-                  label={uiText("Snooze mode")}
+                  label={gt("Snooze mode")}
                   selection={mode}
                   onSelectionChange={(value: CustomSnoozeInput["mode"]) => {
                     setMode(value);
@@ -125,13 +128,13 @@ export function CustomSnoozeSheet(props: {
                 >
                   {modes.map((option) => (
                     <Text key={option.value} modifiers={[tag(option.value)]}>
-                      {option.label}
+                      {m(option.label)}
                     </Text>
                   ))}
                 </Picker>
                 {mode === "date" ? (
                   <DatePicker
-                    title={uiText("Snooze until")}
+                    title={gt("Snooze until")}
                     selection={date}
                     displayedComponents={["date", "hourAndMinute"]}
                     onDateChange={updateDate}
@@ -144,7 +147,7 @@ export function CustomSnoozeSheet(props: {
                 ) : (
                   <HStack spacing={0}>
                     <Picker
-                      label={uiText("Duration amount")}
+                      label={gt("Duration amount")}
                       selection={amount}
                       onSelectionChange={(value: number) => {
                         setAmount(value);
@@ -167,7 +170,7 @@ export function CustomSnoozeSheet(props: {
                       ))}
                     </Picker>
                     <Picker
-                      label={uiText("Duration unit")}
+                      label={gt("Duration unit")}
                       selection={unit}
                       onSelectionChange={(value: typeof unit) => {
                         setUnit(value);
@@ -188,7 +191,7 @@ export function CustomSnoozeSheet(props: {
                             foregroundStyle(colors["--color-foreground"]),
                           ]}
                         >
-                          {option.label}
+                          {m(option.label)}
                         </Text>
                       ))}
                     </Picker>
@@ -220,17 +223,20 @@ function SnoozePopoverNavigation(props: {
   readonly onSubmit: () => void;
   readonly children: ReactNode;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   return (
     <VStack modifiers={[frame({ width: props.width, height: props.height })]}>
       <RNHostView>
         <View style={{ width: props.width, height: props.height }}>
           <StandaloneStack>
             <SheetHeader
-              title={uiText("Custom snooze")}
+              title={gt("Custom snooze")}
               onCancel={props.onClose}
-              accessibilityLabel={uiText("Cancel custom snooze")}
-              confirm={{ label: "Snooze", onPress: props.onSubmit }}
+              accessibilityLabel={gt("Cancel custom snooze")}
+              confirm={{
+                label: gt("Snooze", { $context: "verb, confirm button" }),
+                onPress: props.onSubmit,
+              }}
             />
             <ScrollView
               contentInsetAdjustmentBehavior="automatic"

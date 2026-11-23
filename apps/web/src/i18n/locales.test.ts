@@ -1,11 +1,18 @@
-import { expect, it } from "vite-plus/test";
-import { resolveLocale } from "@t3tools/client-runtime/locales";
-import { systemUiLocales, SUPPORTED_LOCALES, DEFAULT_LOCALE } from "./locales";
+import { describe, expect, it } from "vite-plus/test";
 
-it("uses desktop UI preferences instead of Chromium's packaged English locale", () => {
-  const system = systemUiLocales(["en-US"], ["zh-CN", "en-US"]);
-  expect(resolveLocale("system", system, SUPPORTED_LOCALES, DEFAULT_LOCALE)).toBe("zh");
-  expect(resolveLocale("en", system, SUPPORTED_LOCALES, DEFAULT_LOCALE)).toBe("en");
-  expect(systemUiLocales(["zh-CN"], [])).toEqual(["zh-CN"]);
-  expect(systemUiLocales(["ja-JP"])).toEqual(["ja-JP"]);
+import { resolveWebLocaleSelection } from "./locales";
+
+describe("resolveWebLocaleSelection", () => {
+  it.each([
+    ["system", ["en-GB"], "en", undefined],
+    ["system", ["zh-TW", "en-GB"], "en", undefined],
+    ["en", ["en-GB"], "en", undefined],
+    ["en", ["de-DE"], "en", "en"],
+    ["de", ["en-US"], "de", "de"],
+  ] as const)("%s with browser languages %j", (language, browserLocales, catalog, formatting) => {
+    expect(resolveWebLocaleSelection(language, browserLocales)).toEqual({
+      catalogLocale: catalog,
+      formattingLocale: formatting,
+    });
+  });
 });

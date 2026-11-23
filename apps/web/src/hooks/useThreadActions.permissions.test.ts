@@ -148,7 +148,6 @@ vi.mock("../components/Sidebar.logic", () => ({
   getFallbackThreadIdAfterDelete: () => null,
   pinOrderKeyBetween: () => "a",
 }));
-vi.mock("../temporaryChats", () => ({ forgetTemporaryChat: () => {} }));
 vi.mock("../composerDraftStore", () => {
   const store = {
     clearDraftThread: (ref: ScopedThreadRef) =>

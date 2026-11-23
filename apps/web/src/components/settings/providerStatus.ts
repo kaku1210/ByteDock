@@ -3,9 +3,9 @@ import type {
   ServerProviderVersionAdvisory,
   ServerProviderCompatibilityAdvisory,
 } from "@t3tools/contracts";
-import type { UiLanguage } from "@t3tools/shared/uiLanguage";
+import { msg } from "gt-react";
 
-import { translate } from "@t3tools/shared/i18n/messages";
+import { m, type MessageResolver } from "../../i18n/messages";
 
 export const PROVIDER_STATUS_STYLES = {
   disabled: {
@@ -27,6 +27,15 @@ export const PROVIDER_STATUS_STYLES = {
 
 export type ProviderStatusKey = keyof typeof PROVIDER_STATUS_STYLES;
 
+/** The server names a custom endpoint in English; other auth labels are product or plan names. */
+export function providerAuthLabel(
+  auth: Pick<ServerProvider["auth"], "label" | "type">,
+  resolve: MessageResolver = m,
+): string | undefined {
+  if (auth.type === "customEndpoint") return resolve(msg("Custom API endpoint"));
+  return auth.label ?? auth.type;
+}
+
 // Antigravity's local health check verifies installation, not Google sign-in.
 // API-key and Agent Platform warnings still need attention.
 function isAntigravitySignInUnchecked(provider: ServerProvider): boolean {
@@ -47,72 +56,74 @@ export function getProviderStatusKey(provider: ServerProvider | undefined): Prov
   return provider?.status ?? "warning";
 }
 
-const PROVIDER_DIAGNOSTIC_KEYS = [
-  "provider.diagnostic.claudeLogin",
-  "provider.diagnostic.antigravityInstall",
-  "provider.diagnostic.antigravityMissing",
-  "provider.diagnostic.acpSession",
-] as const;
-
 export function getProviderSummary(
   provider: ServerProvider | undefined,
-  language: UiLanguage = "en",
+  resolve: MessageResolver = m,
 ) {
-  const t = translate.bind(null, language);
   if (!provider) {
     return {
-      headline: t("provider.status.checking"),
-      detail: t("provider.status.checkingDetail"),
+      headline: resolve(msg("Checking provider status")),
+      detail: resolve(
+        msg("Waiting for the server to report installation and authentication details."),
+      ),
     };
   }
-  const diagnostic = PROVIDER_DIAGNOSTIC_KEYS.find(
-    (key) => translate("en", key) === provider.message,
-  );
-  const detail = diagnostic ? t(diagnostic) : (provider.message ?? null);
   if (!provider.enabled || provider.status === "disabled") {
     return {
-      headline: t("common.disabled"),
-      detail: detail ?? t("provider.status.disabledDetail"),
+      headline: resolve(msg("Disabled", { $context: "provider status" })),
+      detail:
+        provider.message ??
+        resolve(msg("This provider is installed but disabled for new sessions in T3 Code.")),
     };
   }
   if (!provider.installed) {
     return {
-      headline: t("provider.status.notFound"),
-      detail: detail ?? t("provider.status.notFoundDetail"),
+      headline: resolve(msg("Not found", { $context: "provider status, CLI is missing" })),
+      detail: provider.message ?? resolve(msg("CLI not detected on PATH.")),
     };
   }
   if (provider.auth.status === "unauthenticated") {
-    const method = provider.auth.label ?? provider.auth.type;
-    const status = t("provider.status.unauthenticated");
+    const authLabel = providerAuthLabel(provider.auth, resolve);
     return {
-      headline: method ? t("provider.status.withAuth", { status, method }) : status,
-      detail,
+      headline: authLabel
+        ? resolve(msg("Not authenticated · {method}", { method: authLabel }))
+        : resolve(msg("Not authenticated")),
+      detail: provider.message ?? null,
     };
   }
   if (isAntigravitySignInUnchecked(provider)) {
-    return { headline: t("provider.status.unchecked"), detail };
+    return {
+      headline: resolve(msg("Installed · Sign-in not checked")),
+      detail: provider.message ?? null,
+    };
   }
   if (provider.status === "warning") {
     return {
-      headline: t("provider.status.warning"),
-      detail: detail ?? t("provider.status.warningDetail"),
+      headline: resolve(msg("Needs attention")),
+      detail:
+        provider.message ??
+        resolve(msg("The provider is installed, but the server could not fully verify it.")),
     };
   }
   if (provider.status === "error") {
     return {
-      headline: t("provider.status.error"),
-      detail: detail ?? t("provider.status.errorDetail"),
+      headline: resolve(msg("Unavailable", { $context: "provider status" })),
+      detail: provider.message ?? resolve(msg("The provider failed its startup checks.")),
     };
   }
   if (provider.auth.status === "authenticated") {
-    const method = provider.auth.label ?? provider.auth.type;
-    const status = t("provider.status.authenticated");
+    const authLabel = providerAuthLabel(provider.auth, resolve);
     return {
-      headline: method ? t("provider.status.withAuth", { status, method }) : status,
-      detail,
+      headline: authLabel
+        ? resolve(msg("Authenticated · {method}", { method: authLabel }))
+        : resolve(msg("Authenticated")),
+      detail: provider.message ?? null,
     };
   }
-  return { headline: t("provider.status.available"), detail };
+  return {
+    headline: resolve(msg("Available", { $context: "provider status" })),
+    detail: provider.message ?? null,
+  };
 }
 
 export function getProviderVersionLabel(version: string | null | undefined) {
@@ -126,16 +137,16 @@ export function getProviderVersionLabel(version: string | null | undefined) {
 }
 
 const COMPATIBILITY_TITLES = {
-  graceful: "settings.providerCard.limitedSupport",
-  unsupported: "provider.version.unsupported",
-  broken: "provider.version.broken",
+  graceful: msg("Limited support"),
+  unsupported: msg("Unsupported version"),
+  broken: msg("Known broken version"),
 } as const;
 
 export function getProviderVersionAdvisoryPresentation(
   advisory: ServerProviderVersionAdvisory | undefined,
   compatibility?: ServerProviderCompatibilityAdvisory | undefined,
   showCompatibility = true,
-  language: UiLanguage = "en",
+  resolve: MessageResolver = m,
 ): {
   readonly title: string;
   readonly detail: string;
@@ -143,7 +154,6 @@ export function getProviderVersionAdvisoryPresentation(
   readonly emphasis: "normal" | "strong";
   readonly targetVersion: string | null;
 } | null {
-  const t = translate.bind(null, language);
   const latestIsIncompatible =
     compatibility?.latestVersionStatus === "broken" ||
     compatibility?.latestVersionStatus === "unsupported";
@@ -159,12 +169,12 @@ export function getProviderVersionAdvisoryPresentation(
     // Latest package versions cannot be updated into recommendations requiring another package.
     const isAlreadyLatest = advisory?.status === "current";
     return {
-      title: t(COMPATIBILITY_TITLES[compatibility.status]),
+      title: resolve(COMPATIBILITY_TITLES[compatibility.status]),
       detail:
         compatibility.message ??
         (recommendation
-          ? t("provider.version.use", { version: recommendation })
-          : t("provider.version.update")),
+          ? resolve(msg("Use {version} for full support.", { version: recommendation }))
+          : resolve(msg("Update for full support."))),
       updateCommand:
         targetVersion || latestIsIncompatible || isAlreadyLatest
           ? null
@@ -182,17 +192,16 @@ export function getProviderVersionAdvisoryPresentation(
     return null;
   }
 
-  const label = t("provider.version.available");
   const version = advisory.latestVersion;
   const versionLabel = getProviderVersionLabel(version);
 
   return {
-    title: label,
+    title: resolve(msg("Update available")),
     detail:
       advisory.message ??
       (versionLabel
-        ? t("provider.version.install", { label, version: versionLabel })
-        : t("provider.version.installLatest", { label })),
+        ? resolve(msg("Update available: install {version}.", { version: versionLabel }))
+        : resolve(msg("Update available: install the latest provider version."))),
     updateCommand: advisory.updateCommand,
     emphasis: "normal" as const,
     targetVersion: null,

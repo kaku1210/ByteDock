@@ -1,11 +1,10 @@
-import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useAtomValue } from "@effect/atom-react";
-import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Image } from "expo-image";
+import { T, useGT } from "gt-react-native";
 import { createContext, useContext, useId, useState } from "react";
 import { fetch } from "expo/fetch";
 import { parse, SvgAst, type JsxAST } from "react-native-svg";
@@ -23,6 +22,7 @@ import { useAssetUrlState } from "../../state/assets";
 import { WorkspaceMutationIdContext } from "./workspaceMutationIdContext";
 import { ZoomableImagePressable } from "./ZoomableImagePressable";
 import { assetImageCacheKey } from "../../lib/assetImageSource";
+import { filePreviewSourceIdentifier } from "../../lib/filePreviewGallery";
 import {
   MARKDOWN_IMAGE_MAX_WIDTH,
   type MarkdownImageDisplaySize,
@@ -92,6 +92,7 @@ const noSvgDocumentAtom = Atom.make(AsyncResult.initial<SvgDocument, SvgLoadErro
 export function ThreadMarkdownImageView(props: {
   readonly uri: string | null;
   readonly sourceKey: string;
+  readonly sourceIdentifier?: string;
   readonly cacheKey?: string | undefined;
   readonly unavailable: boolean;
   readonly unavailableDetail?: string | undefined;
@@ -101,9 +102,10 @@ export function ThreadMarkdownImageView(props: {
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
-  const { text: uiText } = useUiLanguage();
+  const gt = useGT();
   const withGallery = useFilePreviewGallery();
-  const sourceIdentifier = useId();
+  const localSourceIdentifier = useId();
+  const sourceIdentifier = props.sourceIdentifier ?? localSourceIdentifier;
   const mediaActions = useMediaActions(props.actionsSource);
   const contextWidth = useContext(MarkdownImageAvailableWidthContext);
   const [measuredWidth, setMeasuredWidth] = useState(0);
@@ -149,11 +151,9 @@ export function ThreadMarkdownImageView(props: {
         <MediaActionsMenu media={mediaActions}>
           <Pressable
             accessibilityRole="imagebutton"
-            accessibilityLabel={props.alt ?? uiText("Markdown image")}
+            accessibilityLabel={props.alt ?? gt("Markdown image")}
             accessibilityHint={
-              mediaActions.actions.length > 0
-                ? uiText("Touch and hold for media actions")
-                : undefined
+              mediaActions.actions.length > 0 ? gt("Touch and hold for media actions") : undefined
             }
             className="items-center justify-center rounded-[10px] bg-md-code-bg"
             style={frameStyle}
@@ -161,8 +161,8 @@ export function ThreadMarkdownImageView(props: {
             {failed ? (
               <Text className="px-3 text-center text-xs text-foreground-muted">
                 {props.unavailableDetail
-                  ? `Image unavailable. ${props.unavailableDetail}`
-                  : uiText("Image unavailable")}
+                  ? gt("Image unavailable. {detail}", { detail: props.unavailableDetail })
+                  : gt("Image unavailable")}
               </Text>
             ) : (
               <AppActivityIndicator />
@@ -175,18 +175,16 @@ export function ThreadMarkdownImageView(props: {
             <ZoomableImagePressable
               key={props.sourceKey}
               accessibilityRole="imagebutton"
-              accessibilityLabel={props.alt ?? uiText("Markdown image")}
+              accessibilityLabel={props.alt ?? gt("Markdown image")}
               accessibilityHint={
-                mediaActions.actions.length > 0
-                  ? uiText("Touch and hold for media actions")
-                  : undefined
+                mediaActions.actions.length > 0 ? gt("Touch and hold for media actions") : undefined
               }
               onPress={() =>
                 props.onPressPreview(
                   withGallery({
                     kind: "image",
                     uri: props.uri!,
-                    name: props.actionsSource?.name ?? props.alt ?? "Image",
+                    name: props.actionsSource?.name ?? props.alt ?? gt("Image"),
                     sourceIdentifier,
                     actionsSource: props.actionsSource,
                   }),
@@ -255,13 +253,14 @@ function ThreadMarkdownImageRequest(props: {
 }
 
 function ThreadMarkdownImageLoading() {
-  const { text: uiText } = useUiLanguage();
   return (
     <View
       pointerEvents="none"
       style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]}
     >
-      <Text className="text-xs text-foreground-muted">{uiText("Loading image…")}</Text>
+      <Text className="text-xs text-foreground-muted">
+        <T>Loading image…</T>
+      </Text>
     </View>
   );
 }
@@ -285,6 +284,7 @@ export function ThreadMarkdownImage(props: {
   readonly actionsSource?: MediaActionsSource;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }) {
+  const gt = useGT();
   const withGallery = useFilePreviewGallery();
   const workspaceMutationId = useContext(WorkspaceMutationIdContext);
   const assetUrl = useAssetUrlState(
@@ -314,10 +314,15 @@ export function ThreadMarkdownImage(props: {
           : undefined
       }
       sourceKey={sourceKey}
+      sourceIdentifier={filePreviewSourceIdentifier({
+        kind: "image",
+        environmentId: props.environmentId,
+        resource: props.resource,
+      })}
       unavailable={assetUrl._tag === "Failure"}
       unavailableDetail={
         assetUrl._tag === "Failure" && assetUrl.reason === "missing-file-access"
-          ? MISSING_FILE_ACCESS_MESSAGE
+          ? gt("This connection cannot read host files. Pair again with a new link to view it.")
           : undefined
       }
       knownSize={assetUrl._tag === "Success" ? assetUrl.imageDimensions : undefined}
@@ -337,6 +342,7 @@ export function ThreadMarkdownImage(props: {
             gallery: undefined,
             environmentId: props.environmentId,
             resource: props.resource,
+            ...(props.srcFragment === undefined ? {} : { srcFragment: props.srcFragment }),
           }),
         );
       }}
