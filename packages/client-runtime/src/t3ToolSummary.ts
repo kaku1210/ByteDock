@@ -1787,6 +1787,40 @@ export function summarizeT3ToolCalls(
       }
       break;
     }
+    case "task-list-read": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Read the task list {count} time} other {Read the task list {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to read the task list {count} time} other {Tried to read the task list {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "task-list-update": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Updated the task list {count} time} other {Updated the task list {count} times}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to update the task list {count} time} other {Tried to update the task list {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "review-pr": {
       const count = selected.length;
       label = done

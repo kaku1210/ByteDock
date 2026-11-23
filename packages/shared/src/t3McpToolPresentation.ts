@@ -40,6 +40,8 @@ export type T3McpToolSummaryAction =
   | "question-list"
   | "question-read"
   | "question-respond"
+  | "task-list-read"
+  | "task-list-update"
   | "secret-request"
   | "worktree-handoff"
   | "worktree-list"
@@ -441,6 +443,15 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   html_preview: tool(["Preview", "Previewing", "Previewed", "an HTML page"], "html-preview"),
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
   send_to_user: tool(["Send", "Sending", "Sent", "a message"], "send-to-user"),
+  t3_task_list: tool(["Manage", "Managing", "Managed", "the task list"], "task-list-update"),
+  t3_task_list_read: tool(["Read", "Reading", "Read", "the task list"], "task-list-read"),
+  t3_task_list_add: tool(["Add to", "Adding to", "Added to", "the task list"], "task-list-update"),
+  t3_task_list_update: tool(["Update", "Updating", "Updated", "the task list"], "task-list-update"),
+  t3_task_list_replace: tool(
+    ["Replace", "Replacing", "Replaced", "the task list"],
+    "task-list-update",
+  ),
+  t3_task_list_clear: tool(["Clear", "Clearing", "Cleared", "the task list"], "task-list-update"),
 };
 
 export const T3_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(T3_MCP_TOOLS));
@@ -513,6 +524,7 @@ const ACTION_TOOLS: Readonly<Record<string, (action: string) => string | undefin
   preview_act: (action) => `preview_${action}`,
   t3_queue: (action) => `t3_queue_${action}`,
   t3_pending_request: (action) => `t3_pending_request_${action}`,
+  t3_task_list: (action) => `t3_task_list_${action}`,
   t3_thread_transfer: (action) =>
     ({ fork: "t3_thread_fork", merge_back: "t3_thread_merge_back", status: "t3_thread_transfers" })[
       action

@@ -147,4 +147,30 @@ describe("summarizeT3ToolCalls", () => {
       failedCount: 0,
     });
   });
+
+  it("summarizes task list reads and updates", () => {
+    expect(
+      summarizeT3ToolCalls("task-list-read", [completed({ action: "read" }, { steps: [] })]),
+    ).toEqual({
+      label: "Read the task list 1 time",
+      failedCount: 0,
+    });
+    expect(
+      summarizeT3ToolCalls("task-list-update", [
+        completed({ action: "add" }, { steps: [{ id: "task-1" }] }),
+        completed({ action: "update" }, { steps: [{ id: "task-1" }] }),
+      ]),
+    ).toEqual({
+      label: "Updated the task list 2 times",
+      failedCount: 0,
+    });
+    expect(
+      summarizeT3ToolCalls("task-list-update", [
+        { input: { action: "update" }, output: { isError: true }, outcome: "failed" },
+      ]),
+    ).toEqual({
+      label: "Tried to update the task list 1 time",
+      failedCount: 1,
+    });
+  });
 });

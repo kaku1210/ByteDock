@@ -3913,6 +3913,21 @@ const OrchestrationV2InternalCommand = Schema.Union([
     runId: RunId,
     value: Schema.Json,
   }),
+  // The server issues this from MCP task list writes so providers without native update_plan
+  // can populate and update the thread's right-side ThreadTaskList.
+  Schema.Struct({
+    type: Schema.Literal("thread.todo-list.update"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    steps: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString,
+        text: TrimmedNonEmptyString,
+        status: Schema.Literals(["pending", "running", "completed"]),
+      }),
+    ),
+    explanation: Schema.optional(Schema.String),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

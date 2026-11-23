@@ -873,4 +873,52 @@ const T3_TOOL_SENTENCES: ReadonlyMap<string, T3ToolSentence> = new Map<string, T
       ),
     },
   ],
+  [
+    "Manage\nManaging\nManaged\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Managing the task list} completed {Managed the task list} failed {Failed to manage the task list} declined {Declined to manage the task list} stopped {Stopped managing the task list} other {Managing the task list}}",
+      ),
+    },
+  ],
+  [
+    "Read\nReading\nRead\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Reading the task list} completed {Read the task list} failed {Failed to read the task list} declined {Declined to read the task list} stopped {Stopped reading the task list} other {Reading the task list}}",
+      ),
+    },
+  ],
+  [
+    "Add to\nAdding to\nAdded to\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Adding to the task list} completed {Added to the task list} failed {Failed to add to the task list} declined {Declined to add to the task list} stopped {Stopped adding to the task list} other {Adding to the task list}}",
+      ),
+    },
+  ],
+  [
+    "Update\nUpdating\nUpdated\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Updating the task list} completed {Updated the task list} failed {Failed to update the task list} declined {Declined to update the task list} stopped {Stopped updating the task list} other {Updating the task list}}",
+      ),
+    },
+  ],
+  [
+    "Replace\nReplacing\nReplaced\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Replacing the task list} completed {Replaced the task list} failed {Failed to replace the task list} declined {Declined to replace the task list} stopped {Stopped replacing the task list} other {Replacing the task list}}",
+      ),
+    },
+  ],
+  [
+    "Clear\nClearing\nCleared\nthe task list",
+    {
+      detail: msg(
+        "{status, select, inProgress {Clearing the task list} completed {Cleared the task list} failed {Failed to clear the task list} declined {Declined to clear the task list} stopped {Stopped clearing the task list} other {Clearing the task list}}",
+      ),
+    },
+  ],
 ]);

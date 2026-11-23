@@ -35,7 +35,8 @@ import {
   isProviderNativeSubagentThread,
   isTaskChildLineage,
   MessageId,
-  type NodeId,
+  NodeId,
+  PlanId,
   type ModelSelection,
   OrchestrationV2Command,
   type OrchestrationV2InternalCommand,
@@ -95,6 +96,11 @@ import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.t
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
 import { combinePullRequestWatchWakes, type PullRequestWatchWake } from "./pullRequestWatch.ts";
 import { outputRequestProblem } from "./runOutput.ts";
+import {
+  findLatestTodoListPlan,
+  type TodoListPlan,
+  withPlanStepDurations,
+} from "./planStepDurations.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import { isSlashCommand } from "@t3tools/shared/composerTrigger";
 import {
@@ -699,6 +705,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "subagent.stop":
     case "run.interrupt":
     case "run.output.submit":
+    case "thread.todo-list.update":
     case "queued-message.promote-to-steer":
     case "queued-run.start":
     case "queue.resume":
@@ -13402,6 +13409,171 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const dispatchThreadTodoListUpdate = Effect.fn("Orchestrator.dispatchThreadTodoListUpdate")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "thread.todo-list.update" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, [
+          "runs",
+          "attempts",
+          "nodes",
+          "providerTurns",
+          "plans",
+          "turnItems",
+        ])
+        .pipe(mapDispatchError(command));
+      if (projection.thread.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} is deleted.`,
+        });
+      }
+      const activeRun = [...projection.runs]
+        .toSorted((left, right) => right.ordinal - left.ordinal)
+        .find(isActiveRun);
+      const runId = activeRun?.id ?? null;
+      const providerInstanceId =
+        activeRun?.providerInstanceId ??
+        projection.thread.providerInstanceId ??
+        projection.thread.modelSelection.instanceId;
+      const providerThreadId = activeRun?.providerThreadId ?? null;
+      const providerTurnId =
+        activeRun === undefined ? null : (providerTurnForRun(projection, activeRun)?.id ?? null);
+      const parentRootNodeId = activeRun?.rootNodeId ?? null;
+
+      const previousPlan = findLatestTodoListPlan(projection);
+      const reuseRunlessIds =
+        runId === null &&
+        previousPlan !== undefined &&
+        previousPlan.runId === null &&
+        String(previousPlan.id).startsWith("plan:mcp:");
+      const existingRunlessItem = reuseRunlessIds
+        ? projection.turnItems.find(
+            (item) => item.type === "todo_list" && item.planId === previousPlan.id,
+          )
+        : undefined;
+      const existingRunlessNode = reuseRunlessIds
+        ? projection.nodes.find((node) => node.id === previousPlan.nodeId)
+        : undefined;
+
+      const now = yield* DateTime.now;
+      const planId = reuseRunlessIds
+        ? previousPlan.id
+        : PlanId.make(`plan:mcp:${command.commandId}`);
+      const nodeId = reuseRunlessIds
+        ? previousPlan.nodeId
+        : NodeId.make(`node:mcp-todo:${command.commandId}`);
+      const turnItemId =
+        existingRunlessItem?.id ?? TurnItemId.make(`item:mcp-todo:${command.commandId}`);
+      const ordinal = existingRunlessItem?.ordinal ?? (yield* nextTurnItemOrdinal(projection));
+      const allCompleted =
+        command.steps.length > 0 && command.steps.every((step) => step.status === "completed");
+      const planStatus: TodoListPlan["status"] =
+        command.steps.length === 0 ? "superseded" : allCompleted ? "completed" : "active";
+      const nodeCompleted = planStatus === "completed" || planStatus === "superseded";
+
+      const rawPlan: TodoListPlan = {
+        id: planId,
+        threadId: command.threadId,
+        runId,
+        nodeId,
+        kind: "todo_list",
+        status: planStatus,
+        steps: command.steps.map((step) => ({
+          id: step.id,
+          text: step.text,
+          status: step.status,
+        })),
+        ...(command.explanation === undefined ? {} : { explanation: command.explanation }),
+      };
+      const timedPlan = withPlanStepDurations(rawPlan, previousPlan, now);
+
+      const node: OrchestrationV2ExecutionNode = {
+        id: nodeId,
+        threadId: command.threadId,
+        runId,
+        parentNodeId: parentRootNodeId,
+        rootNodeId: parentRootNodeId ?? nodeId,
+        kind: "todo_list",
+        status: nodeCompleted ? "completed" : "running",
+        countsForRun: false,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: existingRunlessNode?.startedAt ?? now,
+        completedAt: nodeCompleted ? now : null,
+      };
+      const turnItem: OrchestrationV2TurnItem = {
+        id: turnItemId,
+        threadId: command.threadId,
+        runId,
+        nodeId,
+        providerThreadId,
+        providerTurnId,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal,
+        status: "completed",
+        title: null,
+        startedAt: existingRunlessItem?.startedAt ?? now,
+        completedAt: now,
+        updatedAt: now,
+        type: "todo_list",
+        planId,
+        steps: timedPlan.steps,
+        ...(timedPlan.explanation === undefined ? {} : { explanation: timedPlan.explanation }),
+      };
+
+      const emitEvent = emit(events, command);
+      if (previousPlan !== undefined && previousPlan.id !== planId) {
+        yield* emitEvent({
+          type: "plan.updated",
+          threadId: command.threadId,
+          ...(previousPlan.runId === null ? {} : { runId: previousPlan.runId }),
+          nodeId: previousPlan.nodeId,
+          providerInstanceId,
+          occurredAt: now,
+          payload: { ...previousPlan, status: "superseded" },
+        });
+      }
+      yield* emitEvent({
+        type: "node.updated",
+        threadId: command.threadId,
+        ...(runId === null ? {} : { runId }),
+        nodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: node,
+      });
+      yield* emitEvent({
+        type: "plan.updated",
+        threadId: command.threadId,
+        ...(runId === null ? {} : { runId }),
+        nodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: timedPlan,
+      });
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        ...(runId === null ? {} : { runId }),
+        nodeId,
+        providerInstanceId,
+        occurredAt: now,
+        payload: turnItem,
+      });
+    },
+  );
+
   const dispatchQueuedRunEdit = Effect.fn("Orchestrator.dispatchQueuedRunEdit")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -17469,6 +17641,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "run.output.submit":
         yield* dispatchRunOutputSubmit(command, events);
+        break;
+      case "thread.todo-list.update":
+        yield* dispatchThreadTodoListUpdate(command, events);
         break;
       case "checkpoint.rollback":
         yield* dispatchCheckpointRollback(command, events, effects);

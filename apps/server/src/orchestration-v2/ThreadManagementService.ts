@@ -30,11 +30,14 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2LinkedSender,
+  type OrchestrationV2PlanArtifact,
+  type OrchestrationV2PlanStep,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
   type OrchestrationV2TurnItem,
+  type PlanId,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ProviderInstanceId,
@@ -502,6 +505,27 @@ export interface ThreadManagementServiceShape {
     readonly commandId: CommandId;
     readonly json: string;
   }) => Effect.Effect<{ readonly runId: RunId }, ThreadManagementFailure>;
+  /** Updates a thread's right-side task list (todo_list plan + turn item) from MCP tool writes. */
+  readonly updateTodoList: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly steps: ReadonlyArray<{
+      readonly id: string;
+      readonly text: string;
+      readonly status: OrchestrationV2PlanStep["status"];
+    }>;
+    readonly explanation?: string | undefined;
+  }) => Effect.Effect<
+    {
+      readonly sequence: number;
+      readonly planId: PlanId;
+      readonly runId: RunId | null;
+      readonly status: OrchestrationV2PlanArtifact["status"];
+      readonly explanation?: string;
+      readonly steps: ReadonlyArray<OrchestrationV2PlanStep>;
+    },
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
   readonly assertProviderInstanceEnabled: (input: {
     readonly projectId: ProjectId;
     readonly commandId: CommandId;
@@ -1179,6 +1203,37 @@ const make = Effect.gen(function* () {
       value: checked.success,
     });
     return { runId: run.id };
+  });
+
+  const updateTodoList: ThreadManagementServiceShape["updateTodoList"] = Effect.fn(
+    "ThreadManagementService.updateTodoList",
+  )(function* (input) {
+    const result = yield* dispatch({
+      type: "thread.todo-list.update",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      steps: [...input.steps],
+      ...(input.explanation === undefined ? {} : { explanation: input.explanation }),
+    });
+    const planEvent = result.storedEvents.findLast(
+      ({ event }) => event.type === "plan.updated" && event.payload.kind === "todo_list",
+    );
+    if (planEvent?.event.type !== "plan.updated" || planEvent.event.payload.kind !== "todo_list") {
+      return yield* new Orchestrator.OrchestratorDispatchError({
+        commandId: input.commandId,
+        commandType: "thread.todo-list.update",
+        cause: "Task list update did not emit a todo_list plan.",
+      });
+    }
+    const plan = planEvent.event.payload;
+    return {
+      sequence: result.sequence,
+      planId: plan.id,
+      runId: plan.runId,
+      status: plan.status,
+      ...(plan.explanation === undefined ? {} : { explanation: plan.explanation }),
+      steps: plan.steps,
+    };
   });
 
   const waitForThread: ThreadManagementServiceShape["waitForThread"] = Effect.fn(
@@ -1984,6 +2039,7 @@ const make = Effect.gen(function* () {
     listProjectThreads,
     sendToThread,
     submitRunOutput,
+    updateTodoList,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,

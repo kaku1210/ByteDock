@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   NodeId,
   OrchestratorMcpThreadReadResult,
+  PlanId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -19,6 +20,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2PlanArtifact,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ThreadShell,
@@ -1649,6 +1651,198 @@ it.effect(
           Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
           Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+        ),
+      ),
+    );
+  },
+);
+
+it.effect(
+  "t3_task_list supports read, add, update, replace, clear, and enforces read-only clients",
+  () => {
+    const targetThreadId = ThreadId.make("task-list-thread");
+    const shell = McpToolAccessTestkit.liveThreadShell(targetThreadId);
+    let sequence = 0;
+    let currentPlan:
+      | Extract<OrchestrationV2PlanArtifact, { readonly kind: "todo_list" }>
+      | undefined;
+
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (
+        args: Record<string, unknown>,
+        invocation: McpInvocationContext.McpInvocationScope = scope,
+      ) =>
+        server
+          .callTool({ name: "t3_task_list", arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+
+      const empty = yield* call({ action: "read", threadId: targetThreadId });
+      expect(empty.isError).toBe(false);
+      expect(empty.structuredContent).toEqual({
+        planId: null,
+        runId: null,
+        status: null,
+        steps: [],
+      });
+
+      const added = yield* call({
+        action: "add",
+        threadId: targetThreadId,
+        explanation: "Initial checklist",
+        steps: [
+          { text: "Inspect codebase" },
+          { id: "custom-2", text: "Write tests", status: "running" },
+        ],
+      });
+      expect(added.isError).toBe(false);
+      expect(added.structuredContent).toMatchObject({
+        explanation: "Initial checklist",
+        steps: [
+          { id: "task-1", text: "Inspect codebase", status: "pending" },
+          { id: "custom-2", text: "Write tests", status: "running" },
+        ],
+      });
+
+      const appended = yield* call({
+        action: "add",
+        threadId: targetThreadId,
+        steps: [{ text: "Run verification" }],
+      });
+      expect(appended.isError).toBe(false);
+      expect(appended.structuredContent).toMatchObject({
+        explanation: "Initial checklist",
+        steps: [
+          { id: "task-1", text: "Inspect codebase", status: "pending" },
+          { id: "custom-2", text: "Write tests", status: "running" },
+          { id: "task-2", text: "Run verification", status: "pending" },
+        ],
+      });
+
+      const duplicateId = yield* call({
+        action: "add",
+        threadId: targetThreadId,
+        steps: [{ id: "custom-2", text: "Duplicate" }],
+      });
+      expect(declaredFailure(duplicateId)).toMatchObject({ code: "invalid_request" });
+
+      const updated = yield* call({
+        action: "update",
+        threadId: targetThreadId,
+        steps: [
+          { id: "task-1", status: "completed" },
+          { id: "custom-2", text: "Write unit & integration tests", status: "completed" },
+        ],
+      });
+      expect(updated.isError).toBe(false);
+      expect(updated.structuredContent).toMatchObject({
+        explanation: "Initial checklist",
+        status: "active",
+        steps: [
+          { id: "task-1", text: "Inspect codebase", status: "completed" },
+          { id: "custom-2", text: "Write unit & integration tests", status: "completed" },
+          { id: "task-2", text: "Run verification", status: "pending" },
+        ],
+      });
+
+      const unknownUpdate = yield* call({
+        action: "update",
+        threadId: targetThreadId,
+        steps: [{ id: "missing", status: "completed" }],
+      });
+      expect(declaredFailure(unknownUpdate)).toMatchObject({ code: "invalid_request" });
+
+      const readBack = yield* call(
+        { action: "read", threadId: targetThreadId },
+        clientScope("read-only"),
+      );
+      expect(readBack.isError).toBe(false);
+      expect(readBack.structuredContent).toMatchObject({
+        explanation: "Initial checklist",
+        steps: [
+          { id: "task-1", text: "Inspect codebase", status: "completed" },
+          { id: "custom-2", text: "Write unit & integration tests", status: "completed" },
+          { id: "task-2", text: "Run verification", status: "pending" },
+        ],
+      });
+
+      const deniedWrite = yield* call(
+        { action: "add", threadId: targetThreadId, steps: [{ text: "Blocked" }] },
+        clientScope("read-only"),
+      );
+      expect(declaredFailure(deniedWrite)).toMatchObject({ code: "capability_denied" });
+
+      const replaced = yield* call({
+        action: "replace",
+        threadId: targetThreadId,
+        explanation: "Fresh plan",
+        steps: [{ text: "Ship release", status: "completed" }],
+      });
+      expect(replaced.isError).toBe(false);
+      expect(replaced.structuredContent).toMatchObject({
+        explanation: "Fresh plan",
+        status: "completed",
+        steps: [{ id: "task-1", text: "Ship release", status: "completed" }],
+      });
+
+      const cleared = yield* call({ action: "clear", threadId: targetThreadId });
+      expect(cleared.isError).toBe(false);
+      expect(cleared.structuredContent).toMatchObject({
+        steps: [],
+      });
+      expect((cleared.structuredContent as { explanation?: string }).explanation).toBeUndefined();
+    }).pipe(
+      Effect.provide(
+        layerThreadToolkit.pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+              getProjectThreadRecords: () =>
+                Effect.succeed({
+                  ...McpToolAccessTestkit.idleThreadProjection(shell),
+                  plans: currentPlan === undefined ? [] : [currentPlan],
+                  turnItems: [],
+                } as never),
+              updateTodoList: (input) =>
+                Effect.sync(() => {
+                  sequence += 1;
+                  const status =
+                    input.steps.length > 0 &&
+                    input.steps.every((step) => step.status === "completed")
+                      ? ("completed" as const)
+                      : ("active" as const);
+                  const nextPlan: Extract<
+                    OrchestrationV2PlanArtifact,
+                    { readonly kind: "todo_list" }
+                  > = {
+                    id: PlanId.make(`plan:mcp:${targetThreadId}`),
+                    threadId: targetThreadId,
+                    runId: shell.activeRunId,
+                    nodeId: NodeId.make(`node:mcp:todo-list:${targetThreadId}`),
+                    kind: "todo_list",
+                    status,
+                    ...(input.explanation === undefined ? {} : { explanation: input.explanation }),
+                    steps: input.steps.map((step) => ({ ...step })),
+                  };
+                  currentPlan = nextPlan;
+                  return {
+                    sequence,
+                    planId: nextPlan.id,
+                    runId: nextPlan.runId,
+                    status: nextPlan.status,
+                    ...(nextPlan.explanation === undefined
+                      ? {}
+                      : { explanation: nextPlan.explanation }),
+                    steps: nextPlan.steps,
+                  };
+                }),
+            }),
+          ),
         ),
       ),
     );

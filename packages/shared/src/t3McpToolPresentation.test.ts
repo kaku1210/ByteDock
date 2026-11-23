@@ -49,6 +49,12 @@ describe("resolveT3McpToolDefinition", () => {
     expect(resolveT3McpToolDefinition("t3_thread_transfer", { action: "fork" })?.displayName).toBe(
       resolveT3McpToolDefinition("t3_thread_fork")?.displayName,
     );
+    expect(resolveT3McpToolDefinition("t3_task_list", { action: "add" })?.displayName).toBe(
+      resolveT3McpToolDefinition("t3_task_list_add")?.displayName,
+    );
+    expect(resolveT3McpToolDefinition("t3_task_list", { action: "read" })?.labels).toEqual(
+      resolveT3McpToolDefinition("t3_task_list_read")?.labels,
+    );
     expect(resolveT3McpToolDefinition("preview_act", { action: "unknown" })?.labels[2]).toBe(
       "Used",
     );
@@ -61,6 +67,12 @@ describe("resolveT3McpSummaryAction", () => {
       "queue-list",
     );
     expect(resolveT3McpSummaryAction("t3_queue", { action: "edit" })).toBe("queue-edit");
+    expect(resolveT3McpSummaryAction("t3_task_list", { action: "read" })).toBe("task-list-read");
+    expect(resolveT3McpSummaryAction("t3_task_list", { action: "add" })).toBe("task-list-update");
+    expect(resolveT3McpSummaryAction("t3_task_list", { action: "update" })).toBe(
+      "task-list-update",
+    );
+    expect(resolveT3McpSummaryAction("t3_task_list", { action: "clear" })).toBe("task-list-update");
     expect(resolveT3McpSummaryAction("t3_thread_transfer", { action: "status" })).toBe(
       "thread-transfers",
     );

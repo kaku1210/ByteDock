@@ -15,6 +15,8 @@ import {
   IsoDateTime,
   OrchestratorMcpFailure,
   OrchestrationV2DispatchCommandResult,
+  OrchestrationV2PlanStep,
+  PlanId,
   ThreadId,
   RunId,
   NonNegativeInt,
@@ -254,6 +256,35 @@ const SubmitOutputTool = Tool.make("t3_submit_output", {
   .annotate(Tool.Destructive, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
+const taskListStepInput = Schema.Struct({
+  id: Schema.optional(TrimmedNonEmptyString),
+  text: Schema.optional(TrimmedNonEmptyString),
+  status: Schema.optional(Schema.Literals(["pending", "running", "completed"])),
+});
+
+const TaskListTool = Tool.make("t3_task_list", {
+  ...commandTool,
+  description:
+    "Read or update a thread's right-side task list (ThreadTaskList). Omit `threadId` for this thread. Use this when asked to add, update, read, or clear tasks in the task list (including providers without a native `update_plan` tool). read: return current tasks. add: append `steps` (each needs `text`; `status` defaults to `pending`). update: modify existing `steps` by `id` (`status` and/or `text`). replace: replace the full list with `steps`. clear: remove all current tasks.",
+  parameters: Schema.Struct({
+    action: Schema.Literals(["read", "add", "update", "replace", "clear"]),
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId),
+    steps: Schema.optional(Schema.Array(taskListStepInput).check(Schema.isMaxLength(200))),
+    explanation: Schema.optional(Schema.String.check(Schema.isMaxLength(2000))),
+  }),
+  success: Schema.Struct({
+    planId: Schema.NullOr(PlanId),
+    runId: Schema.NullOr(RunId),
+    status: Schema.NullOr(Schema.Literals(["draft", "active", "completed", "superseded"])),
+    explanation: Schema.optional(Schema.String),
+    steps: Schema.Array(OrchestrationV2PlanStep),
+    sequence: Schema.optional(NonNegativeInt),
+  }),
+})
+  .annotate(Tool.Title, "Manage thread task list")
+  .annotate(Tool.Destructive, false);
+
 export const ThreadToolkit = Toolkit.make(
   ScheduledTaskRunTool,
   ThreadSearchTool,
@@ -262,5 +293,6 @@ export const ThreadToolkit = Toolkit.make(
   ThreadOrganizeTool,
   PendingRequestTool,
   QueueTool,
+  TaskListTool,
   SubmitOutputTool,
 );

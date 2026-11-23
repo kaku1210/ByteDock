@@ -2,6 +2,7 @@ import {
   type CommandId,
   type RuntimeRequestId,
   ThreadId,
+  type OrchestrationV2PlanStep,
   type OrchestrationV2ThreadProjection,
   type RunId,
   OrchestratorMcpFailure,
@@ -25,6 +26,7 @@ import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageInt
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
+import { findLatestTodoListPlan } from "../../../orchestration-v2/planStepDurations.ts";
 import { ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
@@ -106,6 +108,18 @@ const required = <A>(value: A | undefined, name: string) =>
 const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
+
+const MAX_TASK_LIST_STEPS = 200;
+
+function allocateTaskStepId(usedIds: Set<string>): string {
+  let index = 1;
+  while (usedIds.has(`task-${index}`)) {
+    index += 1;
+  }
+  const nextId = `task-${index}`;
+  usedIds.add(nextId);
+  return nextId;
+}
 
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
@@ -441,5 +455,208 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
       return { sequence: result.sequence };
     }),
+  ),
+  t3_task_list: McpToolAccess.either(
+    (input) => input.action === "read",
+    McpToolAccess.reads((input) =>
+      Effect.gen(function* () {
+        const { projection } = yield* readThread(input.threadId, ["plans", "turnItems"]);
+        const current = findLatestTodoListPlan(projection);
+        if (current === undefined) {
+          return {
+            planId: null,
+            runId: null,
+            status: null,
+            steps: [],
+          };
+        }
+        return {
+          planId: current.id,
+          runId: current.runId,
+          status: current.status,
+          ...(current.explanation === undefined ? {} : { explanation: current.explanation }),
+          steps: current.steps,
+        };
+      }),
+    ),
+    writesThread((input) =>
+      Effect.gen(function* () {
+        const { threads, projection } = yield* readThread(input.threadId, ["plans", "turnItems"]);
+        const current = findLatestTodoListPlan(projection);
+        const currentSteps = current?.steps ?? [];
+        type StepDraft = {
+          readonly id: string;
+          readonly text: string;
+          readonly status: OrchestrationV2PlanStep["status"];
+        };
+        let nextSteps: Array<StepDraft> = [];
+
+        switch (input.action) {
+          case "read":
+          case "clear": {
+            nextSteps = [];
+            break;
+          }
+          case "replace": {
+            const steps = yield* required(input.steps, "steps");
+            if (steps.length === 0) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message:
+                  "`replace` requires at least one step; use `clear` to empty the task list.",
+              });
+            }
+            const usedIds = new Set<string>();
+            for (const step of steps) {
+              if (step.id !== undefined) {
+                if (usedIds.has(step.id)) {
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: `Duplicate task step id \`${step.id}\`.`,
+                  });
+                }
+                usedIds.add(step.id);
+              }
+            }
+            nextSteps = [];
+            for (const step of steps) {
+              if (step.text === undefined) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Each task step in `replace` needs `text`.",
+                });
+              }
+              nextSteps.push({
+                id: step.id ?? allocateTaskStepId(usedIds),
+                text: step.text,
+                status: step.status ?? "pending",
+              });
+            }
+            break;
+          }
+          case "add": {
+            const steps = yield* required(input.steps, "steps");
+            if (steps.length === 0) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "`add` requires at least one step.",
+              });
+            }
+            if (currentSteps.length + steps.length > MAX_TASK_LIST_STEPS) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: `Task list cannot exceed ${MAX_TASK_LIST_STEPS} steps.`,
+              });
+            }
+            const usedIds = new Set(currentSteps.map((step) => step.id));
+            for (const step of steps) {
+              if (step.id !== undefined) {
+                if (usedIds.has(step.id)) {
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: `Task step id \`${step.id}\` already exists.`,
+                  });
+                }
+                usedIds.add(step.id);
+              }
+            }
+            const addedSteps: Array<StepDraft> = [];
+            for (const step of steps) {
+              if (step.text === undefined) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Each task step in `add` needs `text`.",
+                });
+              }
+              addedSteps.push({
+                id: step.id ?? allocateTaskStepId(usedIds),
+                text: step.text,
+                status: step.status ?? "pending",
+              });
+            }
+            nextSteps = [
+              ...currentSteps.map((step) => ({
+                id: step.id,
+                text: step.text,
+                status: step.status,
+              })),
+              ...addedSteps,
+            ];
+            break;
+          }
+          case "update": {
+            const steps = yield* required(input.steps, "steps");
+            if (steps.length === 0) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "`update` requires at least one step.",
+              });
+            }
+            if (currentSteps.length === 0) {
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "There are no current tasks to update. Use `add` or `replace` first.",
+              });
+            }
+            const existingIds = new Set(currentSteps.map((step) => step.id));
+            const patchesById = new Map<
+              string,
+              { text?: string; status?: OrchestrationV2PlanStep["status"] }
+            >();
+            for (const step of steps) {
+              if (step.id === undefined) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Each task step in `update` needs `id`.",
+                });
+              }
+              if (step.text === undefined && step.status === undefined) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: `Task step \`${step.id}\` needs \`status\` or \`text\` to update.`,
+                });
+              }
+              if (!existingIds.has(step.id)) {
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: `Task step \`${step.id}\` was not found in the current task list.`,
+                });
+              }
+              const prior = patchesById.get(step.id);
+              patchesById.set(step.id, {
+                ...prior,
+                ...(step.text === undefined ? {} : { text: step.text }),
+                ...(step.status === undefined ? {} : { status: step.status }),
+              });
+            }
+            nextSteps = currentSteps.map((step) => {
+              const patch = patchesById.get(step.id);
+              return {
+                id: step.id,
+                text: patch?.text ?? step.text,
+                status: patch?.status ?? step.status,
+              };
+            });
+            break;
+          }
+        }
+
+        const explanation =
+          input.explanation !== undefined
+            ? input.explanation
+            : input.action === "add" || input.action === "update"
+              ? current?.explanation
+              : undefined;
+
+        return yield* threads
+          .updateTodoList({
+            threadId: projection.thread.id,
+            commandId: yield* newCommandId(),
+            steps: nextSteps,
+            ...(explanation === undefined ? {} : { explanation }),
+          })
+          .pipe(Effect.mapError(dispatchFailure));
+      }),
+    ),
   ),
 });
