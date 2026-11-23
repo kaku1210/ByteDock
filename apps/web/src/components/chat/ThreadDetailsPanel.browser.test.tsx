@@ -160,12 +160,25 @@ function setup(input: {
   };
 }
 
+const machines = (["This Mac", "Server"] as const).map((label, index) => ({
+  environmentId: EnvironmentId.make(index === 0 ? "environment" : "other"),
+  projectId: ProjectId.make("project"),
+  label,
+  isPrimary: index === 0,
+  machine: "server" as const,
+}));
+
 function Panel({
   fixture,
   activeThreadRef = threadRef,
+  draftEnvMode,
+  onMachines = false,
 }: {
   fixture: ReturnType<typeof setup>;
   activeThreadRef?: ScopedThreadRef;
+  /** Renders an unsent draft in this mode instead of a started thread. */
+  draftEnvMode?: "local" | "worktree";
+  onMachines?: boolean;
 }) {
   const noop = () => {};
   const scriptResult = async () => ({ ok: true }) as never;
@@ -190,8 +203,8 @@ function Panel({
         threadId={activeThreadRef.threadId}
         projectId={ProjectId.make("project")}
         composerDraftTarget={activeThreadRef}
-        worktreePath={state.folder}
-        isServerThread
+        worktreePath={draftEnvMode === undefined ? state.folder : null}
+        isServerThread={draftEnvMode === undefined}
         activeProjectName={state.workspaceRoot === SCRATCH_ROOT ? "No project" : "plain"}
         activeProjectScripts={undefined}
         preferredScriptId={null}
@@ -202,10 +215,12 @@ function Panel({
         gitCwd={state.folder}
         workspaceMutationId={null}
         isGitRepo={false}
-        envLocked
-        availableEnvironments={[]}
+        offersWorkspaceModes={false}
+        envLocked={draftEnvMode === undefined}
+        availableEnvironments={onMachines ? machines : []}
+        {...(onMachines ? { onEnvironmentChange: noop } : {})}
         onEnvModeChange={noop}
-        envMode="local"
+        envMode={draftEnvMode ?? "local"}
         startFromOrigin={false}
         onStartFromOriginChange={noop}
         onComposerFocusRequest={noop}
@@ -231,6 +246,23 @@ it("offers no git controls in a No project thread, but shows its linked pull req
   await expect
     .element(page.getByRole("button", { name: "Initialize Git" }))
     .not.toBeInTheDocument();
+});
+
+it("shows Current checkout where no worktree can come from, even when New worktree is the default", async () => {
+  using fixture = setup({ workspaceRoot: SCRATCH_ROOT, folder: SCRATCH_ROOT });
+  await using _screen = await render(<Panel fixture={fixture} draftEnvMode="worktree" />);
+  await expect.element(page.getByLabelText("Run context: Current checkout")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: /Run context/ })).not.toBeInTheDocument();
+});
+
+it("offers only machines where no worktree can come from and several machines exist", async () => {
+  using fixture = setup({ workspaceRoot: SCRATCH_ROOT, folder: SCRATCH_ROOT });
+  await using _screen = await render(
+    <Panel fixture={fixture} draftEnvMode="worktree" onMachines />,
+  );
+  await page.getByRole("button", { name: "Run context: This Mac, Current checkout" }).click();
+  await expect.element(page.getByText("Run on")).toBeVisible();
+  await expect.element(page.getByText("New worktree")).not.toBeInTheDocument();
 });
 
 it("shows a linked pull request in a folder that is not a git repository", async () => {
