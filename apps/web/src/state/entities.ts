@@ -38,9 +38,14 @@ import { environmentServerConfigsAtom } from "./server";
 import {
   allEnvironmentProjectSnapshotsReadyAtom,
   allEnvironmentShellsBootstrappedAtom,
+  environmentShell,
 } from "./shell";
-import { environmentThreadDetails, environmentThreadShells } from "./threads";
+import { environmentThreadDetails, environmentThreadShells, threadFamilies } from "./threads";
 import { waitForAtomValue } from "./waitForAtomValue";
+import {
+  DEFAULT_WAIT_FOR_THREAD_SHELL_TIMEOUT_MS,
+  waitForThreadShellWithFallback,
+} from "./waitForThreadShell";
 import { m } from "../i18n/messages";
 
 const EMPTY_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -356,11 +361,16 @@ export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | 
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
 
-export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 5_000): Promise<boolean> {
-  return waitForAtomValue({
+export function waitForThreadShell(
+  ref: ScopedThreadRef,
+  timeoutMs = DEFAULT_WAIT_FOR_THREAD_SHELL_TIMEOUT_MS,
+): Promise<boolean> {
+  return waitForThreadShellWithFallback({
     registry: appAtomRegistry,
-    atom: environmentThreadShells.threadShellAtom(ref),
-    predicate: (thread) => thread !== null,
+    ref,
+    threadShellAtom: environmentThreadShells.threadShellAtom,
+    rawShellStateAtom: environmentShell.stateValueAtom,
+    threadFamilies,
     timeoutMs,
   });
 }
