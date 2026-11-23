@@ -41,6 +41,7 @@ import {
   ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -12931,6 +12932,633 @@ it.layer(layerThreadProjectMoveTest)("moving existing threads to No project", (i
     }),
   );
 });
+
+const layerThreadMoveToProjectTest = Layer.unwrap(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const scratchRoot = yield* fs.makeTempDirectoryScoped({
+      prefix: "t3-move-to-project-scratch-",
+    });
+    return ThreadProjectMove.layer.pipe(
+      Layer.provideMerge(
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          scratchRoot: Effect.succeedSome(scratchRoot),
+          ensureScratchProject: Effect.succeed({ projectId: SCRATCH_PROJECT_ID }),
+          isScratchProject: (projectId) => Effect.succeed(projectId === SCRATCH_PROJECT_ID),
+        }),
+      ),
+      Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+      Layer.provideMerge(layerProjectDeletionTest),
+    );
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+it.layer(layerThreadMoveToProjectTest)(
+  "moving No project threads into an existing project",
+  (it) => {
+    const setupFixture = Effect.fn(function* (name: string) {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const existingScratch = yield* projects.getById(SCRATCH_PROJECT_ID);
+      let scratchRoot: string;
+      if (Option.isNone(existingScratch)) {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        scratchRoot = Option.getOrThrow(yield* folders.scratchRoot);
+        yield* projects.create({
+          commandId: CommandId.make("move-to-project-scratch-create"),
+          projectId: SCRATCH_PROJECT_ID,
+          title: "No project",
+          workspaceRoot: scratchRoot,
+        });
+      } else {
+        scratchRoot = existingScratch.value.workspaceRoot;
+      }
+
+      const targetRoot = yield* fs.makeTempDirectoryScoped({
+        prefix: `t3-move-target-${name}-`,
+      });
+      const targetProjectId = ProjectId.make(`move-to-project-target-${name}`);
+      yield* projects.create({
+        commandId: CommandId.make(`${targetProjectId}-create`),
+        projectId: targetProjectId,
+        title: `Target ${name}`,
+        workspaceRoot: targetRoot,
+      });
+
+      const folderName = `2026-01-01-${name}`;
+      const sourceFolder = path.join(scratchRoot, folderName);
+      yield* fs.makeDirectory(sourceFolder, { recursive: true });
+      yield* fs.writeFileString(path.join(sourceFolder, "notes.txt"), `notes for ${name}`);
+
+      const threadId = ThreadId.make(`move-to-project-thread-${name}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${threadId}-create`),
+        threadId,
+        projectId: SCRATCH_PROJECT_ID,
+        title: `Scratch ${name}`,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: sourceFolder,
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+      return {
+        scratchRoot,
+        targetRoot,
+        targetProjectId,
+        folderName,
+        sourceFolder,
+        threadId,
+        orchestrator,
+        projects,
+        fs,
+        path,
+      };
+    });
+
+    it.effect(
+      "moves folder, detaches live sessions, migrates tasks, and hands off context with workspace notice on next turn",
+      () =>
+        Effect.gen(function* () {
+          const move = yield* ThreadProjectMove.ThreadProjectMove;
+          const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+          const sink = yield* EventSink.EventSinkV2;
+          const {
+            targetRoot,
+            targetProjectId,
+            folderName,
+            sourceFolder,
+            threadId,
+            orchestrator,
+            fs,
+            path,
+          } = yield* setupFixture("normal");
+
+          // Run a first turn in the scratch workspace and complete it.
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${threadId}-turn-1`),
+            threadId,
+            messageId: MessageId.make(`${threadId}-msg-1`),
+            text: "Draft notes in scratch workspace",
+            attachments: [],
+            modelSelection,
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const afterTurn1Start = yield* orchestrator.getThreadProjection(threadId);
+          const run1 = afterTurn1Start.runs[0]!;
+          const oldProviderThreadId = afterTurn1Start.thread.activeProviderThreadId!;
+          assert.isNotNull(oldProviderThreadId);
+          const now = yield* DateTime.now;
+          yield* sink.write({
+            commandId: CommandId.make(`${threadId}-turn-1-complete`),
+            events: [
+              {
+                id: EventId.make(`${threadId}-turn-1-assistant-item`),
+                type: "turn-item.updated",
+                threadId,
+                runId: run1.id,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`${threadId}-assistant-1`),
+                  threadId,
+                  runId: run1.id,
+                  nodeId: run1.rootNodeId,
+                  providerThreadId: oldProviderThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 2,
+                  status: "completed",
+                  title: null,
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "assistant_message",
+                  messageId: MessageId.make(`${threadId}-assistant-msg-1`),
+                  text: "Saved draft notes into notes.txt.",
+                  streaming: false,
+                },
+              },
+              {
+                id: EventId.make(`${threadId}-turn-1-run-done`),
+                type: "run.updated",
+                threadId,
+                runId: run1.id,
+                occurredAt: now,
+                payload: { ...run1, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          });
+
+          const { task } = yield* tasks.upsert({
+            id: ScheduledTaskId.make(`${threadId}-bound-task`),
+            title: "Bound scratch task",
+            prompt: "Check notes",
+            enabled: false,
+            schedule: { type: "interval", everyMs: 60_000 },
+            projectId: SCRATCH_PROJECT_ID,
+            threadId,
+            workspaceStrategy: { type: "root" },
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+          });
+
+          yield* TestClock.adjust("1 second");
+          const result = yield* move.moveToProject({
+            threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId,
+          });
+
+          const expectedDest = path.join(targetRoot, folderName);
+          assert.deepEqual(result, {
+            threadId,
+            projectId: targetProjectId,
+            workspaceRoot: targetRoot,
+            movedFolderPath: expectedDest,
+          });
+          assert.isFalse(yield* fs.exists(sourceFolder));
+          assert.equal(
+            yield* fs.readFileString(path.join(expectedDest, "notes.txt")),
+            "notes for normal",
+          );
+
+          const afterMove = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(afterMove.thread.projectId, targetProjectId);
+          assert.isNull(afterMove.thread.worktreePath);
+          assert.isNull(afterMove.thread.branch);
+          assert.isNull(afterMove.thread.activeProviderThreadId);
+          const moveNotice = afterMove.turnItems.find(
+            (item) => item.type === "system_notice" && item.title === "Moved to project",
+          );
+          assert.isDefined(moveNotice);
+          if (moveNotice?.type === "system_notice") {
+            assert.include(moveNotice.message, expectedDest);
+            assert.include(moveNotice.message, targetRoot);
+          }
+          assert.equal(
+            (yield* tasks.list()).tasks.find((entry) => entry.id === task.id)?.projectId,
+            targetProjectId,
+          );
+          assert.isTrue(
+            afterMove.providerSessions.every((session) => session.status === "stopped"),
+          );
+
+          // Continuing on the moved thread starts a fresh provider thread with detached history handoff.
+          yield* TestClock.adjust("1 second");
+          const turn2CommandId = CommandId.make(`${threadId}-turn-2`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: turn2CommandId,
+            threadId,
+            messageId: MessageId.make(`${threadId}-msg-2`),
+            text: "Continue working in the target project",
+            attachments: [],
+            modelSelection,
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+
+          const afterTurn2 = yield* orchestrator.getThreadProjection(threadId);
+          assert.isNotNull(afterTurn2.thread.activeProviderThreadId);
+          assert.notEqual(afterTurn2.thread.activeProviderThreadId, oldProviderThreadId);
+          const handoff = afterTurn2.contextHandoffs.at(-1);
+          assert.isDefined(handoff);
+          assert.include(handoff!.summaryText, "Workspace update:");
+          assert.include(handoff!.summaryText, expectedDest);
+          assert.include(handoff!.summaryText, "Draft notes in scratch workspace");
+
+          const turn2Run = afterTurn2.runs.at(-1)!;
+          const handoffItem = afterTurn2.turnItems.find(
+            (item) => item.runId === turn2Run.id && item.type === "handoff",
+          );
+          const userItem = afterTurn2.turnItems.find(
+            (item) => item.runId === turn2Run.id && item.type === "user_message",
+          );
+          assert.isDefined(handoffItem);
+          assert.isDefined(userItem);
+          assert.isBelow(handoffItem!.ordinal, userItem!.ordinal);
+          assert.equal(afterTurn2.runs.length, 2);
+          assert.equal(turn2Run.providerThreadId, afterTurn2.thread.activeProviderThreadId);
+        }),
+    );
+
+    it.effect(
+      "appends -2 suffix when a folder with the same name already exists in target project",
+      () =>
+        Effect.gen(function* () {
+          const move = yield* ThreadProjectMove.ThreadProjectMove;
+          const { targetRoot, targetProjectId, folderName, sourceFolder, threadId, fs, path } =
+            yield* setupFixture("conflict");
+          const existingDest = path.join(targetRoot, folderName);
+          yield* fs.makeDirectory(existingDest, { recursive: true });
+          yield* fs.writeFileString(path.join(existingDest, "existing.txt"), "keep me");
+
+          const result = yield* move.moveToProject({
+            threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId,
+          });
+
+          const expectedDest = path.join(targetRoot, `${folderName}-2`);
+          assert.equal(result.movedFolderPath, expectedDest);
+          assert.isFalse(yield* fs.exists(sourceFolder));
+          assert.equal(
+            yield* fs.readFileString(path.join(existingDest, "existing.txt")),
+            "keep me",
+          );
+          assert.equal(
+            yield* fs.readFileString(path.join(expectedDest, "notes.txt")),
+            "notes for conflict",
+          );
+        }),
+    );
+
+    it.effect(
+      "falls back to copy + cleanup on EXDEV rename error and surfaces warning if source stays locked",
+      () =>
+        Effect.gen(function* () {
+          const move = yield* ThreadProjectMove.ThreadProjectMove;
+          const { targetRoot, targetProjectId, folderName, sourceFolder, threadId, fs, path } =
+            yield* setupFixture("exdev");
+
+          const renameSpy = vi.spyOn(fs, "rename").mockReturnValueOnce(
+            Effect.fail(
+              Object.assign(new Error("EXDEV: cross-device link not permitted"), {
+                code: "EXDEV",
+              }) as never,
+            ),
+          );
+          const result = yield* move
+            .moveToProject({
+              threadId,
+              expectedProjectId: SCRATCH_PROJECT_ID,
+              targetProjectId,
+            })
+            .pipe(Effect.ensuring(Effect.sync(() => renameSpy.mockRestore())));
+
+          const expectedDest = path.join(targetRoot, folderName);
+          assert.equal(result.movedFolderPath, expectedDest);
+          assert.isUndefined(result.cleanupWarning);
+          assert.isFalse(yield* fs.exists(sourceFolder));
+          assert.equal(
+            yield* fs.readFileString(path.join(expectedDest, "notes.txt")),
+            "notes for exdev",
+          );
+
+          // Now test locked original handle: copy succeeds, remove retries fail, cleanupWarning returned.
+          const locked = yield* setupFixture("locked");
+          const lockedRenameSpy = vi.spyOn(fs, "rename").mockReturnValueOnce(
+            Effect.fail(
+              Object.assign(new Error("EBUSY: resource busy or locked"), {
+                code: "EBUSY",
+              }) as never,
+            ),
+          );
+          const originalRemove = fs.remove.bind(fs);
+          const removeSpy = vi.spyOn(fs, "remove").mockImplementation((target, options) => {
+            if (target === locked.sourceFolder) {
+              return Effect.fail(
+                Object.assign(new Error("EBUSY: resource busy or locked"), {
+                  code: "EBUSY",
+                }) as never,
+              );
+            }
+            return originalRemove(target, options);
+          });
+
+          const clock = yield* Clock.Clock;
+          const lockedResult = yield* move
+            .moveToProject({
+              threadId: locked.threadId,
+              expectedProjectId: SCRATCH_PROJECT_ID,
+              targetProjectId: locked.targetProjectId,
+            })
+            .pipe(
+              Effect.provideService(Clock.Clock, {
+                ...clock,
+                sleep: () => Effect.void,
+              }),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  lockedRenameSpy.mockRestore();
+                  removeSpy.mockRestore();
+                }),
+              ),
+            );
+          assert.isDefined(lockedResult.cleanupWarning);
+          assert.include(lockedResult.cleanupWarning!, locked.sourceFolder);
+          assert.isTrue(yield* fs.exists(locked.sourceFolder));
+          assert.equal(
+            yield* fs.readFileString(path.join(lockedResult.movedFolderPath, "notes.txt")),
+            "notes for locked",
+          );
+        }),
+    );
+
+    it.effect("rolls back both renamed and copied folders when Orchestrator dispatch fails", () =>
+      Effect.gen(function* () {
+        const move = yield* ThreadProjectMove.ThreadProjectMove;
+        const renamed = yield* setupFixture("rollback-rename");
+        const dispatchSpy = vi.spyOn(renamed.orchestrator, "dispatch").mockReturnValueOnce(
+          Effect.fail(
+            new Orchestrator.OrchestratorDispatchError({
+              commandId: CommandId.make("rollback-rename-fail"),
+              commandType: "thread.project.move",
+              cause: "Simulated rename rollback failure",
+            }),
+          ),
+        );
+        const renamedError = yield* move
+          .moveToProject({
+            threadId: renamed.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: renamed.targetProjectId,
+          })
+          .pipe(Effect.ensuring(Effect.sync(() => dispatchSpy.mockRestore())), Effect.flip);
+        assert.include(renamedError.reason, "Simulated rename rollback failure");
+        assert.isTrue(yield* renamed.fs.exists(renamed.sourceFolder));
+        assert.isFalse(
+          yield* renamed.fs.exists(renamed.path.join(renamed.targetRoot, renamed.folderName)),
+        );
+
+        // Copy-fallback rollback: remove copied destination, leave source untouched.
+        const copied = yield* setupFixture("rollback-copy");
+        const renameSpy = vi
+          .spyOn(copied.fs, "rename")
+          .mockReturnValueOnce(
+            Effect.fail(
+              Object.assign(new Error("EXDEV: cross-device link"), { code: "EXDEV" }) as never,
+            ),
+          );
+        const copyDispatchSpy = vi.spyOn(copied.orchestrator, "dispatch").mockReturnValueOnce(
+          Effect.fail(
+            new Orchestrator.OrchestratorDispatchError({
+              commandId: CommandId.make("rollback-copy-fail"),
+              commandType: "thread.project.move",
+              cause: "Simulated copy rollback failure",
+            }),
+          ),
+        );
+        const copiedError = yield* move
+          .moveToProject({
+            threadId: copied.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: copied.targetProjectId,
+          })
+          .pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                renameSpy.mockRestore();
+                copyDispatchSpy.mockRestore();
+              }),
+            ),
+            Effect.flip,
+          );
+        assert.include(copiedError.reason, "Simulated copy rollback failure");
+        assert.isTrue(yield* copied.fs.exists(copied.sourceFolder));
+        assert.isFalse(
+          yield* copied.fs.exists(copied.path.join(copied.targetRoot, copied.folderName)),
+        );
+      }),
+    );
+
+    it.effect("rejects invalid source/target combinations without moving any files", () =>
+      Effect.gen(function* () {
+        const move = yield* ThreadProjectMove.ThreadProjectMove;
+        const fx = yield* setupFixture("rejections");
+
+        // 1. Stale expectedProjectId
+        const stale = yield* move
+          .moveToProject({
+            threadId: fx.threadId,
+            expectedProjectId: ProjectId.make("stale-project"),
+            targetProjectId: fx.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale.reason, "The thread's project changed. Read it again before moving.");
+
+        // 2. Target is scratch project
+        const toScratch = yield* move
+          .moveToProject({
+            threadId: fx.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: SCRATCH_PROJECT_ID,
+          })
+          .pipe(Effect.flip);
+        assert.equal(toScratch.reason, "Choose a regular project as the destination.");
+
+        // 3. Target is archived
+        const archivedRoot = yield* fx.fs.makeTempDirectoryScoped({
+          prefix: "t3-move-archived-target-",
+        });
+        const archivedProjectId = ProjectId.make("move-to-project-archived-target");
+        yield* fx.projects.create({
+          commandId: CommandId.make(`${archivedProjectId}-create`),
+          projectId: archivedProjectId,
+          title: "Archived target",
+          workspaceRoot: archivedRoot,
+        });
+        yield* fx.projects.update({
+          commandId: CommandId.make(`${archivedProjectId}-archive`),
+          projectId: archivedProjectId,
+          archived: true,
+        });
+        const archivedErr = yield* move
+          .moveToProject({
+            threadId: fx.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: archivedProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.equal(archivedErr.reason, "The target project is archived. Unarchive it first.");
+
+        // 4. Regular project thread (Project A -> Project B)
+        const regularThreadId = ThreadId.make("move-to-project-regular-thread");
+        yield* fx.orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${regularThreadId}-create`),
+          threadId: regularThreadId,
+          projectId: fx.targetProjectId,
+          title: "Regular thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const regularErr = yield* move
+          .moveToProject({
+            threadId: regularThreadId,
+            expectedProjectId: fx.targetProjectId,
+            targetProjectId: fx.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          regularErr.reason,
+          "Only a No project thread can be moved into an existing project.",
+        );
+
+        // 5. Non-direct-child worktreePath (imported / moved-back folder outside scratchRoot)
+        const externalDir = yield* fx.fs.makeTempDirectoryScoped({
+          prefix: "t3-move-external-folder-",
+        });
+        const externalThreadId = ThreadId.make("move-to-project-external-thread");
+        yield* fx.orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${externalThreadId}-create`),
+          threadId: externalThreadId,
+          projectId: SCRATCH_PROJECT_ID,
+          title: "External thread",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: externalDir,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const externalErr = yield* move
+          .moveToProject({
+            threadId: externalThreadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: fx.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.include(externalErr.reason, "does not use a dedicated No project folder");
+
+        // 6. Nested registered project inside source scratch folder
+        const nestedProjectRoot = fx.path.join(fx.sourceFolder, "nested-app");
+        yield* fx.fs.makeDirectory(nestedProjectRoot, { recursive: true });
+        const nestedProjectId = ProjectId.make("move-to-project-nested-project");
+        yield* fx.projects.create({
+          commandId: CommandId.make(`${nestedProjectId}-create`),
+          projectId: nestedProjectId,
+          title: "Nested App",
+          workspaceRoot: nestedProjectRoot,
+        });
+        const nestedErr = yield* move
+          .moveToProject({
+            threadId: fx.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: fx.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.include(nestedErr.reason, 'project "Nested App" is registered inside it');
+
+        // 7. Shared scratch folder (another thread using same worktreePath)
+        const shared = yield* setupFixture("shared");
+        yield* shared.orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("move-to-project-shared-sibling-create"),
+          threadId: ThreadId.make("move-to-project-shared-sibling"),
+          projectId: SCRATCH_PROJECT_ID,
+          title: "Shared sibling",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: shared.sourceFolder,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const sharedErr = yield* move
+          .moveToProject({
+            threadId: shared.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: shared.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.include(sharedErr.reason, "Another thread shares this scratch folder");
+
+        // 8. Busy / unfinished run
+        const busy = yield* setupFixture("busy");
+        yield* busy.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${busy.threadId}-msg`),
+          threadId: busy.threadId,
+          messageId: MessageId.make(`${busy.threadId}-msg`),
+          text: "Still working",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const busyErr = yield* move
+          .moveToProject({
+            threadId: busy.threadId,
+            expectedProjectId: SCRATCH_PROJECT_ID,
+            targetProjectId: busy.targetProjectId,
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          busyErr.reason,
+          "The thread still has work in progress. Finish or stop it first.",
+        );
+
+        // Source folder for rejected fixture remains untouched.
+        assert.isTrue(yield* fx.fs.exists(fx.sourceFolder));
+      }),
+    );
+  },
+);
 
 it.layer(layerSharedApplicationDataPlaneTest)("snooze projection", (it) => {
   it.effect("carries snooze, settle and title state through the V2 shell projection", () =>

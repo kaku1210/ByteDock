@@ -12879,5 +12879,12 @@
   "27d76249d09eb69f": "Review-Leitfaden bereit",
   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
   "b7df38b7d8792d78": "Leitfaden öffnen",
-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
+  "9f8a1d6afc78adb1": "Mit Warnung in Projekt verschoben",
+  "77afb4c00de3f5e9": "Nach {project} verschoben",
+  "b676452416462575": "Thread konnte nicht in das Projekt verschoben werden",
+  "8492cb096deeae79": "Nach Kein Projekt verschoben",
+  "8ba8ef4f0e6a6199": "Thread konnte nicht nach Kein Projekt verschoben werden",
+  "f83a8e1234105a07": "In Projekt verschieben",
+  "de01a189ff54f424": "Nach Kein Projekt verschieben"
 }

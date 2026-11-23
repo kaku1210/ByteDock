@@ -230,6 +230,23 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         return { ...result, link: McpInvocationContext.threadLinkFor(scope, result.threadId) };
       }),
   ),
+  t3_thread_move_to_project: McpToolAccess.writesThreads(
+    (input) => [input.threadId],
+    (input) =>
+      Effect.gen(function* () {
+        const service = yield* ThreadProjectMove.ThreadProjectMove;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const result = yield* service
+          .moveToProject(input)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorMcpFailure({ code: "orchestration_error", message: cause.message }),
+            ),
+          );
+        return { ...result, link: McpInvocationContext.threadLinkFor(scope, result.threadId) };
+      }),
+  ),
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
     (input, { runtimeMode, interactionMode, linkOrigin }) =>

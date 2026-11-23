@@ -123,7 +123,9 @@ vi.mock("./useSettings", () => ({
     }),
 }));
 vi.mock("./useThreadActions", () => ({
+  canMoveThreadToNoProject: () => true,
   canTurnThreadIntoProject: () => false,
+  listMoveThreadToProjectTargets: () => [{ projectId: "target-project", label: "Target Project" }],
   useThreadActions: () =>
     Object.fromEntries(
       [
@@ -136,11 +138,21 @@ vi.mock("./useThreadActions", () => ({
         "confirmAndUnpinThread",
         "archiveThread",
         "deleteThread",
+        "moveThreadToProject",
+        "moveThreadToNoProject",
       ].map((action) => [
         action,
-        async () => {
-          recordEffect(action === "markThreadUnread" ? "mark-unread" : action);
-          return AsyncResult.success(undefined);
+        async (...args: unknown[]) => {
+          recordEffect(
+            action === "markThreadUnread"
+              ? "mark-unread"
+              : action === "moveThreadToProject"
+                ? `moveThreadToProject:${String(args[1])}`
+                : action,
+          );
+          return AsyncResult.success(
+            action === "moveThreadToProject" ? { movedFolderPath: "/target/thread" } : undefined,
+          );
         },
       ]),
     ),
@@ -170,19 +182,41 @@ beforeEach(() => {
 });
 
 describe("thread menu permissions", () => {
-  it.each(["rename", "regenerate-title", "delete", "pin", "settle", "archive"] as const)(
-    "%s rechecks after the native menu closes",
-    async (action) => {
-      state.granted.add("secondary");
-      const choice = deferred<ThreadActionMenuId | null>();
-      state.show.mockReturnValue(choice.promise);
-      createMenu().openMenu(position);
-      state.granted.delete("secondary");
-      choice.resolve(action);
-      await state.completed.promise;
-      expect(state.effects).toEqual([]);
-    },
-  );
+  it.each([
+    "rename",
+    "regenerate-title",
+    "delete",
+    "pin",
+    "settle",
+    "archive",
+    "move-to-project:target-project",
+    "move-to-no-project",
+  ] as const)("%s rechecks after the native menu closes", async (action) => {
+    state.granted.add("secondary");
+    const choice = deferred<ThreadActionMenuId | null>();
+    state.show.mockReturnValue(choice.promise);
+    createMenu().openMenu(position);
+    state.granted.delete("secondary");
+    choice.resolve(action);
+    await state.completed.promise;
+    expect(state.effects).toEqual([]);
+  });
+
+  it("invokes moveThreadToProject when permitted", async () => {
+    state.granted.add("secondary");
+    state.show.mockResolvedValueOnce("move-to-project:target-project");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(state.effects).toEqual(["moveThreadToProject:target-project"]);
+  });
+
+  it("invokes moveThreadToNoProject when permitted", async () => {
+    state.granted.add("secondary");
+    state.show.mockResolvedValueOnce("move-to-no-project");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(state.effects).toEqual(["moveThreadToNoProject"]);
+  });
 
   it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);

@@ -231,6 +231,18 @@ export function createProjectEnvironmentAtoms<R, E>(
       scheduler: projectScheduler,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    moveThreadToScratch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:move-thread-to-scratch",
+      tag: WS_METHODS.projectsMoveThreadToScratch,
+      scheduler: projectScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
+    moveThreadToProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:move-thread-to-project",
+      tag: WS_METHODS.projectsMoveThreadToProject,
+      scheduler: projectScheduler,
+      concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
+    }),
     writeFile: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:write-file",
       tag: WS_METHODS.projectsWriteFile,

@@ -11,6 +11,7 @@ import {
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   AuthOrchestrationOperateScope,
+  ProjectId,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -50,7 +51,12 @@ import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
-import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
+import {
+  canMoveThreadToNoProject,
+  canTurnThreadIntoProject,
+  listMoveThreadToProjectTargets,
+  useThreadActions,
+} from "./useThreadActions";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -91,6 +97,8 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
     turnThreadIntoProject,
+    moveThreadToProject,
+    moveThreadToNoProject,
   } = useThreadActions();
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
@@ -138,6 +146,7 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      const moveToProjectTargets = listMoveThreadToProjectTargets(threadRef);
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
@@ -154,6 +163,8 @@ export function useThreadActionMenu(input: {
         snoozePresets,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+        moveToProjectTargets,
+        canMoveToNoProject: canMoveThreadToNoProject(threadRef),
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -182,6 +193,29 @@ export function useThreadActionMenu(input: {
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
           failureToast(m(msg("Failed to snooze thread")), squashAtomCommandFailure(result));
+        }
+        return;
+      }
+      if (action.startsWith("move-to-project:")) {
+        const targetProjectId = ProjectId.make(action.slice("move-to-project:".length));
+        const targetLabel =
+          moveToProjectTargets.find((target) => target.projectId === targetProjectId)?.label ??
+          thread.title;
+        const result = await moveThreadToProject(threadRef, targetProjectId);
+        if (result._tag === "Success") {
+          const warning = result.value?.cleanupWarning;
+          toastManager.add({
+            type: warning ? "warning" : "success",
+            title: warning
+              ? m(msg("Moved to project with warning"))
+              : m(msg("Moved to {project}", { project: targetLabel })),
+            description: warning ?? result.value?.movedFolderPath ?? thread.title,
+          });
+        } else if (!isAtomCommandInterrupted(result)) {
+          failureToast(
+            m(msg("Could not move thread to project")),
+            squashAtomCommandFailure(result),
+          );
         }
         return;
       }
@@ -284,6 +318,22 @@ export function useThreadActionMenu(input: {
           } else if (!isAtomCommandInterrupted(result)) {
             failureToast(
               m(msg("Could not turn thread into a project")),
+              squashAtomCommandFailure(result),
+            );
+          }
+          return;
+        }
+        case "move-to-no-project": {
+          const result = await moveThreadToNoProject(threadRef);
+          if (result._tag === "Success") {
+            toastManager.add({
+              type: "success",
+              title: m(msg("Moved to No project")),
+              description: thread.title,
+            });
+          } else if (!isAtomCommandInterrupted(result)) {
+            failureToast(
+              m(msg("Could not move thread to No project")),
               squashAtomCommandFailure(result),
             );
           }

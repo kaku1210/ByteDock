@@ -12874,5 +12874,12 @@
   "27d76249d09eb69f": "Guía de revisión lista",
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
+  "9f8a1d6afc78adb1": "Movido al proyecto con advertencia",
+  "77afb4c00de3f5e9": "Movido a {project}",
+  "b676452416462575": "No se pudo mover el hilo al proyecto",
+  "8492cb096deeae79": "Movido a Sin proyecto",
+  "8ba8ef4f0e6a6199": "No se pudo mover el hilo a Sin proyecto",
+  "f83a8e1234105a07": "Mover a proyecto",
+  "de01a189ff54f424": "Mover a Sin proyecto"
 }

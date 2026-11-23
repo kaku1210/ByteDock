@@ -95,9 +95,62 @@ describe("buildThreadActionMenuItems", () => {
       ...baseState,
       isRunning: true,
       canTurnIntoProject: true,
+      moveToProjectTargets: [{ projectId: "project-a" as never, label: "Project A" }],
+      canMoveToNoProject: true,
     });
     expect(items.find((item) => item.id === "archive")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "turn-into-project")?.disabled).toBe(true);
+    expect(items.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
+    expect(
+      items
+        .find((item) => item.id === "move-to-project")
+        ?.children?.every((child) => child.disabled),
+    ).toBe(true);
+    expect(items.find((item) => item.id === "move-to-no-project")?.disabled).toBe(true);
+  });
+
+  it("includes move-to-project submenu and move-to-no-project action when enabled", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      moveToProjectTargets: [
+        { projectId: "project-a" as never, label: "Project A" },
+        { projectId: "project-b" as never, label: "Project B" },
+      ],
+      canMoveToNoProject: true,
+    });
+    const moveToProject = items.find((item) => item.id === "move-to-project");
+    expect(moveToProject).toMatchObject({
+      id: "move-to-project",
+      label: "Move to project",
+      icon: "folder-input",
+      disabled: false,
+      children: [
+        { id: "move-to-project:project-a", label: "Project A", disabled: false },
+        { id: "move-to-project:project-b", label: "Project B", disabled: false },
+      ],
+    });
+    expect(items.find((item) => item.id === "move-to-no-project")).toMatchObject({
+      id: "move-to-no-project",
+      label: "Move to No project",
+      icon: "folder-output",
+      disabled: false,
+    });
+  });
+
+  it("disables move actions when the user cannot operate", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      moveToProjectTargets: [{ projectId: "project-a" as never, label: "Project A" }],
+      canMoveToNoProject: true,
+    });
+    expect(items.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
+    expect(
+      items
+        .find((item) => item.id === "move-to-project")
+        ?.children?.every((child) => child.disabled),
+    ).toBe(true);
+    expect(items.find((item) => item.id === "move-to-no-project")?.disabled).toBe(true);
   });
 
   it("disables only rename where no inline title editor exists", () => {

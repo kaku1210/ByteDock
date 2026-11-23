@@ -1,4 +1,4 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, ProjectId } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 import { msg } from "gt-react";
 
@@ -9,6 +9,9 @@ export type ThreadActionMenuId =
   | "new-thread-on-branch"
   | "filter-by-project"
   | "turn-into-project"
+  | "move-to-project"
+  | `move-to-project:${string}`
+  | "move-to-no-project"
   | "project-settings"
   | "pin"
   | "unpin"
@@ -123,6 +126,13 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Non-archived, non-scratch projects in the same environment that this scratch thread can move into. */
+  readonly moveToProjectTargets?: ReadonlyArray<{
+    readonly projectId: ProjectId;
+    readonly label: string;
+  }> | null;
+  /** A regular project thread that can be reclassified to No project. */
+  readonly canMoveToNoProject?: boolean;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -240,6 +250,32 @@ export function buildThreadActionMenuItems(
             id: "turn-into-project" as const,
             label: resolve(msg("Turn into project")),
             icon: "folder-plus",
+            disabled: state.isRunning,
+          },
+        ]
+      : []),
+    ...(state.moveToProjectTargets && state.moveToProjectTargets.length > 0
+      ? [
+          {
+            id: "move-to-project" as const,
+            label: resolve(msg("Move to project")),
+            icon: "folder-input",
+            disabled: state.isRunning,
+            children: state.moveToProjectTargets.map((target) => ({
+              id: `move-to-project:${target.projectId}` as const,
+              label: target.label,
+              icon: "folder",
+              disabled: state.isRunning,
+            })),
+          },
+        ]
+      : []),
+    ...(state.canMoveToNoProject
+      ? [
+          {
+            id: "move-to-no-project" as const,
+            label: resolve(msg("Move to No project")),
+            icon: "folder-output",
             disabled: state.isRunning,
           },
         ]

@@ -16,6 +16,8 @@ import {
   ProjectCreatePayload,
   ProjectMoveThreadToScratchInput,
   ProjectMoveThreadToScratchResult,
+  ProjectMoveThreadToProjectInput,
+  ProjectMoveThreadToProjectResult,
   ProjectUpdatePayload,
   ProjectId,
   OrchestratorMcpClientRequestId,
@@ -102,6 +104,20 @@ const ThreadMoveToNoProjectTool = Tool.make("t3_thread_move_to_no_project", {
   }),
   success: Schema.Struct({
     ...ProjectMoveThreadToScratchResult.fields,
+    link: Schema.String,
+  }),
+  dependencies: [...shared.dependencies, ThreadProjectMove.ThreadProjectMove],
+}).annotate(Tool.Destructive, true);
+const ThreadMoveToProjectTool = Tool.make("t3_thread_move_to_project", {
+  ...shared,
+  description:
+    "Move one stopped No project thread and its dedicated scratch folder into an existing project. Read it first and pass expectedProjectId and targetProjectId. Active, queued, or background work must finish first.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    ...ProjectMoveThreadToProjectInput.fields,
+  }),
+  success: Schema.Struct({
+    ...ProjectMoveThreadToProjectResult.fields,
     link: Schema.String,
   }),
   dependencies: [...shared.dependencies, ThreadProjectMove.ThreadProjectMove],
@@ -213,6 +229,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
 export const ProjectToolkit = Toolkit.make(
   ThreadLaunchTool,
   ThreadMoveToNoProjectTool,
+  ThreadMoveToProjectTool,
   ProjectListTool,
   ProjectReadTool,
   ProjectCreateTool,

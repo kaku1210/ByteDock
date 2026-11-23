@@ -12886,5 +12886,12 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "9f8a1d6afc78adb1": "Flyttad till projekt med varning",
+  "77afb4c00de3f5e9": "Flyttad till {project}",
+  "b676452416462575": "Kunde inte flytta tråden till projektet",
+  "8492cb096deeae79": "Flyttad till Inget projekt",
+  "8ba8ef4f0e6a6199": "Kunde inte flytta tråden till Inget projekt",
+  "f83a8e1234105a07": "Flytta till projekt",
+  "de01a189ff54f424": "Flytta till Inget projekt"
 }

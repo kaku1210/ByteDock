@@ -12879,5 +12879,12 @@
   "27d76249d09eb69f": "Guide de revue prêt",
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
+  "9f8a1d6afc78adb1": "Déplacé vers le projet avec avertissement",
+  "77afb4c00de3f5e9": "Déplacé vers {project}",
+  "b676452416462575": "Impossible de déplacer le fil vers le projet",
+  "8492cb096deeae79": "Déplacé vers Aucun projet",
+  "8ba8ef4f0e6a6199": "Impossible de déplacer le fil vers Aucun projet",
+  "f83a8e1234105a07": "Déplacer vers un projet",
+  "de01a189ff54f424": "Déplacer vers Aucun projet"
 }

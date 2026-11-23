@@ -14,6 +14,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   isTaskChildLineage,
+  type ProjectId,
   type ScopedThreadRef,
   ThreadId,
   sessionGrantsScope,
@@ -30,7 +31,10 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { environmentSession, readEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
-import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import {
+  isScratchProject,
+  normalizeProjectPathForComparison,
+} from "@t3tools/client-runtime/state/projects";
 import { orchestrationEnvironment } from "../state/orchestration";
 import { projectEnvironment } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
@@ -47,6 +51,7 @@ import {
   readEnvironmentSupportsAutoSettleOptOut,
   readEnvironmentThreadRefs,
   readProject,
+  readProjects,
   readThreadShell,
   readThreadShells,
 } from "../state/entities";
@@ -303,6 +308,22 @@ function clearDeletedThreadPanelState(ref: ScopedThreadRef) {
   usePreviewMiniPlayerStore.getState().removeThread(ref);
 }
 
+function isDirectChildOfScratchRoot(
+  worktreePath: string,
+  scratchWorkspaceRoot: string | null | undefined,
+): boolean {
+  if (!scratchWorkspaceRoot) return false;
+  const normRoot = normalizeProjectPathForComparison(scratchWorkspaceRoot).replace(/[\\/]+$/, "");
+  const normWorktree = normalizeProjectPathForComparison(worktreePath).replace(/[\\/]+$/, "");
+  if (normWorktree.length <= normRoot.length) return false;
+  const separator = normWorktree[normRoot.length];
+  if ((separator !== "/" && separator !== "\\") || !normWorktree.startsWith(normRoot)) {
+    return false;
+  }
+  const rest = normWorktree.slice(normRoot.length + 1);
+  return rest.length > 0 && !rest.includes("/") && !rest.includes("\\");
+}
+
 /** A No project thread that already has its own folder, on a server that can promote it. */
 export function canTurnThreadIntoProject(threadRef: ScopedThreadRef): boolean {
   const thread = readThreadShell(threadRef);
@@ -315,6 +336,60 @@ export function canTurnThreadIntoProject(threadRef: ScopedThreadRef): boolean {
     projectId: thread.projectId,
   });
   return project !== null && isScratchProject(project, config.scratchWorkspaceRoot);
+}
+
+/** A No project thread with a dedicated scratch folder, on a server supporting threadProjectMove. */
+export function canMoveThreadToProject(threadRef: ScopedThreadRef): boolean {
+  const thread = readThreadShell(threadRef);
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId);
+  if (
+    !thread?.worktreePath ||
+    thread.lineage?.relationshipToParent === "subagent" ||
+    config?.environment.capabilities.threadProjectMove !== true ||
+    !isDirectChildOfScratchRoot(thread.worktreePath, config.scratchWorkspaceRoot)
+  ) {
+    return false;
+  }
+  const project = readProject({
+    environmentId: threadRef.environmentId,
+    projectId: thread.projectId,
+  });
+  return project !== null && isScratchProject(project, config.scratchWorkspaceRoot);
+}
+
+/** Non-archived, non-scratch projects in the same environment that a scratch thread can move into. */
+export function listMoveThreadToProjectTargets(
+  threadRef: ScopedThreadRef,
+): ReadonlyArray<{ readonly projectId: ProjectId; readonly label: string }> {
+  if (!canMoveThreadToProject(threadRef)) return [];
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId);
+  const scratchRoot = config?.scratchWorkspaceRoot;
+  return readProjects()
+    .filter(
+      (project) =>
+        project.environmentId === threadRef.environmentId &&
+        project.archivedAt == null &&
+        !isScratchProject(project, scratchRoot),
+    )
+    .map((project) => ({
+      projectId: project.id,
+      label: project.title,
+    }))
+    .toSorted((left, right) => left.label.localeCompare(right.label));
+}
+
+/** A regular (non-scratch) non-subagent thread that can be reclassified to No project. */
+export function canMoveThreadToNoProject(threadRef: ScopedThreadRef): boolean {
+  const thread = readThreadShell(threadRef);
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId);
+  if (!thread || thread.lineage?.relationshipToParent === "subagent" || !config) {
+    return false;
+  }
+  const project = readProject({
+    environmentId: threadRef.environmentId,
+    projectId: thread.projectId,
+  });
+  return project !== null && !isScratchProject(project, config.scratchWorkspaceRoot);
 }
 
 function threadOperationFailure(target: ScopedThreadRef) {
@@ -369,6 +444,12 @@ export function useThreadActions() {
   });
   const markThreadUnread = useMarkThreadUnread();
   const createProjectFromThread = useAtomCommand(projectEnvironment.createFromThread, {
+    reportFailure: false,
+  });
+  const moveThreadToProjectMutation = useAtomCommand(projectEnvironment.moveThreadToProject, {
+    reportFailure: false,
+  });
+  const moveThreadToScratchMutation = useAtomCommand(projectEnvironment.moveThreadToScratch, {
     reportFailure: false,
   });
   const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession);
@@ -1107,6 +1188,39 @@ export function useThreadActions() {
     return deleteThread(target);
   };
 
+  const moveThreadToProject = async (target: ScopedThreadRef, targetProjectId: ProjectId) => {
+    const permissionFailure = threadOperationFailure(target);
+    if (permissionFailure) return permissionFailure;
+    const thread = readThreadShell(target);
+    if (!thread) {
+      return AsyncResult.failure(Cause.fail(new Error(m(msg("This thread has not loaded yet.")))));
+    }
+    return moveThreadToProjectMutation({
+      environmentId: target.environmentId,
+      input: {
+        threadId: target.threadId,
+        expectedProjectId: thread.projectId,
+        targetProjectId,
+      },
+    });
+  };
+
+  const moveThreadToNoProject = async (target: ScopedThreadRef) => {
+    const permissionFailure = threadOperationFailure(target);
+    if (permissionFailure) return permissionFailure;
+    const thread = readThreadShell(target);
+    if (!thread) {
+      return AsyncResult.failure(Cause.fail(new Error(m(msg("This thread has not loaded yet.")))));
+    }
+    return moveThreadToScratchMutation({
+      environmentId: target.environmentId,
+      input: {
+        threadId: target.threadId,
+        expectedProjectId: thread.projectId,
+      },
+    });
+  };
+
   return {
     archiveThread,
     unarchiveThread,
@@ -1128,5 +1242,7 @@ export function useThreadActions() {
         environmentId: target.environmentId,
         input: { threadId: target.threadId },
       }),
+    moveThreadToProject,
+    moveThreadToNoProject,
   };
 }

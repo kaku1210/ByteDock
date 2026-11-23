@@ -3961,6 +3961,20 @@ const OrchestrationV2InternalCommand = Schema.Union([
     projectId: ProjectId,
   }),
   /**
+   * Moves a stopped scratch thread into an existing project whose cwd differs from the old scratch
+   * folder. Detaches live provider sessions, clears activeProviderThreadId so the next turn hands
+   * off conversation history into a fresh native session in the new cwd, and records a timeline notice.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.project.move"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedProjectId: ProjectId,
+    targetProjectId: ProjectId,
+    movedFolderPath: TrimmedNonEmptyString,
+    sourceFolderPath: TrimmedNonEmptyString,
+  }),
+  /**
    * After a push, the thread's watches forget whether their checks were running, since the push
    * can start new ones. Applied to the watches as they are then, so no earlier read overwrites them.
    */

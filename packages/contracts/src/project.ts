@@ -605,6 +605,24 @@ export const ProjectMoveThreadToScratchResult = Schema.Struct({
 });
 export type ProjectMoveThreadToScratchResult = typeof ProjectMoveThreadToScratchResult.Type;
 
+/** Move one stopped No project thread and its dedicated scratch folder into an existing project. */
+export const ProjectMoveThreadToProjectInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedProjectId: ProjectId,
+  targetProjectId: ProjectId,
+});
+export type ProjectMoveThreadToProjectInput = typeof ProjectMoveThreadToProjectInput.Type;
+
+export const ProjectMoveThreadToProjectResult = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  workspaceRoot: TrimmedNonEmptyString,
+  movedFolderPath: TrimmedNonEmptyString,
+  /** Set if files were copied and committed, but OS locks prevented deleting the old scratch folder. */
+  cleanupWarning: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type ProjectMoveThreadToProjectResult = typeof ProjectMoveThreadToProjectResult.Type;
+
 export class ProjectWriteFileError extends Schema.TaggedError<ProjectWriteFileError>()(
   "ProjectWriteFileError",
   {

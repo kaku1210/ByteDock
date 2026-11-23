@@ -401,6 +401,7 @@ const layerThreadProjectMoveProvided = ThreadProjectMove.layer.pipe(
     Layer.mergeAll(
       layerManagedProjectFoldersProvided,
       layerOrchestratorProvided,
+      layerThreadManagementProvided,
       layerEventSink,
       ThreadCommandExecutor.layer,
       layerScheduledTaskProvided,

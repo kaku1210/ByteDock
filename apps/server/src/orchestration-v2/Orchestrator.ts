@@ -691,6 +691,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.project.adopt-folder":
+    case "thread.project.move":
     case "thread.runtime-mode.set":
     case "thread.interaction-mode.set":
     case "thread.coordinator-mode.set":
@@ -6450,6 +6451,144 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const PROJECT_MOVE_NOTICE_TITLE = "Moved to project";
+  const PROJECT_MOVE_DETACH_REASON = "Thread moved to another project.";
+
+  const dispatchThreadProjectMove = Effect.fn("orchestrationV2.dispatch.threadProjectMove")(
+    function* (
+      command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.project.move" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const reject = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Thread ${command.threadId} ${cause}`,
+        });
+      const projection = yield* projectionStore
+        .getThreadRecords(
+          command.threadId,
+          ["runs", "runtimeRequests", "providerSessions", "providerThreads"],
+          { turnItemTypes: [] },
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const thread = projection.thread;
+      if (thread.deletedAt !== null) return yield* reject("is deleted.");
+      if (thread.projectId !== command.expectedProjectId) {
+        return yield* reject("changed project before the move completed.");
+      }
+      if (thread.lineage.relationshipToParent === "subagent") {
+        return yield* reject("is a subagent and must stay with its parent project.");
+      }
+      if (threadHasUnfinishedWork(projection)) {
+        return yield* reject("still has work in progress. Finish or stop it first.");
+      }
+      const target = yield* projects.get(command.targetProjectId).pipe(mapDispatchError(command));
+      if (Option.isNone(target) || target.value.deletedAt !== null) {
+        return yield* reject(`cannot move to missing project ${command.targetProjectId}.`);
+      }
+
+      const liveSessions = projection.providerSessions.filter(
+        (session) => session.status !== "stopped" && session.status !== "error",
+      );
+      for (const session of liveSessions) {
+        if (yield* sessionHasBackgroundWork(session, projection.providerThreads)) {
+          return yield* reject(
+            "is still running background agents or commands. Wait for them to finish, or press Stop, then try again.",
+          );
+        }
+      }
+
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+
+      yield* emitEvent({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...thread,
+          projectId: command.targetProjectId,
+          worktreePath: null,
+          branch: null,
+          activeProviderThreadId: null,
+          updatedAt: now,
+        },
+      });
+
+      const noticeOrdinal = yield* nextTurnItemOrdinal(projection);
+      const noticeItemId = TurnItemId.make(`thread-project-move:${command.commandId}`);
+      yield* emitEvent({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        providerInstanceId: thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          id: noticeItemId,
+          threadId: command.threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: noticeOrdinal,
+          status: "completed",
+          title: PROJECT_MOVE_NOTICE_TITLE,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "system_notice",
+          message: `Moved scratch folder from "${command.sourceFolderPath}" into project "${target.value.title}" at "${command.movedFolderPath}". Working directory is now "${target.value.workspaceRoot}". Continuing starts a fresh provider session with prior conversation context.`,
+        },
+      });
+
+      for (const session of liveSessions) {
+        yield* emitEvent({
+          type: "provider-session.detached",
+          threadId: command.threadId,
+          driver: session.driver,
+          providerInstanceId: session.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            providerSessionId: session.id,
+            detachedAt: now,
+            reason: PROJECT_MOVE_DETACH_REASON,
+          },
+        });
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          {
+            id: `effect:${command.commandId}:provider-session.detach:${session.id}`,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            request: {
+              type: "provider-session.detach",
+              providerSessionId: session.id,
+              detail: PROJECT_MOVE_DETACH_REASON,
+            },
+          } satisfies PendingOrchestrationEffectV2,
+        ]);
+      }
+
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:terminal.cleanup`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: { type: "terminal.cleanup" },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    },
+  );
+
   const refuseAboveDispatchModeLimit = Effect.fn("orchestrationV2.dispatch.refuseAboveModeLimit")(
     function* (
       command: OrchestrationV2ServerCommand,
@@ -9438,6 +9577,93 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             })
             .pipe(mapDispatchError(command))
         : null;
+      const detachedCoveredRuns =
+        freshContext || reusableProviderThread !== undefined || latestHandoffRun === undefined
+          ? []
+          : projection.runs.filter(
+              (run) =>
+                isHandoffSourceRun(run) &&
+                run.ordinal >= contextBoundary &&
+                run.ordinal <= latestHandoffRun.ordinal,
+            );
+      const detachedMoveNotice =
+        detachedCoveredRuns.length === 0 || latestHandoffRun === undefined
+          ? undefined
+          : yield* projectionStore
+              .getThreadRecords(command.threadId, ["turnItems"], {
+                turnItemRunIds: [null],
+                turnItemTypes: ["system_notice"],
+              })
+              .pipe(
+                Effect.map(({ turnItems }) => {
+                  const afterMs = DateTime.toEpochMillis(
+                    latestHandoffRun.completedAt ?? latestHandoffRun.requestedAt,
+                  );
+                  return turnItems.findLast(
+                    (item) =>
+                      item.type === "system_notice" &&
+                      item.title === PROJECT_MOVE_NOTICE_TITLE &&
+                      DateTime.toEpochMillis(item.updatedAt) >= afterMs,
+                  );
+                }),
+                Effect.mapError(
+                  (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+                ),
+              );
+      const detachedHistoryItems =
+        detachedCoveredRuns.length === 0
+          ? []
+          : [
+              ...(contextBoundary === 0 ? yield* readInheritedItems(projection.thread) : []),
+              ...(latestCompletedRun !== undefined ? legacyImportItems : []),
+              ...(yield* readHandoffItems(
+                command.threadId,
+                detachedCoveredRuns.map((run) => run.id),
+              )),
+            ];
+      const detachedHistoryTransferId =
+        detachedCoveredRuns.length === 0 || latestHandoffRun === undefined
+          ? null
+          : yield* mapDispatchError(command)(
+              idAllocator.allocate.contextTransfer({
+                sourceThreadId: command.threadId,
+                targetThreadId: command.threadId,
+                type: "provider_handoff",
+              }),
+            );
+      const detachedHistoryHandoff =
+        detachedHistoryTransferId === null || latestHandoffRun === undefined
+          ? null
+          : yield* contextHandoffService
+              .prepareProviderHandoff({
+                threadId: command.threadId,
+                targetRunId: runId,
+                transferId: detachedHistoryTransferId,
+                fromProviderThreadIds: Array.from(
+                  new Set(
+                    detachedCoveredRuns.flatMap((run) =>
+                      run.providerThreadId === null ? [] : [run.providerThreadId],
+                    ),
+                  ),
+                ),
+                toProviderThreadId: providerThreadId,
+                fromProviderInstanceId: latestHandoffRun.providerInstanceId,
+                toProviderInstanceId: modelSelection.instanceId,
+                coveredRunOrdinals: {
+                  from: detachedCoveredRuns[0]!.ordinal,
+                  to: detachedCoveredRuns.at(-1)!.ordinal,
+                },
+                strategy: "full_thread_summary",
+                items: detachedHistoryItems,
+                runs: projection.runs,
+                additionalContext:
+                  detachedMoveNotice?.type === "system_notice"
+                    ? `Workspace update: ${detachedMoveNotice.message}`
+                    : undefined,
+                createdAt: now,
+              })
+              .pipe(mapDispatchError(command));
+      const effectiveHandoff = detachedHistoryHandoff ?? legacyImportHandoff;
       const providerThread: OrchestrationV2ProviderThread =
         reusableProviderThread === undefined
           ? {
@@ -9452,7 +9678,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               status: "not_loaded",
               firstRunOrdinal: ordinal,
               lastRunOrdinal: ordinal,
-              handoffIds: legacyImportHandoff === null ? [] : [legacyImportHandoff.id],
+              handoffIds: effectiveHandoff === null ? [] : [effectiveHandoff.id],
               forkedFrom: null,
               createdAt: now,
               updatedAt: now,
@@ -9463,7 +9689,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               lastRunOrdinal: ordinal,
               handoffIds: appendContextHandoffId(
                 reusableProviderThread.handoffIds,
-                legacyImportHandoff?.id ?? null,
+                effectiveHandoff?.id ?? null,
               ),
               updatedAt: now,
             };
@@ -9508,7 +9734,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         startedAt: null,
         completedAt: null,
         checkpointId: null,
-        contextHandoffId: legacyImportHandoff?.id ?? null,
+        contextHandoffId: effectiveHandoff?.id ?? null,
         ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
         ...(command.restartContinuationOfRunId === undefined
           ? {}
@@ -9582,6 +9808,49 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(delegatedCompletion === undefined ? {} : { delegatedCompletion }),
         ...(notification === undefined ? {} : { notification }),
       };
+      const baseTurnItemOrdinal = yield* nextTurnItemOrdinal(projection);
+      const detachedHandoffFromModelSelections = Array.from(
+        new Map(
+          detachedCoveredRuns.map((coveredRun) => [
+            `${coveredRun.modelSelection.instanceId}\0${coveredRun.modelSelection.model}`,
+            coveredRun.modelSelection,
+          ]),
+        ).values(),
+      );
+      const detachedHandoffTurnItem: OrchestrationV2TurnItem | null =
+        detachedHistoryHandoff === null
+          ? null
+          : {
+              id: idAllocator.derive.runSignalTurnItem({
+                runId,
+                signal: `context-handoff:${detachedHistoryHandoff.id}`,
+              }),
+              threadId: command.threadId,
+              runId,
+              nodeId: rootNodeId,
+              providerThreadId: providerThread.id,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: baseTurnItemOrdinal,
+              status: "completed",
+              title: "Provider handoff",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              type: "handoff",
+              contextHandoffId: detachedHistoryHandoff.id,
+              fromProviderThreadIds: detachedHistoryHandoff.fromProviderThreadIds,
+              toProviderThreadId: detachedHistoryHandoff.toProviderThreadId,
+              fromProviderInstanceIds: Array.from(
+                new Set(detachedCoveredRuns.map((coveredRun) => coveredRun.providerInstanceId)),
+              ),
+              toProviderInstanceId: modelSelection.instanceId,
+              fromModelSelections: detachedHandoffFromModelSelections,
+              toModel: modelSelection.model,
+              strategy: detachedHistoryHandoff.strategy,
+              summary: detachedHistoryHandoff.summaryText,
+            };
       const turnItem: OrchestrationV2TurnItem = {
         createdBy: command.createdBy,
         creationSource: command.creationSource,
@@ -9599,7 +9868,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerTurnId: null,
         nativeItemRef: null,
         parentItemId: null,
-        ordinal: yield* nextTurnItemOrdinal(projection),
+        ordinal: detachedHandoffTurnItem === null ? baseTurnItemOrdinal : baseTurnItemOrdinal + 1,
         status: "completed",
         title: null,
         startedAt: now,
@@ -9647,14 +9916,49 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         occurredAt: now,
         payload: providerThread,
       });
-      if (legacyImportHandoff !== null) {
+      if (
+        detachedHistoryTransferId !== null &&
+        detachedHistoryHandoff !== null &&
+        latestHandoffRun !== undefined
+      ) {
+        const transfer: OrchestrationV2ContextTransfer = {
+          id: detachedHistoryTransferId,
+          type: "provider_handoff",
+          sourceThreadId: command.threadId,
+          targetThreadId: command.threadId,
+          sourcePoint: contextSourcePointForRun(projection, latestHandoffRun),
+          basePoint: null,
+          sourceProviderInstanceId: latestHandoffRun.providerInstanceId,
+          targetProviderInstanceId: modelSelection.instanceId,
+          targetRunId: runId,
+          status: "consumed",
+          resolution: {
+            strategy: "portable_context",
+            contextHandoffId: detachedHistoryHandoff.id,
+          },
+          createdBy: command.createdBy,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          consumedAt: now,
+        };
+        yield* emitEvent({
+          type: "context-transfer.created",
+          threadId: command.threadId,
+          runId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: transfer,
+        });
+      }
+      if (effectiveHandoff !== null) {
         yield* emitEvent({
           type: "context-handoff.updated",
           threadId: command.threadId,
           runId,
           providerInstanceId: modelSelection.instanceId,
           occurredAt: now,
-          payload: legacyImportHandoff,
+          payload: effectiveHandoff,
         });
       }
       yield* emitEvent({
@@ -9708,6 +10012,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           providerInstanceId: modelSelection.instanceId,
           occurredAt: now,
           payload: checkpointScope,
+        });
+      }
+      if (detachedHandoffTurnItem !== null) {
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId,
+          nodeId: rootNodeId,
+          providerInstanceId: modelSelection.instanceId,
+          occurredAt: now,
+          payload: detachedHandoffTurnItem,
         });
       }
       yield* emitEvent({
@@ -17462,6 +17777,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.project.adopt-folder":
         yield* dispatchThreadProjectAdoptFolder(command, events);
+        break;
+      case "thread.project.move":
+        yield* dispatchThreadProjectMove(command, events, effects);
         break;
       case "message.dispatch": {
         const thread = yield* refuseNativeSubagentMessage(command);

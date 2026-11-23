@@ -12879,5 +12879,12 @@
   "27d76249d09eb69f": "Guia de revisão pronto",
   "faa3bb26abb39c93": "O guia de revisão falhou",
   "b7df38b7d8792d78": "Abrir guia",
-  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão"
+  "9e91e9a77b664e4e": "Não foi possível iniciar um guia de revisão",
+  "9f8a1d6afc78adb1": "Movido para o projeto com aviso",
+  "77afb4c00de3f5e9": "Movido para {project}",
+  "b676452416462575": "Não foi possível mover a thread para o projeto",
+  "8492cb096deeae79": "Movido para Nenhum projeto",
+  "8ba8ef4f0e6a6199": "Não foi possível mover a thread para Nenhum projeto",
+  "f83a8e1234105a07": "Mover para projeto",
+  "de01a189ff54f424": "Mover para Nenhum projeto"
 }

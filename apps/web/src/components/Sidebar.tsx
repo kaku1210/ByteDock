@@ -127,7 +127,9 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import {
+  canMoveThreadToNoProject,
   canTurnThreadIntoProject,
+  listMoveThreadToProjectTargets,
   useAcknowledgeThreadWoke,
   useThreadActions,
 } from "../hooks/useThreadActions";
@@ -955,6 +957,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     confirmAndUnpinThread,
     setThreadAutoSettle,
     turnThreadIntoProject,
+    moveThreadToProject,
+    moveThreadToNoProject,
     reorderPinnedThread,
     reorderActiveThread,
     markThreadUnread,
@@ -2720,6 +2724,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const moveToProjectTargets = listMoveThreadToProjectTargets(threadRef);
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems(
@@ -2750,6 +2755,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   canShareWithGuestAtom(threadRef.environmentId),
                 ),
                 canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+                moveToProjectTargets,
+                canMoveToNoProject: canMoveThreadToNoProject(threadRef),
                 canRename: !fromSearch,
                 supports: {
                   settlement: configLoaded,
@@ -2779,6 +2786,33 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   thread.environmentId,
                 );
           if (preset) attemptSnooze(threadRef, preset);
+          return;
+        }
+        if (clicked.value?.startsWith("move-to-project:")) {
+          const targetProjectId = ProjectId.make(clicked.value.slice("move-to-project:".length));
+          const targetLabel =
+            moveToProjectTargets.find((target) => target.projectId === targetProjectId)?.label ??
+            thread.title;
+          const result = await moveThreadToProject(threadRef, targetProjectId);
+          if (result._tag === "Success") {
+            const warning = result.value?.cleanupWarning;
+            toastManager.add({
+              type: warning ? "warning" : "success",
+              title: warning
+                ? gt("Moved to project with warning")
+                : gt("Moved to {project}", { project: targetLabel }),
+              description: warning ?? result.value?.movedFolderPath ?? thread.title,
+            });
+          } else if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: gt("Could not move thread to project"),
+                description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
+              }),
+            );
+          }
           return;
         }
         switch (clicked.value) {
@@ -2848,6 +2882,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 stackedThreadToast({
                   type: "error",
                   title: gt("Could not turn thread into a project"),
+                  description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
+                }),
+              );
+            }
+            return;
+          }
+          case "move-to-no-project": {
+            const result = await moveThreadToNoProject(threadRef);
+            if (result._tag === "Success") {
+              toastManager.add({
+                type: "success",
+                title: gt("Moved to No project"),
+                description: thread.title,
+              });
+            } else if (!isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: gt("Could not move thread to No project"),
                   description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
                 }),
               );
