@@ -1838,6 +1838,22 @@ function checkoutPullRequestsEqual(
   return left === right || (left?.url === right?.url && left?.branch === right?.branch);
 }
 
+function coordinatorTierOverrideValuesEqual(
+  left: ModelSelection | null | undefined,
+  right: ModelSelection | null | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return false;
+  if (left.instanceId !== right.instanceId || left.model !== right.model) return false;
+  const leftOptions = left.options ?? [];
+  const rightOptions = right.options ?? [];
+  if (leftOptions.length !== rightOptions.length) return false;
+  return leftOptions.every(
+    (option, index) =>
+      option.id === rightOptions[index]?.id && option.value === rightOptions[index]?.value,
+  );
+}
+
 function coordinatorModesEqual(
   left: ThreadCoordinatorMode | null | undefined,
   right: ThreadCoordinatorMode | null | undefined,
@@ -1845,7 +1861,15 @@ function coordinatorModesEqual(
   if (left == null || right == null) {
     return (left ?? null) === (right ?? null);
   }
-  return left.enabled === right.enabled && left.templateId === right.templateId;
+  if (left.enabled !== right.enabled || left.templateId !== right.templateId) {
+    return false;
+  }
+  const leftOverrides = left.tierModelOverrides;
+  const rightOverrides = right.tierModelOverrides;
+  return (
+    coordinatorTierOverrideValuesEqual(leftOverrides?.L1, rightOverrides?.L1) &&
+    coordinatorTierOverrideValuesEqual(leftOverrides?.L2, rightOverrides?.L2)
+  );
 }
 
 function scopedThreadRefsEqual(
@@ -2542,9 +2566,61 @@ export function partializeComposerDraftStoreState(
     if (!keptSessionKeys.has(threadKey)) {
       continue;
     }
-    const { worktreeRepositories, ...persistedDraftThread } = draftThread;
+    const { worktreeRepositories, coordinatorMode, ...persistedDraftThread } = draftThread;
+    const persistedCoordinatorMode =
+      coordinatorMode === undefined || coordinatorMode === null
+        ? coordinatorMode
+        : {
+            enabled: coordinatorMode.enabled,
+            templateId: coordinatorMode.templateId,
+            ...(coordinatorMode.tierModelOverrides !== undefined
+              ? {
+                  tierModelOverrides: {
+                    ...(coordinatorMode.tierModelOverrides.L1 !== undefined
+                      ? {
+                          L1:
+                            coordinatorMode.tierModelOverrides.L1 === null
+                              ? null
+                              : {
+                                  instanceId: coordinatorMode.tierModelOverrides.L1.instanceId,
+                                  model: coordinatorMode.tierModelOverrides.L1.model,
+                                  ...(coordinatorMode.tierModelOverrides.L1.options !== undefined
+                                    ? {
+                                        options: coordinatorMode.tierModelOverrides.L1.options.map(
+                                          (option) => ({ ...option }),
+                                        ),
+                                      }
+                                    : {}),
+                                },
+                        }
+                      : {}),
+                    ...(coordinatorMode.tierModelOverrides.L2 !== undefined
+                      ? {
+                          L2:
+                            coordinatorMode.tierModelOverrides.L2 === null
+                              ? null
+                              : {
+                                  instanceId: coordinatorMode.tierModelOverrides.L2.instanceId,
+                                  model: coordinatorMode.tierModelOverrides.L2.model,
+                                  ...(coordinatorMode.tierModelOverrides.L2.options !== undefined
+                                    ? {
+                                        options: coordinatorMode.tierModelOverrides.L2.options.map(
+                                          (option) => ({ ...option }),
+                                        ),
+                                      }
+                                    : {}),
+                                },
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+          };
     persistedDraftThreadsByThreadKey[threadKey] = {
       ...persistedDraftThread,
+      ...(persistedCoordinatorMode !== undefined
+        ? { coordinatorMode: persistedCoordinatorMode }
+        : {}),
       ...(worktreeRepositories ? { worktreeRepositories: [...worktreeRepositories] } : {}),
     };
   }

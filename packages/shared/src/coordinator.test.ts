@@ -2,6 +2,7 @@ import {
   CoordinatorRoleTemplateId,
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   DEFAULT_SERVER_SETTINGS,
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -62,7 +63,7 @@ function settingsWith(overrides: Partial<ServerSettings>): ServerSettings {
 }
 
 describe("coordinator role template settings & lookup", () => {
-  it("merges, overrides, deletes, and resets default template via applyServerSettingsPatch", () => {
+  it("merges, overrides, deletes, and preserves built-in default templates via applyServerSettingsPatch", () => {
     const customId = CoordinatorRoleTemplateId.make("arch-lead");
     const patched = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       defaultCoordinatorRoleTemplateId: customId,
@@ -70,6 +71,7 @@ describe("coordinator role template settings & lookup", () => {
         [customId]: {
           name: "Architecture Lead",
           description: "Strict delegation",
+          mode: "code",
           tierModels: { L0: null, L1: null, L2: null },
           preferDelegation: true,
           delegationStrategy: "tiered",
@@ -79,6 +81,9 @@ describe("coordinator role template settings & lookup", () => {
     });
 
     expect(hasCoordinatorRoleTemplate(patched, DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)).toBe(true);
+    expect(hasCoordinatorRoleTemplate(patched, GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID)).toBe(
+      true,
+    );
     expect(hasCoordinatorRoleTemplate(patched, customId)).toBe(true);
     expect(hasCoordinatorRoleTemplate(patched, CoordinatorRoleTemplateId.make("missing-tpl"))).toBe(
       false,
@@ -86,9 +91,24 @@ describe("coordinator role template settings & lookup", () => {
     expect(patched.defaultCoordinatorRoleTemplateId).toBe(customId);
 
     const templates = resolveCoordinatorRoleTemplates(patched);
-    expect(templates.map((t) => t.id)).toEqual([DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID, customId]);
+    expect(templates.map((t) => t.id)).toEqual([
+      DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+      GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+      customId,
+    ]);
     expect(templates[0]?.builtIn).toBe(true);
-    expect(templates[1]?.builtIn).toBe(false);
+    expect(templates[0]?.mode).toBe("code");
+    expect(templates[1]?.builtIn).toBe(true);
+    expect(templates[1]?.mode).toBe("general");
+    expect(templates[2]?.builtIn).toBe(false);
+
+    // Setting defaultCoordinatorRoleTemplateId to the built-in general-batch preset is preserved.
+    const generalDefault = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      defaultCoordinatorRoleTemplateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+    });
+    expect(generalDefault.defaultCoordinatorRoleTemplateId).toBe(
+      GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+    );
 
     // Deleting the active default custom template resets defaultCoordinatorRoleTemplateId to "default".
     const afterDelete = applyServerSettingsPatch(patched, {
@@ -111,25 +131,9 @@ describe("coordinator role template settings & lookup", () => {
 });
 
 describe("resolveCoordinatorModels", () => {
-  it("dynamically assigns L0/L1/L2 across available models without hardcoded model names", () => {
+  it("deterministically follows the current coordinating thread model when tiers are unpinned", () => {
     const providerA = makeProvider("provider-alpha", [
-      makeModel("alpha-top", {
-        name: "Alpha Pro",
-        capabilities: {
-          optionDescriptors: [
-            {
-              id: "reasoningEffort",
-              label: "Reasoning Effort",
-              type: "select",
-              options: [
-                { id: "low", label: "Low" },
-                { id: "medium", label: "Medium" },
-                { id: "high", label: "High" },
-              ],
-            },
-          ],
-        },
-      }),
+      makeModel("alpha-top", { name: "Alpha Pro" }),
       makeModel("alpha-balanced", { name: "Alpha Balanced" }),
       makeModel("alpha-lite", { name: "Alpha Fast Mini" }),
     ]);
@@ -138,43 +142,46 @@ describe("resolveCoordinatorModels", () => {
       settings: DEFAULT_SERVER_SETTINGS,
       providers: [providerA],
       projectId: null,
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-alpha"),
+        model: "alpha-balanced",
+      },
     });
 
     expect(resolved.templateFallbackUsed).toBe(false);
-    expect(resolved.tiers.L0.modelSelection?.model).toBe("alpha-top");
-    expect(resolved.tiers.L0.source).toBe("dynamic_available");
-    expect(resolved.tiers.L1.modelSelection?.model).toBe("alpha-balanced");
-    expect(resolved.tiers.L1.source).toBe("dynamic_available");
-    expect(resolved.tiers.L2.modelSelection?.model).toBe("alpha-lite");
-    expect(resolved.tiers.L2.source).toBe("dynamic_available");
-    expect(resolved.tiers.L0.fallbackUsed).toBe(false);
-    expect(resolved.tiers.L1.fallbackUsed).toBe(false);
-    expect(resolved.tiers.L2.fallbackUsed).toBe(false);
+    expect(resolved.tiers.L0).toMatchObject({
+      source: "root_thread",
+      fallbackUsed: false,
+      modelSelection: { instanceId: "provider-alpha", model: "alpha-balanced" },
+    });
+    expect(resolved.tiers.L1).toMatchObject({
+      source: "root_thread",
+      fallbackUsed: false,
+      modelSelection: { instanceId: "provider-alpha", model: "alpha-balanced" },
+    });
+    expect(resolved.tiers.L2).toMatchObject({
+      source: "root_thread",
+      fallbackUsed: false,
+      modelSelection: { instanceId: "provider-alpha", model: "alpha-balanced" },
+    });
   });
 
-  it("degrades cleanly when only 1 or 2 usable models exist", () => {
-    const singleModelProvider = makeProvider("solo-provider", [makeModel("only-model")]);
-    const singleResolved = resolveCoordinatorModels({
-      settings: DEFAULT_SERVER_SETTINGS,
-      providers: [singleModelProvider],
-      projectId: null,
-    });
-    expect(singleResolved.tiers.L0.modelSelection?.model).toBe("only-model");
-    expect(singleResolved.tiers.L1.modelSelection?.model).toBe("only-model");
-    expect(singleResolved.tiers.L2.modelSelection?.model).toBe("only-model");
-
-    const twoModelProvider = makeProvider("duo-provider", [
-      makeModel("duo-max"),
-      makeModel("duo-mini"),
+  it("falls back to the first visible provider model when no rootModelSelection is supplied", () => {
+    const provider = makeProvider("duo-provider", [
+      makeModel("duo-first"),
+      makeModel("duo-second"),
     ]);
-    const duoResolved = resolveCoordinatorModels({
+    const resolved = resolveCoordinatorModels({
       settings: DEFAULT_SERVER_SETTINGS,
-      providers: [twoModelProvider],
+      providers: [provider],
       projectId: null,
     });
-    expect(duoResolved.tiers.L0.modelSelection?.model).toBe("duo-max");
-    expect(duoResolved.tiers.L1.modelSelection?.model).toBe("duo-max");
-    expect(duoResolved.tiers.L2.modelSelection?.model).toBe("duo-mini");
+    expect(resolved.tiers.L0).toMatchObject({
+      source: "root_thread",
+      modelSelection: { instanceId: "duo-provider", model: "duo-first" },
+    });
+    expect(resolved.tiers.L1.modelSelection?.model).toBe("duo-first");
+    expect(resolved.tiers.L2.modelSelection?.model).toBe("duo-first");
   });
 
   it("supports cross-provider pinned template models, aliases, and option descriptor filtering", () => {
@@ -204,6 +211,7 @@ describe("resolveCoordinatorModels", () => {
         [customId]: {
           name: "Cross Provider",
           description: "",
+          mode: "code",
           tierModels: {
             L0: {
               instanceId: ProviderInstanceId.make("provider-a"),
@@ -257,7 +265,7 @@ describe("resolveCoordinatorModels", () => {
     });
   });
 
-  it("falls back with explicit reasons when pinned provider/model is disabled, unauthenticated, project-disabled, or missing", () => {
+  it("marks pinned tiers unavailable with explicit reasons instead of silently substituting another model", () => {
     const projectId = ProjectId.make("project:alpha");
     const disabledProvider = makeProvider("provider-disabled", [makeModel("m-disabled")], {
       enabled: false,
@@ -272,7 +280,7 @@ describe("resolveCoordinatorModels", () => {
       makeModel("live-mini"),
     ]);
 
-    const tplId = CoordinatorRoleTemplateId.make("fallback-test");
+    const tplId = CoordinatorRoleTemplateId.make("unavailable-pin-test");
     const settings = settingsWith({
       projectSettingsOverrides: {
         [projectId]: {
@@ -283,8 +291,9 @@ describe("resolveCoordinatorModels", () => {
       },
       coordinatorRoleTemplates: {
         [tplId]: {
-          name: "Fallback Test",
+          name: "Unavailable Pin Test",
           description: "",
+          mode: "code",
           tierModels: {
             L0: { instanceId: ProviderInstanceId.make("provider-disabled"), model: "m-disabled" },
             L1: { instanceId: ProviderInstanceId.make("provider-unauth"), model: "m-unauth" },
@@ -305,66 +314,94 @@ describe("resolveCoordinatorModels", () => {
       providers: [disabledProvider, unauthProvider, projectDisabledProvider, liveProvider],
       projectId,
       templateId: tplId,
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-live"),
+        model: "live-top",
+      },
     });
 
-    expect(resolved.tiers.L0.source).toBe("fallback_available");
-    expect(resolved.tiers.L0.fallbackUsed).toBe(true);
+    expect(resolved.tiers.L0).toMatchObject({
+      source: "unavailable",
+      fallbackUsed: false,
+      modelSelection: null,
+    });
     expect(resolved.tiers.L0.fallbackReason).toContain("disabled");
-    expect(resolved.tiers.L0.modelSelection?.instanceId).toBe("provider-live");
 
-    expect(resolved.tiers.L1.source).toBe("fallback_available");
-    expect(resolved.tiers.L1.fallbackUsed).toBe(true);
+    expect(resolved.tiers.L1).toMatchObject({
+      source: "unavailable",
+      fallbackUsed: false,
+      modelSelection: null,
+    });
     expect(resolved.tiers.L1.fallbackReason).toContain("not authenticated");
-    expect(resolved.tiers.L1.modelSelection?.instanceId).toBe("provider-live");
 
-    expect(resolved.tiers.L2.source).toBe("fallback_available");
-    expect(resolved.tiers.L2.fallbackUsed).toBe(true);
+    expect(resolved.tiers.L2).toMatchObject({
+      source: "unavailable",
+      fallbackUsed: false,
+      modelSelection: null,
+    });
     expect(resolved.tiers.L2.fallbackReason).toContain("disabled for this project");
-    expect(resolved.tiers.L2.modelSelection?.instanceId).toBe("provider-live");
   });
 
-  it("supports inherit_root delegation strategy using the root thread model", () => {
-    const provider = makeProvider("provider-x", [
-      makeModel("x-pro"),
-      makeModel("x-mid"),
-      makeModel("x-fast"),
-    ]);
-    const inheritId = CoordinatorRoleTemplateId.make("inherit-root");
+  it("supports callerTier='L1' where unpinned L2 follows B's model and pinned L2 honors template", () => {
+    const providerA = makeProvider("provider-a", [makeModel("a-cheap"), makeModel("a-lead")]);
+    const providerB = makeProvider("provider-b", [makeModel("b-expensive")]);
+    const tplId = CoordinatorRoleTemplateId.make("drama-batch");
     const settings = settingsWith({
       coordinatorRoleTemplates: {
-        [inheritId]: {
-          name: "Inherit Root",
+        [tplId]: {
+          name: "Drama Batch",
           description: "",
-          tierModels: { L0: null, L1: null, L2: null },
+          mode: "general",
+          tierModels: {
+            L0: null,
+            L1: null,
+            L2: { instanceId: ProviderInstanceId.make("provider-b"), model: "b-expensive" },
+          },
           preferDelegation: true,
-          delegationStrategy: "inherit_root",
+          delegationStrategy: "tiered",
           instructions: "",
         },
       },
     });
 
-    const resolved = resolveCoordinatorModels({
+    const pinnedL2 = resolveCoordinatorModels({
       settings,
-      providers: [provider],
+      providers: [providerA, providerB],
       projectId: null,
-      templateId: inheritId,
+      templateId: tplId,
+      callerTier: "L1",
       rootModelSelection: {
-        instanceId: ProviderInstanceId.make("provider-x"),
-        model: "x-mid",
+        instanceId: ProviderInstanceId.make("provider-a"),
+        model: "a-cheap",
       },
     });
 
-    expect(resolved.tiers.L0).toMatchObject({
+    expect(pinnedL2.template.mode).toBe("general");
+    expect(pinnedL2.tiers.L1).toMatchObject({
       source: "root_thread",
-      modelSelection: { instanceId: "provider-x", model: "x-mid" },
+      modelSelection: { instanceId: "provider-a", model: "a-cheap" },
     });
-    expect(resolved.tiers.L1).toMatchObject({
-      source: "root_thread",
-      modelSelection: { instanceId: "provider-x", model: "x-mid" },
+    expect(pinnedL2.tiers.L2).toMatchObject({
+      source: "template_configured",
+      modelSelection: { instanceId: "provider-b", model: "b-expensive" },
     });
-    expect(resolved.tiers.L2).toMatchObject({
+
+    const unpinnedL2 = resolveCoordinatorModels({
+      settings: DEFAULT_SERVER_SETTINGS,
+      providers: [providerA, providerB],
+      projectId: null,
+      templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+      callerTier: "L1",
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-a"),
+        model: "a-lead",
+      },
+    });
+
+    expect(unpinnedL2.template.mode).toBe("general");
+    expect(unpinnedL2.tiers.L2).toMatchObject({
       source: "root_thread",
-      modelSelection: { instanceId: "provider-x", model: "x-mid" },
+      modelSelection: { instanceId: "provider-a", model: "a-lead" },
     });
   });
 
@@ -388,5 +425,112 @@ describe("resolveCoordinatorModels", () => {
     expect(resolved.tiers.L0.fallbackReason).toContain("No enabled and available");
     expect(resolved.tiers.L1.source).toBe("unavailable");
     expect(resolved.tiers.L2.source).toBe("unavailable");
+  });
+
+  it("applies per-thread tierModelOverrides above template pins, supports explicit null follow-current, and reports unavailable overrides without silent swap", () => {
+    const providerA = makeProvider("provider-a", [
+      makeModel("a-root"),
+      makeModel("a-lead"),
+      makeModel("a-fast"),
+    ]);
+    const providerB = makeProvider("provider-b", [makeModel("b-specialist")]);
+    const tplId = CoordinatorRoleTemplateId.make("pinned-both");
+    const settings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      coordinatorRoleTemplates: {
+        [tplId]: {
+          name: "Pinned Both",
+          description: "",
+          mode: "code",
+          tierModels: {
+            L0: null,
+            L1: { instanceId: ProviderInstanceId.make("provider-a"), model: "a-lead" },
+            L2: { instanceId: ProviderInstanceId.make("provider-b"), model: "b-specialist" },
+          },
+          preferDelegation: true,
+          delegationStrategy: "tiered",
+          instructions: "",
+        },
+      },
+    };
+
+    // Override L1 back to follow-current (null) and pin L2 to a different available model.
+    const overridden = resolveCoordinatorModels({
+      settings,
+      providers: [providerA, providerB],
+      projectId: null,
+      templateId: tplId,
+      tierModelOverrides: {
+        L1: null,
+        L2: { instanceId: ProviderInstanceId.make("provider-a"), model: "a-fast" },
+      },
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-a"),
+        model: "a-root",
+      },
+    });
+
+    expect(overridden.tiers.L0).toMatchObject({
+      source: "root_thread",
+      modelSelection: { instanceId: "provider-a", model: "a-root" },
+    });
+    expect(overridden.tiers.L1).toMatchObject({
+      source: "root_thread",
+      modelSelection: { instanceId: "provider-a", model: "a-root" },
+      configuredModelSelection: null,
+    });
+    expect(overridden.tiers.L2).toMatchObject({
+      source: "thread_override",
+      modelSelection: { instanceId: "provider-a", model: "a-fast" },
+      configuredModelSelection: { instanceId: "provider-a", model: "a-fast" },
+      fallbackUsed: false,
+    });
+
+    // Unavailable thread override must report unavailable (no silent swap).
+    const unavailableOverride = resolveCoordinatorModels({
+      settings,
+      providers: [providerA, providerB],
+      projectId: null,
+      templateId: tplId,
+      tierModelOverrides: {
+        L2: { instanceId: ProviderInstanceId.make("provider-b"), model: "removed-model" },
+      },
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-a"),
+        model: "a-root",
+      },
+    });
+    expect(unavailableOverride.tiers.L1.source).toBe("template_configured");
+    expect(unavailableOverride.tiers.L2).toMatchObject({
+      source: "unavailable",
+      modelSelection: null,
+      fallbackUsed: false,
+    });
+    expect(unavailableOverride.tiers.L2.fallbackReason).toContain("removed-model");
+
+    // L1 sub-coordinator respects its own L2 thread override while keeping L1 on its own thread model.
+    const l1WithL2Override = resolveCoordinatorModels({
+      settings: DEFAULT_SERVER_SETTINGS,
+      providers: [providerA, providerB],
+      projectId: null,
+      templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+      callerTier: "L1",
+      tierModelOverrides: {
+        L1: { instanceId: ProviderInstanceId.make("provider-a"), model: "a-fast" },
+        L2: { instanceId: ProviderInstanceId.make("provider-b"), model: "b-specialist" },
+      },
+      rootModelSelection: {
+        instanceId: ProviderInstanceId.make("provider-a"),
+        model: "a-lead",
+      },
+    });
+    expect(l1WithL2Override.tiers.L1).toMatchObject({
+      source: "root_thread",
+      modelSelection: { instanceId: "provider-a", model: "a-lead" },
+    });
+    expect(l1WithL2Override.tiers.L2).toMatchObject({
+      source: "thread_override",
+      modelSelection: { instanceId: "provider-b", model: "b-specialist" },
+    });
   });
 });

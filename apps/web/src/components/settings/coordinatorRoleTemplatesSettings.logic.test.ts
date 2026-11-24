@@ -3,6 +3,7 @@ import {
   CoordinatorRoleTemplateId,
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   DEFAULT_SERVER_SETTINGS,
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   ProviderDriverKind,
   ProviderInstanceId,
   type CoordinatorRoleTemplateConfig,
@@ -51,16 +52,18 @@ function makeProvider(
 }
 
 describe("coordinatorRoleTemplatesSettings.logic", () => {
-  it("generates unique template slugs avoiding built-in default and collisions", () => {
-    const existing = new Set<string>(["default", "strict-architect"]);
+  it("generates unique template slugs avoiding built-in IDs and collisions", () => {
+    const existing = new Set<string>(["default", "general-batch", "strict-architect"]);
     expect(slugifyCoordinatorTemplateId("Default", existing)).toBe("default-2");
+    expect(slugifyCoordinatorTemplateId("General Batch", existing)).toBe("general-batch-2");
     expect(slugifyCoordinatorTemplateId("Strict Architect!", existing)).toBe("strict-architect-2");
     expect(slugifyCoordinatorTemplateId("   ", existing)).toBe("custom-template");
   });
 
-  it("validates create and edit template drafts", () => {
-    const existing = new Set<string>(["default", "review-lead"]);
+  it("validates create and edit template drafts including sceneMode", () => {
+    const existing = new Set<string>(["default", "general-batch", "review-lead"]);
     const empty = createEmptyCoordinatorTemplateDraft(existing);
+    expect(empty.sceneMode).toBe("code");
     expect(validateCoordinatorTemplateDraft(empty, existing)).toEqual({
       ok: false,
       error: "Template name is required.",
@@ -79,18 +82,20 @@ describe("coordinatorRoleTemplatesSettings.logic", () => {
     const validCreate = validateCoordinatorTemplateDraft(
       {
         ...empty,
-        name: "Strict Architect",
-        id: "strict-architect",
-        description: "Delegates implementation to L1/L2",
-        instructions: "Always verify tests before synthesis.",
+        name: "Short Drama Pipeline",
+        id: "short-drama-pipeline",
+        sceneMode: "general",
+        description: "Batch episode planning and execution",
+        instructions: "Produce structured deliverables per episode.",
       },
       existing,
     );
     expect(validCreate.ok).toBe(true);
     if (validCreate.ok) {
-      expect(validCreate.id).toBe("strict-architect");
-      expect(validCreate.config.name).toBe("Strict Architect");
-      expect(validCreate.config.instructions).toBe("Always verify tests before synthesis.");
+      expect(validCreate.id).toBe("short-drama-pipeline");
+      expect(validCreate.config.name).toBe("Short Drama Pipeline");
+      expect(validCreate.config.mode).toBe("general");
+      expect(validCreate.config.instructions).toBe("Produce structured deliverables per episode.");
     }
 
     // Edit mode permits keeping the existing template ID.
@@ -106,13 +111,20 @@ describe("coordinatorRoleTemplatesSettings.logic", () => {
     expect(validEdit.ok).toBe(true);
   });
 
-  it("detects built-in customization and max template count limit", () => {
+  it("detects built-in customization per built-in template and max template count limit", () => {
     expect(isBuiltInTemplateCustomized(DEFAULT_SERVER_SETTINGS)).toBe(false);
+    expect(
+      isBuiltInTemplateCustomized(
+        DEFAULT_SERVER_SETTINGS,
+        GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+      ),
+    ).toBe(false);
     expect(canCreateCoordinatorRoleTemplate(DEFAULT_SERVER_SETTINGS)).toBe(true);
 
     const sampleConfig: CoordinatorRoleTemplateConfig = {
       name: "Custom",
       description: "",
+      mode: "code",
       tierModels: { L0: null, L1: null, L2: null },
       preferDelegation: true,
       delegationStrategy: "tiered",
@@ -122,9 +134,18 @@ describe("coordinatorRoleTemplatesSettings.logic", () => {
       ...DEFAULT_SERVER_SETTINGS,
       coordinatorRoleTemplates: {
         [DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID]: sampleConfig,
+        [GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID]: {
+          ...sampleConfig,
+          mode: "general",
+        },
       },
     };
-    expect(isBuiltInTemplateCustomized(customized)).toBe(true);
+    expect(isBuiltInTemplateCustomized(customized, DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)).toBe(
+      true,
+    );
+    expect(
+      isBuiltInTemplateCustomized(customized, GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID),
+    ).toBe(true);
 
     const fullMap: Record<CoordinatorRoleTemplateId, CoordinatorRoleTemplateConfig> = {};
     for (let i = 0; i < COORDINATOR_ROLE_TEMPLATE_MAX_COUNT; i += 1) {
@@ -150,13 +171,13 @@ describe("coordinatorRoleTemplatesSettings.logic", () => {
     expect(pickInitialExplicitTierModel([], null)).toBeNull();
   });
 
-  it("builds live unsaved draft settings for dynamic tier preview", () => {
+  it("builds live unsaved draft settings for deterministic tier preview", () => {
     const providers = [makeProvider("p1", ["flagship-pro", "balanced-standard", "fast-mini"])];
     const draft = {
-      ...createEmptyCoordinatorTemplateDraft(new Set(["default"])),
-      id: "inherit-preview",
-      name: "Inherit Preview",
-      delegationStrategy: "inherit_root" as const,
+      ...createEmptyCoordinatorTemplateDraft(new Set(["default", "general-batch"])),
+      id: "batch-preview",
+      name: "Batch Preview",
+      sceneMode: "general" as const,
       tierModels: {
         L0: createModelSelection(ProviderInstanceId.make("p1"), "flagship-pro"),
         L1: null,
@@ -169,13 +190,17 @@ describe("coordinatorRoleTemplatesSettings.logic", () => {
       providers,
       projectId: null,
       templateId: preview.templateId,
-      rootModelSelection: null,
+      rootModelSelection: createModelSelection(ProviderInstanceId.make("p1"), "balanced-standard"),
     });
+    expect(resolved.template.mode).toBe("general");
     expect(resolved.tiers.L0.modelSelection?.model).toBe("flagship-pro");
-    expect(resolved.tiers.L1.modelSelection?.model).toBe("flagship-pro");
+    expect(resolved.tiers.L0.source).toBe("template_configured");
+    expect(resolved.tiers.L1.modelSelection?.model).toBe("balanced-standard");
     expect(resolved.tiers.L1.source).toBe("root_thread");
-    expect(resolved.tiers.L2.modelSelection?.model).toBe("flagship-pro");
+    expect(resolved.tiers.L2.modelSelection?.model).toBe("balanced-standard");
     expect(summarizeTierOverrides(draft.tierModels)).toBe("Custom L0");
-    expect(summarizeTierOverrides({ L0: null, L1: null, L2: null })).toBe("All tiers dynamic");
+    expect(summarizeTierOverrides({ L0: null, L1: null, L2: null })).toBe(
+      "All tiers follow current",
+    );
   });
 });

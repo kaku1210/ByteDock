@@ -5854,6 +5854,10 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
           };
         };
 
+        const l1SubCoordId = ThreadId.make("thread:coord-l1-subcoord");
+        const l1SubCoordOverrideId = ThreadId.make("thread:coord-l1-subcoord-override");
+        const l1GeneralTemplateId = CoordinatorRoleTemplateId.make("l1-general-batch");
+
         const recordsById = new Map<ThreadId, OrchestrationV2ThreadProjection>([
           [l0PlainId, makeThreadRecord(l0PlainId, {})],
           [
@@ -5866,6 +5870,36 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
             l1SubtaskId,
             makeThreadRecord(l1SubtaskId, {
               modelSelection: { instanceId: codexInstanceId, model: "lead-model" },
+              lineage: {
+                parentThreadId: l0CoordId,
+                relationshipToParent: "subtask",
+                rootThreadId: l0CoordId,
+              },
+            }),
+          ],
+          [
+            l1SubCoordId,
+            makeThreadRecord(l1SubCoordId, {
+              modelSelection: { instanceId: codexInstanceId, model: "lead-model" },
+              coordinatorMode: { enabled: true, templateId: l1GeneralTemplateId },
+              lineage: {
+                parentThreadId: l0CoordId,
+                relationshipToParent: "subtask",
+                rootThreadId: l0CoordId,
+              },
+            }),
+          ],
+          [
+            l1SubCoordOverrideId,
+            makeThreadRecord(l1SubCoordOverrideId, {
+              modelSelection: { instanceId: codexInstanceId, model: "lead-model" },
+              coordinatorMode: {
+                enabled: true,
+                templateId: l1GeneralTemplateId,
+                tierModelOverrides: {
+                  L2: { instanceId: workerInstanceId, model: "worker-model-9" },
+                },
+              },
               lineage: {
                 parentThreadId: l0CoordId,
                 relationshipToParent: "subtask",
@@ -5928,6 +5962,7 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
               [templateId]: {
                 name: "Tiered Coordinator",
                 description: "Three-tier delegation.",
+                mode: "code",
                 tierModels: {
                   L0: null,
                   L1: { instanceId: codexInstanceId, model: "lead-model" },
@@ -5943,6 +5978,19 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
                 preferDelegation: true,
                 delegationStrategy: "tiered",
                 instructions: "Delegate cleanly.",
+              },
+              [l1GeneralTemplateId]: {
+                name: "L1 Batch Story Lead",
+                description: "General batch sub-coordinator.",
+                mode: "general",
+                tierModels: {
+                  L0: null,
+                  L1: null,
+                  L2: { instanceId: workerInstanceId, model: "worker-model-5" },
+                },
+                preferDelegation: true,
+                delegationStrategy: "tiered",
+                instructions: "Split per scene.",
               },
             },
           }),
@@ -5965,7 +6013,7 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
                     ),
             }),
           ),
-          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -5985,6 +6033,7 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
           assert.strictEqual(l0.coordinator!.callerTier, "L0");
           assert.strictEqual(l0.coordinator!.templateId, templateId);
           assert.strictEqual(l0.coordinator!.templateName, "Tiered Coordinator");
+          assert.strictEqual(l0.coordinator!.mode, "code");
           assert.strictEqual(l0.coordinator!.preferDelegation, true);
           assert.strictEqual(l0.coordinator!.delegationStrategy, "tiered");
           assert.strictEqual(l0.coordinator!.tiers.L0.providerInstanceId, codexInstanceId);
@@ -6008,11 +6057,38 @@ describe("OrchestratorMcpService coordinator capabilities (P3-B2)", () => {
             "worker-model-12",
           );
 
-          // 3. L1 and L2 children inherit the root coordinator's tiered targets with accurate callerTier.
+          // 3. Default L1 and L2 children inherit the root coordinator's tiered targets with accurate callerTier.
           const l1 = yield* service.capabilities(scopeFor(l1SubtaskId));
           assert.isDefined(l1.coordinator);
           assert.strictEqual(l1.coordinator!.callerTier, "L1");
+          assert.strictEqual(l1.coordinator!.mode, "code");
           assert.strictEqual(l1.coordinator!.tiers.L2.model, "worker-model-12");
+
+          // 3b. Opt-in L1 sub-coordinator resolves from its own coordinatorMode (overriding L0).
+          const l1SubCoord = yield* service.capabilities(scopeFor(l1SubCoordId));
+          assert.isDefined(l1SubCoord.coordinator);
+          assert.strictEqual(l1SubCoord.coordinator!.callerTier, "L1");
+          assert.strictEqual(l1SubCoord.coordinator!.templateId, l1GeneralTemplateId);
+          assert.strictEqual(l1SubCoord.coordinator!.templateName, "L1 Batch Story Lead");
+          assert.strictEqual(l1SubCoord.coordinator!.mode, "general");
+          assert.strictEqual(l1SubCoord.coordinator!.tiers.L1.model, "lead-model");
+          assert.strictEqual(l1SubCoord.coordinator!.tiers.L1.source, "root_thread");
+          assert.strictEqual(l1SubCoord.coordinator!.tiers.L2.providerInstanceId, workerInstanceId);
+          assert.strictEqual(l1SubCoord.coordinator!.tiers.L2.model, "worker-model-5");
+          assert.strictEqual(l1SubCoord.coordinator!.tiers.L2.source, "template_configured");
+
+          // 3c. Per-thread tierModelOverrides on L1 sub-coordinator take precedence over template pins.
+          const l1SubCoordOverride = yield* service.capabilities(scopeFor(l1SubCoordOverrideId));
+          assert.isDefined(l1SubCoordOverride.coordinator);
+          assert.strictEqual(l1SubCoordOverride.coordinator!.callerTier, "L1");
+          assert.strictEqual(l1SubCoordOverride.coordinator!.tiers.L1.model, "lead-model");
+          assert.strictEqual(l1SubCoordOverride.coordinator!.tiers.L1.source, "root_thread");
+          assert.strictEqual(
+            l1SubCoordOverride.coordinator!.tiers.L2.providerInstanceId,
+            workerInstanceId,
+          );
+          assert.strictEqual(l1SubCoordOverride.coordinator!.tiers.L2.model, "worker-model-9");
+          assert.strictEqual(l1SubCoordOverride.coordinator!.tiers.L2.source, "thread_override");
 
           const l2 = yield* service.capabilities(scopeFor(l2SubtaskId, workerInstanceId));
           assert.isDefined(l2.coordinator);

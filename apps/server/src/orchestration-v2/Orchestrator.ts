@@ -30,6 +30,7 @@ import {
   type GuestMessageId,
   isCompactionCommandMessage,
   isCoordinatorEligibleThread,
+  isSubCoordinatorEligibleThread,
   isDeliveredProviderTurn,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
@@ -747,21 +748,24 @@ function coordinatorIneligibilityReason(
   thread: Pick<OrchestrationV2AppThread, "id" | "lineage" | "delegatedFrom">,
 ): string {
   if (thread.lineage.sideChat === true) {
-    return `Thread ${thread.id} is a side chat and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+    return `Thread ${thread.id} is a side chat and cannot enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
+  }
+  if (thread.lineage.workflowStep === true) {
+    return `Thread ${thread.id} is a workflow step and cannot enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
   }
   if (thread.lineage.relationshipToParent === "subtask") {
-    return `Thread ${thread.id} is a subtask and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+    return `Thread ${thread.id} is an L2 subtask (max depth 2) and cannot enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
   }
   if (thread.lineage.relationshipToParent === "subagent") {
-    return `Thread ${thread.id} is a subagent thread and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+    return `Thread ${thread.id} is an L2 subagent thread (max depth 2) and cannot enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
   }
   if (thread.lineage.temporary === true) {
-    return `Thread ${thread.id} is a temporary thread and cannot enable coordinator mode; only persistent L0 root threads can act as coordinators.`;
+    return `Thread ${thread.id} is a temporary thread and cannot enable coordinator mode; only persistent L0 root threads and L1 subtasks can act as coordinators.`;
   }
   if (thread.delegatedFrom !== undefined) {
-    return `Thread ${thread.id} is a remotely delegated thread and cannot enable coordinator mode; only L0 root threads can act as coordinators.`;
+    return `Thread ${thread.id} is a remotely delegated thread and cannot enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
   }
-  return `Thread ${thread.id} is not an eligible L0 root thread and cannot enable coordinator mode.`;
+  return `Thread ${thread.id} is not eligible to enable coordinator mode; only L0 root threads and L1 subtasks can act as coordinators.`;
 }
 
 // Validate before resolving the request: adapters may otherwise coerce unusable answers.
@@ -4932,7 +4936,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       if (command.coordinatorMode !== null) {
-        if (!isCoordinatorEligibleThread(thread)) {
+        if (!isCoordinatorEligibleThread(thread) && !isSubCoordinatorEligibleThread(thread)) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,

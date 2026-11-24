@@ -78,39 +78,90 @@ function formatCoordinatorTierLine(label: string, tier: ResolvedCoordinatorTierM
   return `- ${tier.tier} (${label}): ${target} [${tier.source}${fallbackNote}]`;
 }
 
+export interface BuildCoordinatorInstructionsOptions {
+  readonly tierView?: "L0" | "L1" | undefined;
+}
+
 /**
- * Renders dynamic L0 coordinator mode instructions guaranteed to fit below Codex's 4,000-byte
- * per-entry cap without hardcoding concrete model names.
+ * Renders dynamic L0 coordinator or L1 sub-coordinator instructions guaranteed to fit below
+ * Codex's 4,000-byte per-entry cap without hardcoding concrete model names.
  */
-export function buildCoordinatorInstructions(config: ResolvedCoordinatorConfiguration): string {
+export function buildCoordinatorInstructions(
+  config: ResolvedCoordinatorConfiguration,
+  options?: BuildCoordinatorInstructionsOptions,
+): string {
   const { template, tiers } = config;
+  const tierView = options?.tierView ?? "L0";
+  const sceneMode = template.mode;
   const templateName = sanitizeInlineLine(template.name, 120) || "Coordinator";
   const description = sanitizeInlineLine(template.description, 240);
-  const delegationLine = template.preferDelegation
-    ? "- Prefer delegating research, implementation, tests, and bulk edits to L1/L2 subtasks via `delegate_task` instead of executing low-level work directly in this root context."
-    : "- Delegate subtasks via `delegate_task` when parallelization or specialization helps; direct execution is acceptable for small focused tasks.";
-  const strategyLine =
-    template.delegationStrategy === "inherit_root"
-      ? "- Delegation strategy: `inherit_root` (keep delegated subtasks aligned with the resolved L0 model unless explicitly overridden)."
-      : "- Delegation strategy: `tiered` (use the resolved L1 lead and L2 worker targets below when delegating).";
+
+  const heading =
+    tierView === "L1"
+      ? `## T3 Code L1 Sub-Coordinator Mode (${templateName})`
+      : `## T3 Code L0 Coordinator Mode (${templateName})`;
+
+  const roleLines: ReadonlyArray<string> =
+    tierView === "L1"
+      ? sceneMode === "general"
+        ? [
+            "- You are an L1 sub-coordinator for this workstream (max depth 2: you may delegate to L2 specialists, and L2 cannot spawn further children). Analyze the brief, delegate specialist or production steps to L2 via `delegate_task`, review their deliverables, and report a clean final result back to L0.",
+            template.preferDelegation
+              ? "- Prefer delegating specialist design, drafting, or production steps to L2 via `delegate_task`, then review and assemble the final deliverable in this L1 thread."
+              : "- Delegate to L2 via `delegate_task` when specialist models or parallel steps help; handle straightforward parts directly.",
+            "- Call `orchestrator_capabilities` once to verify live availability and read `coordinator.tiers.L2`. If L2 is `unavailable`, inform the user instead of silently substituting another model.",
+            "- Use `t3_thread_list` (children) and `t3_thread_read` to inspect L2 deliverables before summarizing back to L0.",
+          ]
+        : [
+            "- You are an L1 sub-coordinator for this subtask (max depth 2: you may delegate to L2 workers, and L2 cannot spawn further children). Break this subtask down, delegate focused work to L2 via `delegate_task`, review their results, and report a concise synthesis back to L0.",
+            template.preferDelegation
+              ? "- Prefer delegating focused edits, checks, or specialist analysis to L2 workers via `delegate_task` while keeping design decisions and verification in this L1 thread."
+              : "- Delegate to L2 workers via `delegate_task` when specialization or parallelization helps; execute straightforward parts directly.",
+            '- Call `orchestrator_capabilities` once to verify live availability and read `coordinator.tiers.L2`; pass `plannedPaths` when delegating in the shared checkout and use `t3_worktree_coordinate` for overlapping edits (`isolation: "worktree"` requires human approval).',
+            "- Use `t3_thread_list` (children) and `t3_thread_read` to inspect L2 progress and results before summarizing back to L0.",
+          ]
+      : sceneMode === "general"
+        ? [
+            "- You are the L0 root coordinator for this batch/general workflow. Focus on scoping items, dispatching parallel L1 subtasks (`L0 -> L1 -> L2`, max depth 2), reviewing deliverables, and synthesizing the final output.",
+            template.preferDelegation
+              ? "- Prefer delegating individual items, research, design, and production work to L1/L2 subtasks via `delegate_task` instead of producing every item directly in this root context."
+              : "- Delegate subtasks via `delegate_task` when parallel production or specialist models help; direct work is acceptable for small focused tasks.",
+            "- Call `orchestrator_capabilities` once per thread to verify live availability and read `coordinator.tiers`. If a target tier is `unavailable`, inform the user instead of silently substituting another model.",
+            "- Use `t3_thread_list` (children) and `t3_thread_read` to review subtask deliverables and fulfill L1 escalations via `delegate_task` with `escalationRequestId`.",
+          ]
+        : [
+            "- You are the L0 root coordinator for this task tree. Focus on requirement breakdown, task decomposition, delegation (`L0 -> L1 -> L2`, max depth 2), progress verification, integration, and final closure.",
+            template.preferDelegation
+              ? "- Prefer delegating research, implementation, tests, and bulk edits to L1/L2 subtasks via `delegate_task` instead of executing low-level work directly in this root context."
+              : "- Delegate subtasks via `delegate_task` when parallelization or specialization helps; direct execution is acceptable for small focused tasks.",
+            '- Call `orchestrator_capabilities` once per thread to verify live availability and read `coordinator.tiers`; pass `plannedPaths` when delegating in the shared checkout and use `t3_worktree_coordinate` for overlapping edits (`isolation: "worktree"` requires human approval).',
+            "- Use `t3_thread_list` (children) and `t3_thread_read` to inspect subtask progress/results, and fulfill L1 horizontal escalations via `delegate_task` with `escalationRequestId`.",
+          ];
+
+  const l2Label = sceneMode === "general" ? "specialist" : "worker";
+  const tierLines: ReadonlyArray<string> =
+    tierView === "L1"
+      ? [
+          formatCoordinatorTierLine("current sub-coordinator", tiers.L1),
+          formatCoordinatorTierLine(l2Label, tiers.L2),
+        ]
+      : [
+          formatCoordinatorTierLine("root coordinator", tiers.L0),
+          formatCoordinatorTierLine("task lead", tiers.L1),
+          formatCoordinatorTierLine(l2Label, tiers.L2),
+        ];
 
   const baseLines = [
-    `## T3 Code L0 Coordinator Mode (${templateName})`,
+    heading,
     ...(description ? [description] : []),
-    "- You are the L0 root coordinator for this task tree. Focus on requirement breakdown, task decomposition, tiered delegation (`L0 -> L1 -> L2`, max depth 2), progress verification, integration, and final closure.",
-    delegationLine,
-    strategyLine,
-    '- Call `orchestrator_capabilities` once per thread to verify live availability and read `coordinator.tiers`; pass `plannedPaths` when delegating in the shared checkout and use `t3_worktree_coordinate` for overlapping edits (`isolation: "worktree"` requires human approval).',
-    "- Use `t3_thread_list` (children) and `t3_thread_read` to inspect subtask progress/results, and fulfill L1 horizontal escalations via `delegate_task` with `escalationRequestId`.",
+    ...roleLines,
     ...(config.templateFallbackUsed
       ? [
           `- Note: requested template \`${sanitizeInlineLine(config.requestedTemplateId, 80)}\` was unavailable; using \`${sanitizeInlineLine(template.id, 80)}\`.`,
         ]
       : []),
-    "Resolved tier models (dynamic from live environment):",
-    formatCoordinatorTierLine("root coordinator", tiers.L0),
-    formatCoordinatorTierLine("task lead", tiers.L1),
-    formatCoordinatorTierLine("worker", tiers.L2),
+    "Resolved tier targets (from live environment):",
+    ...tierLines,
   ];
 
   const baseText = baseLines.join("\n");

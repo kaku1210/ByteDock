@@ -67,7 +67,7 @@ import { armFreshSession, disarmFreshSession, useFreshSessionArmed } from "./cha
 import { cancelHeldComposerSend, useComposerSendHeld } from "./chat/preparingComposerImages";
 import { useUsageLimitsPanel } from "./chat/useUsageLimitsPanel";
 import { useWorktreeSetup } from "./chat/useWorktreeSetup";
-import { isThreadCoordinatorControlVisible } from "./chat/coordinatorModeControl.logic";
+import { resolveCoordinatorControlTier } from "./chat/coordinatorModeControl.logic";
 import { WorktreeApprovalBanner } from "./chat/WorktreeApprovalBanner";
 import { useChatShortcuts } from "./chat/useChatShortcuts";
 import { ChatBannerLane } from "./chat/ChatBannerLane";
@@ -3164,10 +3164,17 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus: scheduleComposerFocusStable,
   });
-  const coordinatorControlVisible = isThreadCoordinatorControlVisible({
+  const coordinatorControlTier = resolveCoordinatorControlTier({
     routeKind,
     thread: activeThreadShell,
   });
+  const coordinatorControlVisible = coordinatorControlTier !== null;
+  const coordinatorRootShell = useQuietThreadShell(
+    coordinatorControlTier === "L1" && activeThreadShell !== null
+      ? { environmentId, threadId: activeThreadShell.lineage.rootThreadId }
+      : null,
+  );
+  const inheritedCoordinatorTemplateId = coordinatorRootShell?.coordinatorMode?.templateId ?? null;
   const activeCoordinatorMode = isServerThread
     ? (activeThreadShell?.coordinatorMode ?? null)
     : (draftThread?.coordinatorMode ?? null);
@@ -4068,6 +4075,8 @@ export default function ChatView(props: ChatViewProps) {
                                 runtimeMode={runtimeMode}
                                 defaultRuntimeMode={defaultRuntimeMode}
                                 coordinatorControlVisible={coordinatorControlVisible}
+                                coordinatorControlTier={coordinatorControlTier ?? "L0"}
+                                inheritedCoordinatorTemplateId={inheritedCoordinatorTemplateId}
                                 coordinatorMode={activeCoordinatorMode}
                                 onCoordinatorModeChange={handleCoordinatorModeChangeStable}
                                 lockedProvider={modelPickerLockedProvider}

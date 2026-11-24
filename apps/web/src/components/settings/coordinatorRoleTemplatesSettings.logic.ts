@@ -5,8 +5,10 @@ import {
   CoordinatorRoleTemplateId,
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   DEFAULT_COORDINATOR_TIER_MODEL_SELECTIONS,
+  isBuiltInCoordinatorRoleTemplateId,
   type CoordinatorDelegationStrategy,
   type CoordinatorRoleTemplate,
+  type CoordinatorSceneMode,
   type CoordinatorTierModelSelections,
   type ModelSelection,
   type ServerProvider,
@@ -26,6 +28,7 @@ export interface CoordinatorRoleTemplateDraft {
   readonly idManuallyEdited: boolean;
   readonly name: string;
   readonly description: string;
+  readonly sceneMode: CoordinatorSceneMode;
   readonly preferDelegation: boolean;
   readonly delegationStrategy: CoordinatorDelegationStrategy;
   readonly instructions: string;
@@ -34,8 +37,12 @@ export interface CoordinatorRoleTemplateDraft {
 
 export function isBuiltInTemplateCustomized(
   settings: Pick<ServerSettings, "coordinatorRoleTemplates">,
+  templateId: CoordinatorRoleTemplateId = DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
 ): boolean {
-  return Object.hasOwn(settings.coordinatorRoleTemplates, DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID);
+  return (
+    isBuiltInCoordinatorRoleTemplateId(templateId) &&
+    Object.hasOwn(settings.coordinatorRoleTemplates, templateId)
+  );
 }
 
 export function canCreateCoordinatorRoleTemplate(
@@ -58,12 +65,12 @@ export function slugifyCoordinatorTemplateId(
     .replace(/^-+|-+$/gu, "")
     .slice(0, 48);
   const root = base.length > 0 ? base : "custom-template";
-  if (!existingIds.has(root) && root !== DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID) {
+  if (!existingIds.has(root) && !isBuiltInCoordinatorRoleTemplateId(root)) {
     return root;
   }
   for (let suffix = 2; suffix <= 99; suffix += 1) {
     const candidate = `${root}-${suffix}`;
-    if (!existingIds.has(candidate) && candidate !== DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID) {
+    if (!existingIds.has(candidate) && !isBuiltInCoordinatorRoleTemplateId(candidate)) {
       return candidate;
     }
   }
@@ -79,6 +86,7 @@ export function createEmptyCoordinatorTemplateDraft(
     idManuallyEdited: false,
     name: "",
     description: "",
+    sceneMode: BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG.mode,
     preferDelegation: BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG.preferDelegation,
     delegationStrategy: BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG.delegationStrategy,
     instructions: "",
@@ -95,6 +103,7 @@ export function createEditCoordinatorTemplateDraft(
     idManuallyEdited: true,
     name: template.name,
     description: template.description,
+    sceneMode: template.mode,
     preferDelegation: template.preferDelegation,
     delegationStrategy: template.delegationStrategy,
     instructions: template.instructions,
@@ -123,21 +132,25 @@ export function validateCoordinatorTemplateDraft(
 ): CoordinatorTemplateValidationResult {
   const trimmedName = draft.name.trim();
   if (trimmedName.length === 0) {
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- interfaceCopy key translated via uiText() at call site
     return { ok: false, error: "Template name is required." };
   }
   const decodedId = decodeTemplateId(draft.id.trim());
   if (Option.isNone(decodedId)) {
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- interfaceCopy key translated via uiText() at call site
     return { ok: false, error: "Template ID must be a non-empty identifier (max 64 characters)." };
   }
   const id = decodedId.value;
   if (draft.mode === "create") {
-    if (id === DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID || existingIds.has(id)) {
+    if (isBuiltInCoordinatorRoleTemplateId(id) || existingIds.has(id)) {
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- interfaceCopy key translated via uiText() at call site
       return { ok: false, error: `Template ID "${id}" already exists.` };
     }
   }
   const decodedConfig = decodeTemplateConfig({
     name: trimmedName,
     description: draft.description.trim(),
+    mode: draft.sceneMode,
     tierModels: draft.tierModels,
     preferDelegation: draft.preferDelegation,
     delegationStrategy: draft.delegationStrategy,
@@ -146,6 +159,7 @@ export function validateCoordinatorTemplateDraft(
   if (Option.isNone(decodedConfig)) {
     return {
       ok: false,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- interfaceCopy key translated via uiText() at call site
       error: "Check template field lengths (name <= 80, description <= 240, instructions <= 2000).",
     };
   }
@@ -158,7 +172,7 @@ export function validateCoordinatorTemplateDraft(
 
 /**
  * Picks a fallback initial model selection from currently available live providers when
- * a user switches a tier from "Auto (Dynamic)" to an explicit override. Never hardcodes model names.
+ * a user switches a tier from "Follows current" to an explicit pin. Never hardcodes model names.
  */
 export function pickInitialExplicitTierModel(
   providers: ReadonlyArray<ServerProvider>,
@@ -179,7 +193,7 @@ export function pickInitialExplicitTierModel(
 
 /**
  * Builds an ephemeral settings slice containing the unsaved template draft so the editor dialog
- * can render a live dynamic tier resolution preview before saving.
+ * can render a live tier resolution preview before saving.
  */
 export function buildDraftCoordinatorPreviewSettings(
   settings: CoordinatorResolutionSettingsSlice,
@@ -195,6 +209,7 @@ export function buildDraftCoordinatorPreviewSettings(
   const config: CoordinatorRoleTemplateConfig = {
     name: draft.name.trim() || "Untitled template",
     description: draft.description.trim(),
+    mode: draft.sceneMode,
     tierModels: draft.tierModels,
     preferDelegation: draft.preferDelegation,
     delegationStrategy: draft.delegationStrategy,
@@ -218,7 +233,9 @@ export function summarizeTierOverrides(tierModels: CoordinatorTierModelSelection
   if (tierModels.L1 !== null) configuredTiers.push("L1");
   if (tierModels.L2 !== null) configuredTiers.push("L2");
   if (configuredTiers.length === 0) {
-    return "All tiers dynamic";
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- interfaceCopy key translated via uiText() at call site
+    return "All tiers follow current";
   }
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- tier summary key translated via uiText() at call site
   return `Custom ${configuredTiers.join(" / ")}`;
 }

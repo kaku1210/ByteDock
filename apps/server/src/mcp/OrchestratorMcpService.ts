@@ -74,6 +74,7 @@ import {
   SubtaskEscalationRequestId,
   ThreadId,
   isCoordinatorEligibleThread,
+  isSubCoordinatorEligibleThread,
   isOrchestrationV2WorkActive,
   isTaskChildLineage,
   latestProviderTurnForAttempt,
@@ -2918,15 +2919,24 @@ const make = Effect.gen(function* () {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
       );
-      let coordinatorRoot: OrchestrationV2ThreadProjection["thread"] | undefined;
+      let coordinatorOwner: OrchestrationV2ThreadProjection["thread"] | undefined;
       let callerTier: CoordinatorTier | undefined;
+      let resolveCallerTier: "L0" | "L1" = "L0";
       if (parent !== undefined && parent.thread.lineage !== undefined) {
         if (
           parent.thread.coordinatorMode?.enabled === true &&
           isCoordinatorEligibleThread(parent.thread)
         ) {
-          coordinatorRoot = parent.thread;
+          coordinatorOwner = parent.thread;
           callerTier = "L0";
+          resolveCallerTier = "L0";
+        } else if (
+          parent.thread.coordinatorMode?.enabled === true &&
+          isSubCoordinatorEligibleThread(parent.thread)
+        ) {
+          coordinatorOwner = parent.thread;
+          callerTier = "L1";
+          resolveCallerTier = "L1";
         } else if (
           isTaskChildLineage(parent.thread.lineage) &&
           parent.thread.lineage.sideChat !== true &&
@@ -2943,22 +2953,25 @@ const make = Effect.gen(function* () {
             root.value.thread.coordinatorMode?.enabled === true &&
             isCoordinatorEligibleThread(root.value.thread)
           ) {
-            coordinatorRoot = root.value.thread;
+            coordinatorOwner = root.value.thread;
             callerTier =
               parent.thread.lineage.parentThreadId === root.value.thread.id ? "L1" : "L2";
+            resolveCallerTier = "L0";
           }
         }
       }
       const coordinator: OrchestratorMcpCoordinatorCapabilities | undefined =
-        coordinatorRoot === undefined || callerTier === undefined
+        coordinatorOwner === undefined || callerTier === undefined
           ? undefined
           : (() => {
               const resolved = resolveCoordinatorModels({
                 settings,
                 providers,
-                projectId: coordinatorRoot.projectId,
-                templateId: coordinatorRoot.coordinatorMode?.templateId,
-                rootModelSelection: coordinatorRoot.modelSelection,
+                projectId: coordinatorOwner.projectId,
+                templateId: coordinatorOwner.coordinatorMode?.templateId,
+                tierModelOverrides: coordinatorOwner.coordinatorMode?.tierModelOverrides,
+                rootModelSelection: coordinatorOwner.modelSelection,
+                callerTier: resolveCallerTier,
                 orchestrationCapableInstanceIds,
               });
               return {
@@ -2968,6 +2981,7 @@ const make = Effect.gen(function* () {
                 requestedTemplateId: resolved.requestedTemplateId,
                 templateName: resolved.template.name,
                 templateFallbackUsed: resolved.templateFallbackUsed,
+                mode: resolved.template.mode,
                 preferDelegation: resolved.template.preferDelegation,
                 delegationStrategy: resolved.template.delegationStrategy,
                 tiers: {

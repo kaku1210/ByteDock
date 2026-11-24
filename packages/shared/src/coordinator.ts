@@ -1,13 +1,16 @@
 import {
-  BUILT_IN_COORDINATOR_ROLE_TEMPLATE,
+  BUILT_IN_COORDINATOR_ROLE_TEMPLATE_BY_ID,
   BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG,
+  BUILT_IN_COORDINATOR_ROLE_TEMPLATES,
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+  isBuiltInCoordinatorRoleTemplateId,
   isProviderAvailable,
   resolveProviderInstanceEnabled,
   type CoordinatorRoleTemplate,
   type CoordinatorRoleTemplateConfig,
   type CoordinatorRoleTemplateId,
   type CoordinatorTier,
+  type CoordinatorTierModelOverrides,
   type ModelSelection,
   type ProjectId,
   type ProviderInstanceId,
@@ -50,8 +53,15 @@ export interface ResolveCoordinatorModelsInput {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly projectId: ProjectId | null;
   readonly templateId?: CoordinatorRoleTemplateId | undefined;
+  readonly tierModelOverrides?: CoordinatorTierModelOverrides | null | undefined;
   readonly rootModelSelection?: ModelSelection | null | undefined;
+  readonly callerTier?: "L0" | "L1" | undefined;
   readonly orchestrationCapableInstanceIds?: ReadonlySet<ProviderInstanceId> | undefined;
+}
+
+export interface CoordinatorSelectableProviderGroup {
+  readonly provider: ServerProvider;
+  readonly models: ReadonlyArray<ServerProviderModel>;
 }
 
 function toRoleTemplate(
@@ -60,9 +70,10 @@ function toRoleTemplate(
 ): CoordinatorRoleTemplate {
   return {
     id,
-    builtIn: id === DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+    builtIn: isBuiltInCoordinatorRoleTemplateId(id),
     name: config.name,
     description: config.description,
+    mode: config.mode,
     tierModels: config.tierModels,
     preferDelegation: config.preferDelegation,
     delegationStrategy: config.delegationStrategy,
@@ -70,44 +81,40 @@ function toRoleTemplate(
   };
 }
 
-/** Whether a template id exists in settings (or names the built-in default template). */
+/** Whether a template id exists in settings (or names a built-in template). */
 export function hasCoordinatorRoleTemplate(
   settings: Pick<ServerSettings, "coordinatorRoleTemplates">,
   templateId: CoordinatorRoleTemplateId,
 ): boolean {
   return (
-    templateId === DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID ||
+    isBuiltInCoordinatorRoleTemplateId(templateId) ||
     Object.hasOwn(settings.coordinatorRoleTemplates, templateId)
   );
 }
 
 /**
  * Lists all coordinator role templates available in this environment:
- * built-in `"default"` first (incorporating any user overrides), followed by custom templates.
+ * built-in templates first (incorporating any user overrides), followed by custom templates.
  */
 export function resolveCoordinatorRoleTemplates(
   settings: Pick<ServerSettings, "coordinatorRoleTemplates">,
 ): ReadonlyArray<CoordinatorRoleTemplate> {
-  const defaultOverride = Object.hasOwn(
-    settings.coordinatorRoleTemplates,
-    DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
-  )
-    ? settings.coordinatorRoleTemplates[DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID]
-    : undefined;
-  const defaultTemplate =
-    defaultOverride !== undefined
-      ? toRoleTemplate(DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID, defaultOverride)
-      : BUILT_IN_COORDINATOR_ROLE_TEMPLATE;
+  const builtInTemplates = BUILT_IN_COORDINATOR_ROLE_TEMPLATES.map((builtIn) => {
+    const override = Object.hasOwn(settings.coordinatorRoleTemplates, builtIn.id)
+      ? settings.coordinatorRoleTemplates[builtIn.id]
+      : undefined;
+    return override !== undefined ? toRoleTemplate(builtIn.id, override) : builtIn;
+  });
 
   const customTemplates = Object.entries(settings.coordinatorRoleTemplates)
-    .filter(([id]) => id !== DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)
+    .filter(([id]) => !isBuiltInCoordinatorRoleTemplateId(id))
     .map(([id, config]) => toRoleTemplate(id as CoordinatorRoleTemplateId, config))
     .sort((left, right) => {
       const nameOrder = left.name.localeCompare(right.name);
       return nameOrder !== 0 ? nameOrder : left.id.localeCompare(right.id);
     });
 
-  return [defaultTemplate, ...customTemplates];
+  return [...builtInTemplates, ...customTemplates];
 }
 
 /**
@@ -120,18 +127,14 @@ export function resolveCoordinatorRoleTemplate(
   templateId?: CoordinatorRoleTemplateId | undefined,
 ): ResolvedCoordinatorTemplateLookup {
   const requestedTemplateId = templateId ?? settings.defaultCoordinatorRoleTemplateId;
-  if (requestedTemplateId === DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID) {
-    const override = Object.hasOwn(
-      settings.coordinatorRoleTemplates,
-      DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
-    )
-      ? settings.coordinatorRoleTemplates[DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID]
+  const builtInMatch = BUILT_IN_COORDINATOR_ROLE_TEMPLATE_BY_ID.get(requestedTemplateId);
+  if (builtInMatch !== undefined) {
+    const override = Object.hasOwn(settings.coordinatorRoleTemplates, requestedTemplateId)
+      ? settings.coordinatorRoleTemplates[requestedTemplateId]
       : undefined;
     return {
       template:
-        override !== undefined
-          ? toRoleTemplate(DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID, override)
-          : BUILT_IN_COORDINATOR_ROLE_TEMPLATE,
+        override !== undefined ? toRoleTemplate(requestedTemplateId, override) : builtInMatch,
       requestedTemplateId,
       templateFallbackUsed: false,
       templateFallbackReason: null,
@@ -150,16 +153,13 @@ export function resolveCoordinatorRoleTemplate(
 
   // Fallback to defaultCoordinatorRoleTemplateId if it exists and differs; else built-in default.
   const defaultId = settings.defaultCoordinatorRoleTemplateId;
-  const fallbackConfig =
-    defaultId !== requestedTemplateId && Object.hasOwn(settings.coordinatorRoleTemplates, defaultId)
-      ? settings.coordinatorRoleTemplates[defaultId]!
-      : Object.hasOwn(settings.coordinatorRoleTemplates, DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)
-        ? settings.coordinatorRoleTemplates[DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID]!
-        : BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG;
-  const fallbackId =
-    defaultId !== requestedTemplateId && Object.hasOwn(settings.coordinatorRoleTemplates, defaultId)
-      ? defaultId
-      : DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID;
+  const canUseConfiguredDefault =
+    defaultId !== requestedTemplateId && hasCoordinatorRoleTemplate(settings, defaultId);
+  const fallbackId = canUseConfiguredDefault ? defaultId : DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID;
+  const fallbackBuiltIn = BUILT_IN_COORDINATOR_ROLE_TEMPLATE_BY_ID.get(fallbackId);
+  const fallbackConfig = Object.hasOwn(settings.coordinatorRoleTemplates, fallbackId)
+    ? settings.coordinatorRoleTemplates[fallbackId]!
+    : (fallbackBuiltIn ?? BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG);
 
   return {
     template: toRoleTemplate(fallbackId, fallbackConfig),
@@ -267,160 +267,83 @@ function matchProviderModel(
   );
 }
 
-const HIGH_TIER_TOKENS = new Set([
-  "opus",
-  "pro",
-  "ultra",
-  "max",
-  "flagship",
-  "heavy",
-  "large",
-  "deep",
-  "reasoning",
-]);
-
-const LOW_TIER_TOKENS = new Set([
-  "mini",
-  "nano",
-  "lite",
-  "light",
-  "flash",
-  "haiku",
-  "fast",
-  "small",
-  "instant",
-  "spark",
-  "micro",
-  "tiny",
-]);
-
-const MID_TIER_TOKENS = new Set(["sonnet", "balanced", "standard", "medium", "base"]);
-
-function tokenizeModelLabel(model: ServerProviderModel): ReadonlyArray<string> {
-  return `${model.slug} ${model.name}`
-    .toLowerCase()
-    .split(/[^a-z0-9]+/u)
-    .filter((token) => token.length > 0);
-}
-
-/**
- * Computes a generic, vendor-agnostic tier weight purely from structural capability metadata
- * and generic capability class tokens (never matching concrete model slugs).
- * Higher values favor L0 coordination; lower values favor fast L2 execution.
- */
-function genericModelTierWeight(model: ServerProviderModel): number {
-  const tokens = tokenizeModelLabel(model);
-  let score = 0;
-  let hasHigh = false;
-  let hasLow = false;
-  let hasMid = false;
-  for (const token of tokens) {
-    if (HIGH_TIER_TOKENS.has(token)) hasHigh = true;
-    if (LOW_TIER_TOKENS.has(token)) hasLow = true;
-    if (MID_TIER_TOKENS.has(token)) hasMid = true;
-  }
-  if (hasHigh && !hasLow) score += 20;
-  else if (hasLow && !hasHigh) score -= 20;
-  else if (hasMid) score += 5;
-
-  const reasoningDescriptor = model.capabilities?.optionDescriptors?.find(
-    (descriptor) => descriptor.type === "select" && descriptor.id === "reasoningEffort",
-  );
-  if (reasoningDescriptor !== undefined && reasoningDescriptor.type === "select") {
-    const effortIds = new Set(reasoningDescriptor.options.map((option) => option.id.toLowerCase()));
-    if (effortIds.has("xhigh") || effortIds.has("max")) {
-      score += 4;
-    } else if (effortIds.has("high")) {
-      score += 2;
-    }
-  }
-  return score;
-}
-
-function orderedProviderCandidates(
+function pickFirstVisibleProviderModel(
   provider: ServerProvider,
   settings: CoordinatorResolutionSettingsSlice,
-): ReadonlyArray<ServerProviderModel> {
-  if (provider.models.length === 0) return [];
+): ModelSelection | null {
+  if (provider.models.length === 0) return null;
   const preferences = settings.providerModelPreferences?.[provider.instanceId];
   const hiddenSet = new Set(preferences?.hiddenModels ?? []);
   const visible = provider.models.filter((model) => !hiddenSet.has(model.slug));
   const afterHidden = visible.length > 0 ? visible : provider.models;
   const nonLegacy = afterHidden.filter((model) => model.isLegacy !== true);
   const pool = nonLegacy.length > 0 ? nonLegacy : afterHidden;
-
-  const orderIndex = new Map<string, number>();
-  for (const [index, slug] of (preferences?.modelOrder ?? []).entries()) {
-    orderIndex.set(slug, index);
-  }
-  const favoriteSet = new Set(
-    (settings.favorites ?? [])
-      .filter((favorite) => favorite.provider === provider.instanceId)
-      .map((favorite) => favorite.model),
-  );
-
-  return pool
-    .map((model, originalIndex) => ({
-      model,
-      originalIndex,
-      customOrder: orderIndex.get(model.slug),
-      isFavorite: favoriteSet.has(model.slug),
-      tierWeight: genericModelTierWeight(model),
-    }))
-    .sort((left, right) => {
-      if (left.tierWeight !== right.tierWeight) {
-        return right.tierWeight - left.tierWeight;
-      }
-      if (left.customOrder !== undefined || right.customOrder !== undefined) {
-        if (left.customOrder === undefined) return 1;
-        if (right.customOrder === undefined) return -1;
-        if (left.customOrder !== right.customOrder) {
-          return left.customOrder - right.customOrder;
-        }
-      }
-      if (left.isFavorite !== right.isFavorite) {
-        return left.isFavorite ? -1 : 1;
-      }
-      return left.originalIndex - right.originalIndex;
-    })
-    .map((entry) => entry.model);
+  const first = pool[0];
+  return first !== undefined ? createModelSelection(provider.instanceId, first.slug) : null;
 }
 
-function pickDynamicTierFromCandidates(
-  provider: ServerProvider,
-  candidates: ReadonlyArray<ServerProviderModel>,
-  tier: CoordinatorTier,
-): ModelSelection | null {
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) {
-    return createModelSelection(provider.instanceId, candidates[0]!.slug);
+/** Strips unset keys so empty override objects are omitted from persisted payloads. */
+export function normalizeCoordinatorTierModelOverrides(
+  overrides: CoordinatorTierModelOverrides | null | undefined,
+): CoordinatorTierModelOverrides | undefined {
+  if (!overrides) return undefined;
+  const next: { L1?: ModelSelection | null; L2?: ModelSelection | null } = {};
+  if (Object.hasOwn(overrides, "L1") && overrides.L1 !== undefined) {
+    next.L1 = overrides.L1;
   }
-  if (tier === "L0") {
-    return createModelSelection(provider.instanceId, candidates[0]!.slug);
+  if (Object.hasOwn(overrides, "L2") && overrides.L2 !== undefined) {
+    next.L2 = overrides.L2;
   }
-  if (tier === "L2") {
-    return createModelSelection(provider.instanceId, candidates[candidates.length - 1]!.slug);
+  return next.L1 !== undefined || next.L2 !== undefined ? next : undefined;
+}
+
+/** Lists live available providers and their visible models for inline coordinator tier pickers. */
+export function listSelectableCoordinatorProviderModels(input: {
+  readonly settings: CoordinatorResolutionSettingsSlice;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly projectId: ProjectId | null;
+  readonly orchestrationCapableInstanceIds?: ReadonlySet<ProviderInstanceId> | undefined;
+}): ReadonlyArray<CoordinatorSelectableProviderGroup> {
+  const groups: Array<CoordinatorSelectableProviderGroup> = [];
+  for (const provider of input.providers) {
+    const reason = providerUnavailabilityReason({
+      provider,
+      settings: input.settings,
+      projectId: input.projectId,
+      orchestrationCapableInstanceIds: input.orchestrationCapableInstanceIds,
+    });
+    if (reason !== null || provider.models.length === 0) {
+      continue;
+    }
+    const preferences = input.settings.providerModelPreferences?.[provider.instanceId];
+    const hiddenSet = new Set(preferences?.hiddenModels ?? []);
+    const visible = provider.models.filter((model) => !hiddenSet.has(model.slug));
+    const afterHidden = visible.length > 0 ? visible : provider.models;
+    const nonLegacy = afterHidden.filter((model) => model.isLegacy !== true);
+    const models = nonLegacy.length > 0 ? nonLegacy : afterHidden;
+    if (models.length > 0) {
+      groups.push({ provider, models });
+    }
   }
-  // L1 (task lead): with 2 models, keep the stronger model if the second is explicitly lightweight;
-  // with 3+ models, pick the balanced middle candidate.
-  if (candidates.length === 2) {
-    const secondWeight = genericModelTierWeight(candidates[1]!);
-    const chosen = secondWeight < 0 ? candidates[0]! : candidates[1]!;
-    return createModelSelection(provider.instanceId, chosen.slug);
-  }
-  const middleIndex = Math.floor((candidates.length - 1) / 2);
-  return createModelSelection(provider.instanceId, candidates[middleIndex]!.slug);
+  return groups;
 }
 
 /**
- * Dynamically resolves L0/L1/L2 model selections against live available providers and models
- * without hardcoding concrete model names.
+ * Deterministically resolves L0/L1/L2 model selections against live available providers:
+ * thread overrides take precedence over template pins, and unpinned tiers follow `rootModelSelection`.
  */
 export function resolveCoordinatorModels(
   input: ResolveCoordinatorModelsInput,
 ): ResolvedCoordinatorConfiguration {
-  const { settings, providers, projectId, rootModelSelection, orchestrationCapableInstanceIds } =
-    input;
+  const {
+    settings,
+    providers,
+    projectId,
+    tierModelOverrides,
+    rootModelSelection,
+    orchestrationCapableInstanceIds,
+    callerTier = "L0",
+  } = input;
   const templateLookup = resolveCoordinatorRoleTemplate(settings, input.templateId);
   const { template } = templateLookup;
 
@@ -474,129 +397,107 @@ export function resolveCoordinatorModels(
     };
   };
 
-  const candidatesByProvider = new Map<ProviderInstanceId, ReadonlyArray<ServerProviderModel>>();
-  for (const provider of usableProviders) {
-    candidatesByProvider.set(provider.instanceId, orderedProviderCandidates(provider, settings));
-  }
-
-  const pickPreferredProvider = (
-    preferredInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined>,
-  ): ServerProvider | undefined => {
-    for (const instanceId of preferredInstanceIds) {
-      if (instanceId === undefined || instanceId === null) continue;
-      const provider = usableByInstanceId.get(instanceId);
-      if (
-        provider !== undefined &&
-        (candidatesByProvider.get(provider.instanceId)?.length ?? 0) > 0
-      ) {
-        return provider;
+  const resolveBaselineSelection = ():
+    | { readonly ok: true; readonly selection: ModelSelection }
+    | { readonly ok: false; readonly reason: string } => {
+    if (rootModelSelection !== undefined && rootModelSelection !== null) {
+      return validateSelection(rootModelSelection);
+    }
+    if (settings.defaultModelSelection !== null) {
+      const defaultCheck = validateSelection(settings.defaultModelSelection);
+      if (defaultCheck.ok) {
+        return defaultCheck;
       }
     }
-    return usableProviders.find(
-      (provider) => (candidatesByProvider.get(provider.instanceId)?.length ?? 0) > 0,
-    );
+    if (settings.fallbackModelSelection !== null) {
+      const fallbackCheck = validateSelection(settings.fallbackModelSelection);
+      if (fallbackCheck.ok) {
+        return fallbackCheck;
+      }
+    }
+    for (const provider of usableProviders) {
+      const firstModel = pickFirstVisibleProviderModel(provider, settings);
+      if (firstModel !== null) {
+        return { ok: true, selection: firstModel };
+      }
+    }
+    return {
+      ok: false,
+      reason: "No enabled and available provider models found.",
+    };
   };
 
-  const configuredL0 = template.tierModels.L0;
-  let resolvedL0: ResolvedCoordinatorTierModel;
-  {
-    const configuredCheck = configuredL0 !== null ? validateSelection(configuredL0) : null;
-    if (configuredCheck?.ok) {
-      resolvedL0 = {
-        tier: "L0",
-        modelSelection: configuredCheck.selection,
-        configuredModelSelection: configuredL0,
-        source: "template_configured",
-        fallbackUsed: false,
-        fallbackReason: null,
-      };
-    } else {
-      const configuredFailure = configuredCheck?.ok === false ? configuredCheck.reason : null;
-      const rootCheck =
-        rootModelSelection !== undefined && rootModelSelection !== null
-          ? validateSelection(rootModelSelection)
-          : null;
-      if (rootCheck?.ok) {
-        resolvedL0 = {
-          tier: "L0",
-          modelSelection: rootCheck.selection,
-          configuredModelSelection: configuredL0,
-          source: configuredL0 !== null ? "fallback_available" : "root_thread",
-          fallbackUsed: configuredL0 !== null,
-          fallbackReason: configuredFailure,
+  const baseline = resolveBaselineSelection();
+
+  const resolveBaselineTier = (tier: CoordinatorTier): ResolvedCoordinatorTierModel =>
+    baseline.ok
+      ? {
+          tier,
+          modelSelection: baseline.selection,
+          configuredModelSelection: null,
+          source: "root_thread",
+          fallbackUsed: false,
+          fallbackReason: null,
+        }
+      : {
+          tier,
+          modelSelection: null,
+          configuredModelSelection: null,
+          source: "unavailable",
+          fallbackUsed: false,
+          fallbackReason: baseline.reason,
         };
-      } else {
-        const defaultCheck =
-          settings.defaultModelSelection !== null
-            ? validateSelection(settings.defaultModelSelection)
-            : null;
-        const fallbackCheck =
-          !defaultCheck?.ok && settings.fallbackModelSelection !== null
-            ? validateSelection(settings.fallbackModelSelection)
-            : null;
-        const preferredProvider = pickPreferredProvider([
-          rootModelSelection?.instanceId,
-          settings.defaultModelSelection?.instanceId,
-          settings.fallbackModelSelection?.instanceId,
-        ]);
-        const dynamicSelection = defaultCheck?.ok
-          ? defaultCheck.selection
-          : fallbackCheck?.ok
-            ? fallbackCheck.selection
-            : preferredProvider !== undefined
-              ? pickDynamicTierFromCandidates(
-                  preferredProvider,
-                  candidatesByProvider.get(preferredProvider.instanceId) ?? [],
-                  "L0",
-                )
-              : null;
-        resolvedL0 =
-          dynamicSelection !== null
-            ? {
-                tier: "L0",
-                modelSelection: dynamicSelection,
-                configuredModelSelection: configuredL0,
-                source: configuredL0 !== null ? "fallback_available" : "dynamic_available",
-                fallbackUsed: configuredL0 !== null,
-                fallbackReason: configuredFailure,
-              }
-            : {
-                tier: "L0",
-                modelSelection: null,
-                configuredModelSelection: configuredL0,
-                source: "unavailable",
-                fallbackUsed: configuredL0 !== null,
-                fallbackReason:
-                  configuredFailure ?? "No enabled and available provider models found.",
-              };
-      }
-    }
-  }
 
-  const resolveChildTier = (tier: "L1" | "L2"): ResolvedCoordinatorTierModel => {
-    const configured = template.tierModels[tier];
-    const configuredCheck = configured !== null ? validateSelection(configured) : null;
-    if (configuredCheck?.ok) {
-      return {
-        tier,
-        modelSelection: configuredCheck.selection,
-        configuredModelSelection: configured,
-        source: "template_configured",
-        fallbackUsed: false,
-        fallbackReason: null,
-      };
+  const resolveTier = (tier: CoordinatorTier): ResolvedCoordinatorTierModel => {
+    // When running as an L1 sub-coordinator, L1 represents the current running B thread itself.
+    if (callerTier === "L1" && tier === "L1") {
+      return resolveBaselineTier(tier);
     }
-    const configuredFailure = configuredCheck?.ok === false ? configuredCheck.reason : null;
 
-    if (template.delegationStrategy === "inherit_root") {
-      if (resolvedL0.modelSelection !== null) {
+    if (
+      (tier === "L1" || tier === "L2") &&
+      tierModelOverrides !== undefined &&
+      tierModelOverrides !== null &&
+      Object.hasOwn(tierModelOverrides, tier)
+    ) {
+      const override = tierModelOverrides[tier];
+      if (override !== undefined) {
+        if (override === null) {
+          return resolveBaselineTier(tier);
+        }
+        const overrideCheck = validateSelection(override);
+        if (overrideCheck.ok) {
+          return {
+            tier,
+            modelSelection: overrideCheck.selection,
+            configuredModelSelection: override,
+            source: "thread_override",
+            fallbackUsed: false,
+            fallbackReason: null,
+          };
+        }
         return {
           tier,
-          modelSelection: resolvedL0.modelSelection,
+          modelSelection: null,
+          configuredModelSelection: override,
+          source: "unavailable",
+          fallbackUsed: false,
+          fallbackReason: overrideCheck.reason,
+        };
+      }
+    }
+
+    const configured = template.tierModels[tier];
+    if (configured !== null) {
+      const configuredCheck = validateSelection(configured);
+      if (configuredCheck.ok) {
+        return {
+          tier,
+          modelSelection: configuredCheck.selection,
           configuredModelSelection: configured,
-          source: configured !== null ? "fallback_available" : "root_thread",
-          fallbackUsed: configured !== null,
-          fallbackReason: configuredFailure,
+          source: "template_configured",
+          fallbackUsed: false,
+          fallbackReason: null,
         };
       }
       return {
@@ -604,45 +505,12 @@ export function resolveCoordinatorModels(
         modelSelection: null,
         configuredModelSelection: configured,
         source: "unavailable",
-        fallbackUsed: configured !== null,
-        fallbackReason: configuredFailure ?? "No enabled and available provider models found.",
+        fallbackUsed: false,
+        fallbackReason: configuredCheck.reason,
       };
     }
 
-    const preferredProvider = pickPreferredProvider([
-      resolvedL0.modelSelection?.instanceId,
-      rootModelSelection?.instanceId,
-      settings.defaultModelSelection?.instanceId,
-      settings.fallbackModelSelection?.instanceId,
-    ]);
-    const dynamicSelection =
-      preferredProvider !== undefined
-        ? pickDynamicTierFromCandidates(
-            preferredProvider,
-            candidatesByProvider.get(preferredProvider.instanceId) ?? [],
-            tier,
-          )
-        : null;
-
-    if (dynamicSelection !== null) {
-      return {
-        tier,
-        modelSelection: dynamicSelection,
-        configuredModelSelection: configured,
-        source: configured !== null ? "fallback_available" : "dynamic_available",
-        fallbackUsed: configured !== null,
-        fallbackReason: configuredFailure,
-      };
-    }
-
-    return {
-      tier,
-      modelSelection: null,
-      configuredModelSelection: configured,
-      source: "unavailable",
-      fallbackUsed: configured !== null,
-      fallbackReason: configuredFailure ?? "No enabled and available provider models found.",
-    };
+    return resolveBaselineTier(tier);
   };
 
   return {
@@ -651,9 +519,9 @@ export function resolveCoordinatorModels(
     templateFallbackUsed: templateLookup.templateFallbackUsed,
     templateFallbackReason: templateLookup.templateFallbackReason,
     tiers: {
-      L0: resolvedL0,
-      L1: resolveChildTier("L1"),
-      L2: resolveChildTier("L2"),
+      L0: resolveTier("L0"),
+      L1: resolveTier("L1"),
+      L2: resolveTier("L2"),
     },
   };
 }

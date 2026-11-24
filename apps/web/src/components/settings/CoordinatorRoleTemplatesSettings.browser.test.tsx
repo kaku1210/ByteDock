@@ -2,6 +2,7 @@ import {
   CoordinatorRoleTemplateId,
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   EnvironmentId,
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -163,24 +164,32 @@ async function setup(initialSettings?: Partial<UnifiedSettings>) {
 }
 
 describe("CoordinatorRoleTemplatesSettings", () => {
-  it("renders built-in default template with live dynamic L0/L1/L2 preview", async () => {
+  it("renders both built-in templates (default & general-batch) with deterministic follow-current L0/L1/L2 preview", async () => {
     await using _screen = await setup();
 
     await expect
       .element(page.getByTestId(`coordinator-template-row-${DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID}`))
       .toBeVisible();
     await expect
+      .element(
+        page.getByTestId(`coordinator-template-row-${GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID}`),
+      )
+      .toBeVisible();
+    await expect
       .element(page.getByTestId("settings-coordinator-preview-model-L0"))
       .toHaveTextContent("Alpha Provider · Vendor Flagship Pro");
     await expect
       .element(page.getByTestId("settings-coordinator-preview-model-L1"))
-      .toHaveTextContent("Alpha Provider · Vendor Balanced Standard");
+      .toHaveTextContent("Alpha Provider · Vendor Flagship Pro");
+    await expect
+      .element(page.getByTestId("settings-coordinator-preview-source-L1"))
+      .toHaveTextContent("Follows current");
     await expect
       .element(page.getByTestId("settings-coordinator-preview-model-L2"))
-      .toHaveTextContent("Alpha Provider · Vendor Fast Mini");
+      .toHaveTextContent("Alpha Provider · Vendor Flagship Pro");
   });
 
-  it("creates, pins/unpins a tier override, previews, and deletes a custom role template", async () => {
+  it("creates, pins/unpins a tier override, switches scene mode to General, previews, and deletes a custom role template", async () => {
     await using _screen = await setup();
 
     await userEvent.click(page.getByTestId("coordinator-new-template-button"));
@@ -194,27 +203,21 @@ describe("CoordinatorRoleTemplatesSettings", () => {
       .element(page.getByTestId("coordinator-template-id-input"))
       .toHaveValue("release-coordinator");
 
-    // Pin L2 tier model and check editor live preview reflects template_configured ("Template override")
+    // Pin L2 tier model and check editor live preview reflects template_configured ("Pinned")
     await userEvent.click(page.getByTestId("coordinator-template-tier-override-L2"));
     await expect
       .element(page.getByTestId("editor-coordinator-preview-source-L2"))
-      .toHaveTextContent("Template override");
+      .toHaveTextContent("Pinned");
 
-    // Switch back to Auto
+    // Switch back to Follow current
     await userEvent.click(page.getByTestId("coordinator-template-tier-auto-L2"));
     await expect
       .element(page.getByTestId("editor-coordinator-preview-source-L2"))
-      .toHaveTextContent("Dynamic");
+      .toHaveTextContent("Follows current");
 
-    // Switch delegation strategy to inherit_root and verify live editor preview updates L1/L2 to Inherited from L0
-    await userEvent.click(page.getByTestId("coordinator-template-strategy-select"));
-    await userEvent.click(page.getByRole("option", { name: "Inherit L0 model" }));
-    await expect
-      .element(page.getByTestId("editor-coordinator-preview-source-L1"))
-      .toHaveTextContent("Inherited from L0");
-    await expect
-      .element(page.getByTestId("editor-coordinator-preview-model-L1"))
-      .toHaveTextContent("Alpha Provider · Vendor Flagship Pro");
+    // Switch scene mode to General
+    await userEvent.click(page.getByTestId("coordinator-template-scene-mode-select"));
+    await userEvent.click(page.getByRole("option", { name: "General" }));
 
     await userEvent.click(page.getByTestId("coordinator-template-save-button"));
 
@@ -222,7 +225,7 @@ describe("CoordinatorRoleTemplatesSettings", () => {
       coordinatorRoleTemplates: {
         "release-coordinator": expect.objectContaining({
           name: "Release Coordinator",
-          delegationStrategy: "inherit_root",
+          mode: "general",
         }),
       },
     });
@@ -247,9 +250,17 @@ describe("CoordinatorRoleTemplatesSettings", () => {
         [CoordinatorRoleTemplateId.make("default")]: {
           name: "Custom Lead",
           description: "Customized built-in coordinator",
+          mode: "code",
           preferDelegation: true,
-          delegationStrategy: "inherit_root",
-          tierModels: { L0: null, L1: null, L2: null },
+          delegationStrategy: "tiered",
+          tierModels: {
+            L0: null,
+            L1: createModelSelection(
+              ProviderInstanceId.make("inst-alpha"),
+              "vendor-balanced-standard",
+            ),
+            L2: null,
+          },
           instructions: "",
         },
       },
@@ -257,7 +268,7 @@ describe("CoordinatorRoleTemplatesSettings", () => {
 
     await expect
       .element(page.getByTestId("settings-coordinator-preview-source-L1"))
-      .toHaveTextContent("Inherited from L0");
+      .toHaveTextContent("Pinned");
 
     await userEvent.click(page.getByTestId("coordinator-template-reset-default"));
     expect(state.updateSettings).toHaveBeenCalledWith({
@@ -267,6 +278,6 @@ describe("CoordinatorRoleTemplatesSettings", () => {
     });
     await expect
       .element(page.getByTestId("settings-coordinator-preview-source-L1"))
-      .toHaveTextContent("Dynamic");
+      .toHaveTextContent("Follows current");
   });
 });

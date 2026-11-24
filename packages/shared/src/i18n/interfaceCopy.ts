@@ -3291,25 +3291,52 @@ export const interfaceCopy: Readonly<Record<string, string>> = {
   "{value0} active · {value1} waiting": "{value0} 运行中 · {value1} 等待",
   "Failed to update shared worktree coordination policy.": "更新共享目录写入策略失败。",
   Coordinator: "总控协作",
+  "Sub-Coordinator": "子总控",
   "Task Coordinator Mode": "任务总控模式",
+  "Sub-Coordinator Mode (L1)": "子总控模式（L1）",
   "Task Coordinator Mode enabled ({value0})": "任务总控模式已开启（{value0}）",
+  "Sub-Coordinator Mode enabled ({value0})": "子总控模式已开启（{value0}）",
   "Enable Task Coordinator Mode": "开启任务总控模式",
+  "Enable Sub-Coordinator Mode": "开启子总控模式",
   "This thread focuses on planning, delegation, review, and synthesis.":
     "当前主会话专注拆解、派发、验收与汇总。",
-  "Split complex tasks into parallel subtasks with automatic model tiering.":
-    "将复杂任务拆分为多个子任务并行推进，自动按难度分配模型。",
-  "When enabled, this thread plans and reviews while automatically matching faster or stronger models to each subtask.":
-    "开启后主会话负责拆解与验收，自动按子任务难度匹配快慢模型。",
+  "This subtask can break down work into L2 specialists and report back to L0.":
+    "当前子会话可将复杂任务继续拆解给 L2 专家执行，并汇总结果回报 L0。",
+  "Split complex tasks into parallel subtasks with optional per-tier models.":
+    "将复杂任务拆分为多个子任务并行推进，可按层指定不同模型。",
+  "Opt in to split this complex subtask into L2 child sessions.":
+    "任务较复杂时可按需开启，继续派生 L2 子会话协助处理。",
+  "When enabled, this thread plans, delegates subtasks, and synthesizes results.":
+    "开启后主会话负责拆解、派发子任务并汇总结果。",
+  "By default, this subtask runs directly. Enable to delegate focused work to L2.":
+    "默认单会话直接执行；开启后可继续派生 L2 子会话协作并整合结果。",
+  "L2 follows this thread's model. Pin a model in template settings if needed.":
+    "L2 当前跟随本会话模型，如需指定可在模板设置中配置。",
+  "L2 follows this thread's model. Pick another model above if needed.":
+    "L2 当前跟随本会话模型，可直接在上方向其单独指定模型。",
   "Current: Direct execution": "当前：单会话直接执行",
   Template: "协作模板",
   "Coordinator role template": "总控协作模板",
   "Default Coordinator": "默认总控",
+  "General Batch Collaboration": "通用批量协作",
+  "Scene mode": "场景模式",
+  "Scene: {value0}": "场景：{value0}",
   "Built-in": "内置",
   "Plan & coordinate": "总控拆解",
   "Module lead": "模块负责",
   "Light execution": "轻量执行",
+  "L2 Specialist": "L2 专家执行",
   "Follows current": "跟随当前",
+  "Follow current": "跟随当前",
+  "Follow current thread": "跟随当前会话",
+  "Use template ({value0})": "沿用模板（{value0}）",
+  "Tier models": "分层模型",
+  "Reset to template": "恢复模板默认",
+  "Choose model for {value0}": "为 {value0} 选择模型",
+  "All tiers follow current": "各层均跟随当前",
+  "This thread": "本会话",
   Pinned: "已指定",
+  "Pin model": "指定模型",
   Fallback: "已降级",
   Unavailable: "不可用",
   "Prefer delegation": "优先委派",
@@ -3326,4 +3353,9 @@ export const interfaceCopy: Readonly<Record<string, string>> = {
   Dynamic: "自动",
   "Tiered models (L0 / L1 / L2)": "分层配模（L0 / L1 / L2）",
   "Inherit L0 model": "沿用主会话模型",
+  "Enable Sub-Coordinator (L1)": "开启子总控（L1）",
+  "Disable Sub-Coordinator (L1)": "关闭子总控（L1）",
+  "Coordinator routing": "分层模型路由",
+  "Per-thread tier model overrides": "当前会话的分层模型覆盖",
+  "Could not update Sub-Coordinator mode": "无法更新子总控模式",
 };

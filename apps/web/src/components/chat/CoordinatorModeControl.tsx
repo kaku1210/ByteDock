@@ -1,6 +1,8 @@
 import {
   type CoordinatorRoleTemplate,
   type CoordinatorRoleTemplateId,
+  type CoordinatorTier,
+  type CoordinatorTierModelOverrides,
   type CoordinatorTierResolutionSource,
   type ModelSelection,
   type ProjectId,
@@ -8,39 +10,60 @@ import {
   type ServerProvider,
   type ThreadCoordinatorMode,
 } from "@t3tools/contracts";
-import type { CoordinatorResolutionSettingsSlice } from "@t3tools/shared/coordinator";
+import type {
+  CoordinatorResolutionSettingsSlice,
+  CoordinatorSelectableProviderGroup,
+} from "@t3tools/shared/coordinator";
 import { useNavigate } from "@tanstack/react-router";
-import { AlertTriangleIcon, LayersIcon, Settings2Icon } from "lucide-react";
+import { AlertTriangleIcon, LayersIcon, RotateCcwIcon, Settings2Icon } from "lucide-react";
 import { useState } from "react";
 
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Select,
+  SelectGroup,
+  SelectGroupLabel,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ComposerControl, ComposerControlIcon, type ComposerControlSize } from "./ComposerControl";
 import { useComposerMenuProps } from "./composerEventScope";
 import {
+  buildCoordinatorTemplateSwitchMode,
+  buildCoordinatorTierOverrideMode,
+  buildCoordinatorToggleMode,
+  COORDINATOR_TIER_OPTION_FOLLOW,
+  COORDINATOR_TIER_OPTION_TEMPLATE,
   COORDINATOR_TIERS,
-  coordinatorDelegationStrategyLabel,
-  coordinatorDelegationStrategyShortLabel,
+  coordinatorSceneModeLabel,
   coordinatorTierRoleLabel,
   coordinatorTierShortRoleLabel,
   coordinatorTierShortSourceLabel,
   coordinatorTierSourceLabel,
+  decodeCoordinatorTierOption,
+  encodeCoordinatorTierModelOption,
   formatCoordinatorModelSelectionLabel,
   formatCoordinatorModelShortName,
+  isCoordinatorOverridableTier,
   resolveCoordinatorControlState,
+  resolveCoordinatorTierSelectValue,
+  type CoordinatorOverridableTier,
 } from "./coordinatorModeControl.logic";
 
 function sourceBadgeClassName(source: CoordinatorTierResolutionSource): string {
   switch (source) {
+    case "thread_override":
+      return "border-primary/40 bg-primary/15 text-primary";
     case "template_configured":
       return "border-primary/30 bg-primary/10 text-primary";
     case "root_thread":
-      return "border-info/30 bg-info/10 text-info";
     case "dynamic_available":
       return "border-border bg-muted/70 text-muted-foreground";
     case "fallback_available":
@@ -52,10 +75,11 @@ function sourceBadgeClassName(source: CoordinatorTierResolutionSource): string {
 
 function compactSourcePillClassName(source: CoordinatorTierResolutionSource): string {
   switch (source) {
+    case "thread_override":
+      return "bg-primary/15 text-primary";
     case "template_configured":
       return "bg-primary/10 text-primary";
     case "root_thread":
-      return "bg-primary/10 text-primary";
     case "dynamic_available":
       return "bg-muted text-muted-foreground";
     case "fallback_available":
@@ -75,15 +99,27 @@ function formatTemplateDisplayName(
 export function CoordinatorTierPreviewList({
   resolved,
   providers,
+  tiers = COORDINATOR_TIERS,
   compact = false,
   variant = "cards",
   testIdPrefix = "coordinator-preview",
+  tierModelOverrides,
+  selectableProviderGroups,
+  disabled = false,
+  onTierModelOverrideChange,
 }: {
   readonly resolved: ResolvedCoordinatorConfiguration;
   readonly providers: ReadonlyArray<ServerProvider>;
+  readonly tiers?: ReadonlyArray<CoordinatorTier>;
   readonly compact?: boolean;
   readonly variant?: "cards" | "compact-table";
   readonly testIdPrefix?: string;
+  readonly tierModelOverrides?: CoordinatorTierModelOverrides | undefined;
+  readonly selectableProviderGroups?: ReadonlyArray<CoordinatorSelectableProviderGroup> | undefined;
+  readonly disabled?: boolean;
+  readonly onTierModelOverrideChange?:
+    | ((tier: CoordinatorOverridableTier, nextValue: ModelSelection | null | undefined) => void)
+    | undefined;
 }) {
   const { text: uiText } = useUiLanguage();
 
@@ -101,7 +137,7 @@ export function CoordinatorTierPreviewList({
         ) : null}
 
         <div className="space-y-1.5">
-          {COORDINATOR_TIERS.map((tier) => {
+          {tiers.map((tier) => {
             const item = resolved.tiers[tier];
             const shortModelLabel = formatCoordinatorModelShortName(item.modelSelection, providers);
             const fullModelLabel = formatCoordinatorModelSelectionLabel(
@@ -109,17 +145,146 @@ export function CoordinatorTierPreviewList({
               providers,
             );
             const sourceLabel = coordinatorTierShortSourceLabel(item.source);
+            const showWarningReason =
+              (item.fallbackUsed || item.source === "unavailable") && item.fallbackReason !== null;
+            const roleLabel = uiText(coordinatorTierShortRoleLabel(tier));
+            const editableTier =
+              onTierModelOverrideChange && isCoordinatorOverridableTier(tier) ? tier : null;
 
             return (
               <div key={tier} data-testid={`${testIdPrefix}-tier-${tier}`} className="space-y-1">
                 <div className="grid grid-cols-[minmax(4.25rem,auto)_minmax(0,1fr)_auto] items-center gap-2">
-                  <span className="text-2xs font-medium text-muted-foreground">
-                    {uiText(coordinatorTierShortRoleLabel(tier))}
-                  </span>
-                  {item.modelSelection === null ? (
+                  <span className="text-2xs font-medium text-muted-foreground">{roleLabel}</span>
+                  {editableTier !== null ? (
+                    (() => {
+                      const templateTierModel = resolved.template.tierModels[editableTier];
+                      const overrideValue =
+                        tierModelOverrides && Object.hasOwn(tierModelOverrides, editableTier)
+                          ? tierModelOverrides[editableTier]
+                          : undefined;
+                      const selectValue = resolveCoordinatorTierSelectValue({
+                        templateTierModel,
+                        overrideValue,
+                        resolved: item,
+                      });
+                      const providerGroups = selectableProviderGroups ?? [];
+
+                      return (
+                        <Select
+                          value={selectValue}
+                          disabled={disabled}
+                          onValueChange={(nextValue) => {
+                            if (nextValue === null) return;
+                            const decoded = decodeCoordinatorTierOption(nextValue);
+                            if (decoded === null) return;
+                            if (decoded.kind === "template") {
+                              onTierModelOverrideChange?.(editableTier, undefined);
+                            } else if (decoded.kind === "follow") {
+                              onTierModelOverrideChange?.(editableTier, null);
+                            } else {
+                              onTierModelOverrideChange?.(editableTier, decoded.selection);
+                            }
+                          }}
+                        >
+                          <Tooltip>
+                            <SelectTrigger
+                              size="xs"
+                              disabled={disabled}
+                              aria-label={uiText("Choose model for {value0}", {
+                                value0: roleLabel,
+                              })}
+                              data-testid={`${testIdPrefix}-picker-${editableTier}`}
+                              className="min-w-0 w-full"
+                            >
+                              <TooltipTrigger
+                                render={
+                                  <span
+                                    data-testid={`${testIdPrefix}-model-${editableTier}`}
+                                    className={cn(
+                                      "min-w-0 flex-1 truncate text-left font-mono font-medium",
+                                      item.modelSelection === null && "text-destructive",
+                                    )}
+                                  >
+                                    {item.modelSelection === null
+                                      ? uiText("Unavailable")
+                                      : shortModelLabel}
+                                  </span>
+                                }
+                              />
+                            </SelectTrigger>
+                            <TooltipPopup side="top">
+                              {item.modelSelection === null
+                                ? (item.fallbackReason ?? uiText("Unavailable"))
+                                : fullModelLabel}
+                            </TooltipPopup>
+                          </Tooltip>
+                          <SelectPopup
+                            align="end"
+                            alignItemWithTrigger={false}
+                            matchTriggerWidth={false}
+                            className="min-w-48 max-w-64"
+                          >
+                            <SelectGroup>
+                              {templateTierModel !== null ? (
+                                <>
+                                  <SelectItem
+                                    value={COORDINATOR_TIER_OPTION_TEMPLATE}
+                                    data-testid={`${testIdPrefix}-option-${editableTier}-template`}
+                                  >
+                                    <span className="truncate">
+                                      {uiText("Use template ({value0})", {
+                                        value0: formatCoordinatorModelShortName(
+                                          templateTierModel,
+                                          providers,
+                                        ),
+                                      })}
+                                    </span>
+                                  </SelectItem>
+                                  <SelectItem
+                                    value={COORDINATOR_TIER_OPTION_FOLLOW}
+                                    data-testid={`${testIdPrefix}-option-${editableTier}-follow`}
+                                  >
+                                    <span className="truncate">
+                                      {uiText("Follow current thread")}
+                                    </span>
+                                  </SelectItem>
+                                </>
+                              ) : (
+                                <SelectItem
+                                  value={COORDINATOR_TIER_OPTION_TEMPLATE}
+                                  data-testid={`${testIdPrefix}-option-${editableTier}-follow`}
+                                >
+                                  <span className="truncate">
+                                    {uiText("Follow current thread")}
+                                  </span>
+                                </SelectItem>
+                              )}
+                            </SelectGroup>
+                            {providerGroups.map((group) => (
+                              <SelectGroup key={group.provider.instanceId}>
+                                <SelectGroupLabel>{group.provider.displayName}</SelectGroupLabel>
+                                {group.models.map((model) => (
+                                  <SelectItem
+                                    key={`${group.provider.instanceId}:${model.slug}`}
+                                    value={encodeCoordinatorTierModelOption(
+                                      group.provider.instanceId,
+                                      model.slug,
+                                    )}
+                                    data-testid={`${testIdPrefix}-option-${editableTier}-${group.provider.instanceId}-${model.slug}`}
+                                  >
+                                    <span className="truncate">{model.name}</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                      );
+                    })()
+                  ) : item.modelSelection === null ? (
                     <span
                       data-testid={`${testIdPrefix}-model-${tier}`}
-                      className="truncate font-mono text-xs font-medium text-foreground"
+                      className="truncate font-mono text-xs font-medium text-destructive"
                     >
                       {uiText("Unavailable")}
                     </span>
@@ -129,7 +294,7 @@ export function CoordinatorTierPreviewList({
                         render={
                           <span
                             data-testid={`${testIdPrefix}-model-${tier}`}
-                            className="truncate font-mono text-xs font-medium text-foreground"
+                            className="truncate px-1.5 font-mono text-xs font-medium text-foreground"
                           >
                             {shortModelLabel}
                           </span>
@@ -148,7 +313,7 @@ export function CoordinatorTierPreviewList({
                     {uiText(sourceLabel)}
                   </span>
                 </div>
-                {item.fallbackUsed && item.fallbackReason ? (
+                {showWarningReason ? (
                   <div
                     data-testid={`${testIdPrefix}-fallback-${tier}`}
                     className="flex items-start gap-1 rounded-md border border-warning/35 bg-warning/10 px-2 py-1 text-3xs text-warning-foreground"
@@ -179,7 +344,9 @@ export function CoordinatorTierPreviewList({
 
       <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
         <span className="rounded border border-border/80 bg-muted/50 px-1.5 py-0.5">
-          {uiText(coordinatorDelegationStrategyLabel(resolved.template.delegationStrategy))}
+          {uiText("Scene: {value0}", {
+            value0: uiText(coordinatorSceneModeLabel(resolved.template.mode)),
+          })}
         </span>
         <span className="rounded border border-border/80 bg-muted/50 px-1.5 py-0.5">
           {resolved.template.preferDelegation
@@ -189,10 +356,12 @@ export function CoordinatorTierPreviewList({
       </div>
 
       <div className="space-y-1">
-        {COORDINATOR_TIERS.map((tier) => {
+        {tiers.map((tier) => {
           const item = resolved.tiers[tier];
           const modelLabel = formatCoordinatorModelSelectionLabel(item.modelSelection, providers);
           const sourceLabel = coordinatorTierSourceLabel(item.source);
+          const showWarningReason =
+            (item.fallbackUsed || item.source === "unavailable") && item.fallbackReason !== null;
           return (
             <div
               key={tier}
@@ -230,7 +399,7 @@ export function CoordinatorTierPreviewList({
               >
                 {item.modelSelection === null ? uiText("Unavailable") : modelLabel}
               </div>
-              {item.fallbackUsed && item.fallbackReason ? (
+              {showWarningReason ? (
                 <div
                   data-testid={`${testIdPrefix}-fallback-${tier}`}
                   className="mt-1 flex items-start gap-1 text-3xs text-warning-foreground"
@@ -253,6 +422,8 @@ export function CoordinatorModeControl({
   providers,
   projectId,
   rootModelSelection,
+  callerTier = "L0",
+  inheritedRootTemplateId = null,
   size = "sm",
   compact = false,
   disabled = false,
@@ -263,6 +434,8 @@ export function CoordinatorModeControl({
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly projectId: ProjectId | null;
   readonly rootModelSelection: ModelSelection | null | undefined;
+  readonly callerTier?: "L0" | "L1";
+  readonly inheritedRootTemplateId?: CoordinatorRoleTemplateId | null | undefined;
   readonly size?: ComposerControlSize;
   readonly compact?: boolean;
   readonly disabled?: boolean;
@@ -279,35 +452,70 @@ export function CoordinatorModeControl({
     providers,
     projectId,
     rootModelSelection,
+    callerTier,
+    inheritedRootTemplateId,
   });
 
   const handleToggleEnabled = (enabled: boolean) => {
     if (disabled) return;
-    onChange({
-      enabled,
-      templateId: state.resolved.template.id,
-    });
+    onChange(
+      buildCoordinatorToggleMode({
+        enabled,
+        templateId: state.resolved.template.id,
+        tierModelOverrides: state.tierModelOverrides,
+      }),
+    );
   };
 
   const handleTemplateChange = (nextTemplateId: string | null) => {
     if (disabled || nextTemplateId === null) return;
-    onChange({
-      enabled: state.enabled,
-      templateId: nextTemplateId as CoordinatorRoleTemplateId,
-    });
+    onChange(
+      buildCoordinatorTemplateSwitchMode({
+        enabled: state.enabled,
+        templateId: nextTemplateId as CoordinatorRoleTemplateId,
+      }),
+    );
   };
 
+  const handleTierModelOverrideChange = (
+    tier: CoordinatorOverridableTier,
+    nextValue: ModelSelection | null | undefined,
+  ) => {
+    if (disabled) return;
+    onChange(
+      buildCoordinatorTierOverrideMode({
+        enabled: state.enabled,
+        templateId: state.resolved.template.id,
+        currentOverrides: state.tierModelOverrides,
+        tier,
+        templateTierModel: state.resolved.template.tierModels[tier],
+        nextValue,
+      }),
+    );
+  };
+
+  const handleResetOverrides = () => {
+    if (disabled) return;
+    onChange(
+      buildCoordinatorTemplateSwitchMode({
+        enabled: state.enabled,
+        templateId: state.resolved.template.id,
+      }),
+    );
+  };
+
+  const isL1 = state.callerTier === "L1";
   const activeTemplateName = formatTemplateDisplayName(state.resolved.template, uiText);
   const triggerAriaLabel = state.enabled
-    ? uiText("Task Coordinator Mode enabled ({value0})", { value0: activeTemplateName })
-    : uiText("Task Coordinator Mode");
-
-  const delegationPolicyLabel = state.resolved.template.preferDelegation
-    ? uiText("Prefer delegation")
-    : uiText("Flexible execution");
-  const modelStrategyLabel = uiText(
-    coordinatorDelegationStrategyShortLabel(state.resolved.template.delegationStrategy),
-  );
+    ? uiText(
+        isL1
+          ? "Sub-Coordinator Mode enabled ({value0})"
+          : "Task Coordinator Mode enabled ({value0})",
+        { value0: activeTemplateName },
+      )
+    : uiText(isL1 ? "Sub-Coordinator Mode (L1)" : "Task Coordinator Mode");
+  const sceneModeLabel = uiText(coordinatorSceneModeLabel(state.resolved.template.mode));
+  const showL2FollowHint = state.resolved.tiers.L2.source === "root_thread";
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -322,6 +530,7 @@ export function CoordinatorModeControl({
                   aria-pressed={state.enabled}
                   data-testid="coordinator-mode-trigger"
                   data-coordinator-enabled={state.enabled ? "true" : "false"}
+                  data-coordinator-tier={state.callerTier}
                   className={cn(
                     state.enabled
                       ? "border-primary/35 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
@@ -338,7 +547,7 @@ export function CoordinatorModeControl({
                       data-composer-control-label
                       className="max-w-28 truncate text-xs font-medium"
                     >
-                      {uiText("Coordinator")}
+                      {uiText(isL1 ? "Sub-Coordinator" : "Coordinator")}
                     </span>
                   ) : null}
                   {state.enabled && (state.hasAnyFallback || state.hasUnavailableTier) ? (
@@ -359,7 +568,7 @@ export function CoordinatorModeControl({
         align="start"
         side="top"
         sideOffset={8}
-        className="w-76 max-w-[calc(100vw-2rem)]"
+        className="w-84 max-w-[calc(100vw-2rem)]"
         data-testid="coordinator-mode-popover"
         {...composerFloatingLayerProps}
       >
@@ -374,13 +583,19 @@ export function CoordinatorModeControl({
                   )}
                   aria-hidden
                 />
-                <span>{uiText("Task Coordinator Mode")}</span>
+                <span>{uiText(isL1 ? "Sub-Coordinator Mode (L1)" : "Task Coordinator Mode")}</span>
               </div>
               <p className="mt-0.5 text-2xs leading-relaxed text-muted-foreground">
                 {state.enabled
-                  ? uiText("This thread focuses on planning, delegation, review, and synthesis.")
+                  ? uiText(
+                      isL1
+                        ? "This subtask can break down work into L2 specialists and report back to L0."
+                        : "This thread focuses on planning, delegation, review, and synthesis.",
+                    )
                   : uiText(
-                      "Split complex tasks into parallel subtasks with automatic model tiering.",
+                      isL1
+                        ? "Opt in to split this complex subtask into L2 child sessions."
+                        : "Split complex tasks into parallel subtasks with optional per-tier models.",
                     )}
               </p>
             </div>
@@ -388,7 +603,9 @@ export function CoordinatorModeControl({
               checked={state.enabled}
               disabled={disabled}
               onCheckedChange={(checked) => handleToggleEnabled(Boolean(checked))}
-              aria-label={uiText("Enable Task Coordinator Mode")}
+              aria-label={uiText(
+                isL1 ? "Enable Sub-Coordinator Mode" : "Enable Task Coordinator Mode",
+              )}
               data-testid="coordinator-mode-toggle"
             />
           </div>
@@ -410,7 +627,7 @@ export function CoordinatorModeControl({
                   <SelectTrigger
                     id="coordinator-template-select"
                     size="sm"
-                    className="h-7 w-auto min-w-32 max-w-44"
+                    className="h-7 w-auto min-w-32 max-w-48"
                     aria-label={uiText("Coordinator role template")}
                     data-testid="coordinator-template-select"
                   >
@@ -445,20 +662,48 @@ export function CoordinatorModeControl({
               </div>
 
               <div className="border-t border-border/70 pt-2">
+                {state.hasThreadOverrides ? (
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-3xs font-medium text-muted-foreground">
+                      {uiText("Tier models")}
+                    </span>
+                    <Button
+                      type="button"
+                      size="micro"
+                      variant="ghost-muted"
+                      disabled={disabled}
+                      data-testid="coordinator-reset-overrides"
+                      onClick={handleResetOverrides}
+                    >
+                      <RotateCcwIcon className="size-3" aria-hidden />
+                      {uiText("Reset to template")}
+                    </Button>
+                  </div>
+                ) : null}
                 <CoordinatorTierPreviewList
                   resolved={state.resolved}
                   providers={providers}
+                  tiers={state.visibleTiers}
                   variant="compact-table"
                   testIdPrefix="coordinator-preview"
+                  tierModelOverrides={state.tierModelOverrides}
+                  selectableProviderGroups={state.selectableProviderGroups}
+                  disabled={disabled}
+                  onTierModelOverrideChange={handleTierModelOverrideChange}
                 />
+                {showL2FollowHint ? (
+                  <p
+                    data-testid="coordinator-l2-follow-hint"
+                    className="mt-1.5 text-3xs leading-relaxed text-muted-foreground"
+                  >
+                    {uiText("L2 follows this thread's model. Pick another model above if needed.")}
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex items-center justify-between gap-2 border-t border-border/70 pt-2 text-2xs text-muted-foreground">
-                <span className="truncate">
-                  {uiText("Policy: {value0} · {value1}", {
-                    value0: delegationPolicyLabel,
-                    value1: modelStrategyLabel,
-                  })}
+                <span data-testid="coordinator-scene-badge" className="truncate">
+                  {uiText("Scene: {value0}", { value0: sceneModeLabel })}
                 </span>
                 <Button
                   type="button"
@@ -483,7 +728,9 @@ export function CoordinatorModeControl({
                 className="rounded-lg border border-border/70 bg-muted/40 px-2.5 py-2 text-2xs leading-relaxed text-muted-foreground"
               >
                 {uiText(
-                  "When enabled, this thread plans and reviews while automatically matching faster or stronger models to each subtask.",
+                  isL1
+                    ? "By default, this subtask runs directly. Enable to delegate focused work to L2."
+                    : "When enabled, this thread plans, delegates subtasks, and synthesizes results.",
                 )}
               </div>
 

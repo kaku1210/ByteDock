@@ -6,6 +6,7 @@ import {
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   EnvironmentId,
   EventId,
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -255,6 +256,7 @@ describe("Orchestrator L0 coordinator mode (P3-B1)", () => {
             [customTemplateId]: {
               name: "Architecture Lead",
               description: "Delegation-first coordinator",
+              mode: "code",
               tierModels: { L0: null, L1: null, L2: null },
               preferDelegation: true,
               delegationStrategy: "tiered",
@@ -673,13 +675,57 @@ describe("Orchestrator L0 coordinator mode (P3-B1)", () => {
           "ev:seed-native-subagent",
         );
 
-        // Non-L0 threads are strictly rejected.
+        // Persistent L1 subtask and app subagent CAN opt in as L1 sub-coordinators.
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:enable-l1-subtask"),
+          threadId: l1SubtaskId,
+          coordinatorMode: {
+            enabled: true,
+            templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          },
+        });
+        assert.deepStrictEqual((yield* projectionStore.getThread(l1SubtaskId)).coordinatorMode, {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+        });
+
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:enable-app-subagent"),
+          threadId: appSubagentId,
+          coordinatorMode: {
+            enabled: true,
+            templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+          },
+        });
+        assert.deepStrictEqual((yield* projectionStore.getThread(appSubagentId)).coordinatorMode, {
+          enabled: true,
+          templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+        });
+
+        // L2 subtask, side chat, temporary thread, and workflow step are strictly rejected.
+        const workflowStepId = ThreadId.make("thread:workflow-step");
+        yield* seedThread(
+          {
+            ...baseThread,
+            id: workflowStepId,
+            title: "Workflow Step",
+            lineage: {
+              parentThreadId: l0Id,
+              relationshipToParent: "subtask",
+              rootThreadId: l0Id,
+              workflowStep: true,
+            },
+          },
+          "ev:seed-workflow-step",
+        );
+
         for (const [label, targetId, expectedSubstring] of [
-          ["L1 subtask", l1SubtaskId, "subtask"],
-          ["L2 subtask", l2SubtaskId, "subtask"],
+          ["L2 subtask", l2SubtaskId, "L2 subtask"],
           ["side chat", sideChatId, "side chat"],
           ["temporary thread", tempThreadId, "temporary"],
-          ["app subagent", appSubagentId, "subagent"],
+          ["workflow step", workflowStepId, "workflow step"],
         ] as const) {
           const err = yield* orchestrator
             .dispatch({
@@ -760,7 +806,7 @@ describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
   });
 
   it.effect(
-    "injects dynamic inline coordinator instructions on L0 turns, stops when disabled, skips slash commands, and never injects on L1 subtasks",
+    "injects dynamic inline coordinator instructions on L0 and opt-in L1 turns, stops when disabled, skips slash commands, and keeps default L1 subtasks direct",
     () => {
       const capturedTurns: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
       const instanceId = ProviderInstanceId.make("codex");
@@ -781,6 +827,7 @@ describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
             [templateId]: {
               name: "Tiered Team",
               description: "Coordinate L1/L2 dynamically.",
+              mode: "code",
               tierModels: {
                 L0: null,
                 L1: { instanceId, model: "model-beta" },
@@ -918,7 +965,7 @@ describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
         assert.isDefined(slashTurn.coordinatorInstructions);
         assert.strictEqual(slashTurn.message.text, "/review src/index.ts");
 
-        // 4. L1 subtask under an active L0 coordinator never gets L0 coordinator instructions.
+        // 4. Default L1 subtask under an active L0 coordinator gets no coordinator instructions.
         const sink = yield* EventSink.EventSinkV2;
         const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
         const l0BaseThread = yield* projectionStore.getThread(enabledThreadId);
@@ -963,6 +1010,81 @@ describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
         const l1Turn = capturedTurns[3]!;
         assert.isUndefined(l1Turn.coordinatorInstructions);
         assert.strictEqual(l1Turn.message.text, "Execute subtask work");
+
+        // 5. Opt-in L1 sub-coordinator receives L1 instructions tailored to its template mode.
+        const l1SubCoordId = ThreadId.make("thread:coord-inline-l1-subcoord");
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:seed-inline-l1-subcoord"),
+              type: "thread.created",
+              threadId: l1SubCoordId,
+              providerInstanceId: instanceId,
+              occurredAt: now,
+              payload: {
+                ...l0BaseThread,
+                id: l1SubCoordId,
+                title: "L1 Story Lead",
+                coordinatorMode: undefined,
+                lineage: {
+                  parentThreadId: enabledThreadId,
+                  relationshipToParent: "subtask",
+                  rootThreadId: enabledThreadId,
+                },
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:enable-inline-l1-subcoord"),
+          threadId: l1SubCoordId,
+          coordinatorMode: {
+            enabled: true,
+            templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+            tierModelOverrides: {
+              L2: { instanceId, model: "model-gamma" },
+            },
+          },
+        });
+        const persistedL1SubCoord = yield* projectionStore.getThread(l1SubCoordId);
+        assert.deepStrictEqual(persistedL1SubCoord.coordinatorMode, {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          tierModelOverrides: {
+            L2: { instanceId, model: "model-gamma" },
+          },
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:turn-inline-l1-subcoord"),
+          threadId: l1SubCoordId,
+          messageId: MessageId.make("msg:inline-l1-subcoord"),
+          text: "Produce Episode 1 scenes",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        assert.strictEqual(capturedTurns.length, 5);
+        const l1SubCoordTurn = capturedTurns[4]!;
+        assert.isDefined(l1SubCoordTurn.coordinatorInstructions);
+        assert.include(
+          l1SubCoordTurn.coordinatorInstructions!,
+          "## T3 Code L1 Sub-Coordinator Mode (General Batch Collaboration)",
+        );
+        assert.include(
+          l1SubCoordTurn.coordinatorInstructions!,
+          "- L2 (specialist): `codex/model-gamma` [thread_override]",
+        );
+        assert.notInclude(l1SubCoordTurn.coordinatorInstructions!, "plannedPaths");
+        assert.notInclude(l1SubCoordTurn.coordinatorInstructions!, "t3_worktree_coordinate");
+        assert.notInclude(l1SubCoordTurn.coordinatorInstructions!, "escalationRequestId");
+        assert.notInclude(l1SubCoordTurn.coordinatorInstructions!, "L0 (coordinator)");
+        assert.include(l1SubCoordTurn.message.text, "<t3_code_coordinator_instructions>");
+        assert.include(l1SubCoordTurn.message.text, "Produce Episode 1 scenes");
       }).pipe(Effect.provide(layer));
     },
   );

@@ -12,9 +12,11 @@ import type {
   FamilyCollaborationSideChatSummary,
   FamilyCollaborationTaskStatus,
   ScopedThreadRef,
+  ServerProvider,
   SharedWorktreeSerializationMode,
   ThreadId,
 } from "@t3tools/contracts";
+import type { CoordinatorResolutionSettingsSlice } from "@t3tools/shared/coordinator";
 import { useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangleIcon,
@@ -43,8 +45,10 @@ import {
 import { msg, useMessages } from "gt-react";
 import { useState } from "react";
 
+import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useRightPanelStore } from "../../rightPanelStore";
+import { useEnvironmentProviders } from "../../state/environments";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
 import { threadEnvironment } from "../../state/threads";
@@ -54,6 +58,12 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
+import {
+  buildNodeSubCoordinatorToggleMode,
+  canToggleNodeSubCoordinator,
+  isOverviewGeneralScene,
+  resolveOverviewNodeCoordinatorView,
+} from "./familyCollaborationOverview.logic";
 import { SharedWorktreeCoordinationBannerView } from "./SharedWorktreeCoordinationBanner";
 
 type ToneClass = {
@@ -210,15 +220,19 @@ function formatFailureMessage(cause: unknown, fallback: string): string {
 
 interface FamilyCollaborationOverviewViewProps {
   readonly overview: FamilyCollaborationOverview;
+  readonly settings?: CoordinatorResolutionSettingsSlice | null | undefined;
+  readonly providers?: ReadonlyArray<ServerProvider> | undefined;
   readonly isRefreshing?: boolean;
   readonly summaryRequested?: boolean;
   readonly stoppingThreadId?: ThreadId | null;
+  readonly togglingCoordinatorThreadId?: ThreadId | null;
   readonly onRefresh: () => void;
   readonly onRequestSummary: () => void;
   readonly onHideSummary?: () => void;
   readonly onSelectThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly onSelectSideChat: (sideChat: FamilyCollaborationSideChatSummary) => void;
   readonly onStopNode: (node: FamilyCollaborationNode) => Promise<void> | void;
+  readonly onToggleSubCoordinator?: (node: FamilyCollaborationNode) => Promise<void> | void;
   readonly onSetSerializationMode: (
     mode: SharedWorktreeSerializationMode,
   ) => Promise<string | null>;
@@ -226,15 +240,19 @@ interface FamilyCollaborationOverviewViewProps {
 
 function FamilyCollaborationOverviewView({
   overview,
+  settings,
+  providers,
   isRefreshing = false,
   summaryRequested = false,
   stoppingThreadId = null,
+  togglingCoordinatorThreadId = null,
   onRefresh,
   onRequestSummary,
   onHideSummary,
   onSelectThread,
   onSelectSideChat,
   onStopNode,
+  onToggleSubCoordinator,
   onSetSerializationMode,
 }: FamilyCollaborationOverviewViewProps) {
   const { text: uiText } = useUiLanguage();
@@ -242,6 +260,7 @@ function FamilyCollaborationOverviewView({
   const [expandedNodeIds, setExpandedNodeIds] = useState<ReadonlySet<ThreadId>>(() => new Set());
   const [showMarkdownDigest, setShowMarkdownDigest] = useState(false);
   const [copiedDigest, setCopiedDigest] = useState(false);
+  const isGeneralScene = isOverviewGeneralScene({ overview, settings });
 
   const toggleNodeExpanded = (threadId: ThreadId) => {
     setExpandedNodeIds((prev) => {
@@ -563,8 +582,19 @@ function FamilyCollaborationOverviewView({
               const deliveryTone = deliveryStatusBadge(node.deliveryStatus);
               const isExpanded = expandedNodeIds.has(node.threadId);
               const isStopping = stoppingThreadId === node.threadId;
+              const isTogglingCoordinator = togglingCoordinatorThreadId === node.threadId;
               const indentRem = Math.min(node.depth, 3) * 1.25;
               const modelLabel = `${node.modelSelection.instanceId}/${node.modelSelection.model}`;
+              const coordinatorView = resolveOverviewNodeCoordinatorView({
+                node,
+                projectId: overview.projectId,
+                settings,
+                providers: providers ?? [],
+                uiText,
+              });
+              const canToggleSubCoordinator =
+                onToggleSubCoordinator !== undefined && canToggleNodeSubCoordinator(node);
+              const isSubCoordinatorEnabled = node.coordinatorMode?.enabled === true;
 
               return (
                 <div
@@ -606,13 +636,30 @@ function FamilyCollaborationOverviewView({
                             <span className="inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-3xs font-semibold text-foreground">
                               L{node.depth}
                             </span>
-                            {node.depth === 0 && node.coordinatorMode?.enabled ? (
+                            {coordinatorView !== null ? (
                               <span
                                 data-testid={`collaboration-node-coordinator-${node.threadId}`}
                                 className="inline-flex items-center gap-1 rounded border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-3xs font-medium text-primary"
                               >
                                 <LayersIcon className="size-2.5" aria-hidden />
-                                {uiText("Coordinator")}: {node.coordinatorMode.templateId}
+                                {coordinatorView.roleLabel}: {coordinatorView.templateName}
+                              </span>
+                            ) : null}
+                            {coordinatorView !== null && coordinatorView.sceneMode === "general" ? (
+                              <span
+                                data-testid={`collaboration-node-scene-${node.threadId}`}
+                                className="inline-flex items-center rounded border border-border bg-muted/70 px-1.5 py-0.5 text-3xs font-medium text-muted-foreground"
+                              >
+                                {coordinatorView.sceneModeLabel}
+                              </span>
+                            ) : null}
+                            {coordinatorView?.overrideSummary ? (
+                              <span
+                                data-testid={`collaboration-node-overrides-${node.threadId}`}
+                                aria-label={uiText("Per-thread tier model overrides")}
+                                className="inline-flex items-center rounded border border-primary/25 bg-primary/5 px-1.5 py-0.5 font-mono text-3xs text-primary"
+                              >
+                                {coordinatorView.overrideSummary}
                               </span>
                             ) : null}
                             {node.createdBy === "agent" ? (
@@ -655,12 +702,14 @@ function FamilyCollaborationOverviewView({
                             >
                               {modelLabel}
                             </span>
-                            <span className="inline-flex items-center gap-1">
-                              <GitBranchIcon className="size-3" aria-hidden />
-                              {node.usesSharedWorktree
-                                ? uiText("Shared worktree")
-                                : (node.branch ?? uiText("Isolated checkout"))}
-                            </span>
+                            {node.usesSharedWorktree || node.branch !== null || !isGeneralScene ? (
+                              <span className="inline-flex items-center gap-1">
+                                <GitBranchIcon className="size-3" aria-hidden />
+                                {node.usesSharedWorktree
+                                  ? uiText("Shared worktree")
+                                  : (node.branch ?? uiText("Isolated checkout"))}
+                              </span>
+                            ) : null}
                             {node.queuedMessageCount > 0 ? (
                               <span>
                                 {uiText("Queued")}: {node.queuedMessageCount}
@@ -681,6 +730,31 @@ function FamilyCollaborationOverviewView({
 
                       {/* Node Actions */}
                       <div className="flex shrink-0 items-center gap-1">
+                        {canToggleSubCoordinator ? (
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant={isSubCoordinatorEnabled ? "secondary" : "outline"}
+                            data-testid={`collaboration-node-toggle-subcoordinator-${node.threadId}`}
+                            aria-pressed={isSubCoordinatorEnabled}
+                            aria-label={
+                              isSubCoordinatorEnabled
+                                ? uiText("Disable Sub-Coordinator (L1)")
+                                : uiText("Enable Sub-Coordinator (L1)")
+                            }
+                            disabled={isTogglingCoordinator}
+                            onClick={() => void onToggleSubCoordinator(node)}
+                          >
+                            {isTogglingCoordinator ? (
+                              <Spinner aria-hidden size="xs" />
+                            ) : isSubCoordinatorEnabled ? (
+                              <CheckIcon className="size-2.5" aria-hidden />
+                            ) : (
+                              <LayersIcon className="size-2.5" aria-hidden />
+                            )}
+                            {uiText("Sub-Coordinator")}
+                          </Button>
+                        ) : null}
                         {node.canStop ? (
                           <Button
                             type="button"
@@ -753,6 +827,51 @@ function FamilyCollaborationOverviewView({
                       data-testid={`collaboration-node-details-${node.threadId}`}
                       className="space-y-2.5 border-t border-border/70 bg-muted/25 px-3 py-2.5 text-xs"
                     >
+                      {/* Coordinator routing summary */}
+                      {coordinatorView !== null ? (
+                        <div
+                          data-testid={`collaboration-node-coordinator-details-${node.threadId}`}
+                          className="space-y-1.5 rounded-md border border-primary/20 bg-primary/5 px-2.5 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <span className="font-medium text-foreground">
+                              {uiText("Coordinator routing")} · {coordinatorView.templateName}
+                            </span>
+                            <span className="rounded border border-border bg-background/80 px-1.5 py-0.5 text-3xs text-muted-foreground">
+                              {uiText("Scene: {value0}", {
+                                value0: coordinatorView.sceneModeLabel,
+                              })}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-2xs">
+                            {coordinatorView.resolvedTiers.map((tierSummary) => (
+                              <span
+                                key={tierSummary.tier}
+                                data-testid={`collaboration-node-coordinator-tier-${node.threadId}-${tierSummary.tier}`}
+                                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${
+                                  tierSummary.source === "unavailable"
+                                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                                    : tierSummary.isThreadOverride
+                                      ? "border-primary/40 bg-primary/15 text-primary"
+                                      : "border-border bg-background/80 text-foreground"
+                                }`}
+                              >
+                                <strong className="font-mono font-semibold">
+                                  {tierSummary.tier}
+                                </strong>{" "}
+                                <span>{tierSummary.modelLabel}</span>
+                                {tierSummary.sourceLabel !== tierSummary.modelLabel ? (
+                                  <>
+                                    {" "}
+                                    <span className="opacity-75">({tierSummary.sourceLabel})</span>
+                                  </>
+                                ) : null}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
                       {/* Latest artifact summary */}
                       <div>
                         <div className="font-medium text-muted-foreground">
@@ -960,8 +1079,14 @@ export function FamilyCollaborationOverviewPanel({
 }) {
   const { text: uiText } = useUiLanguage();
   const navigate = useNavigate();
+  const settings = useEnvironmentSettings(threadRef.environmentId);
+  const providersByEnvironment = useEnvironmentProviders();
+  const providers = providersByEnvironment.get(threadRef.environmentId) ?? [];
   const [includeSummary, setIncludeSummary] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<ThreadId | null>(null);
+  const [togglingCoordinatorThreadId, setTogglingCoordinatorThreadId] = useState<ThreadId | null>(
+    null,
+  );
 
   const query = useEnvironmentQuery(
     orchestrationEnvironment.familyCollaborationOverview({
@@ -975,6 +1100,12 @@ export function FamilyCollaborationOverviewPanel({
 
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn, {
     label: "stop thread in collaboration overview",
+    reportFailure: false,
+    reportDefect: false,
+  });
+
+  const setCoordinatorMode = useAtomCommand(threadEnvironment.setCoordinatorMode, {
+    label: "toggle sub-coordinator mode in collaboration overview",
     reportFailure: false,
     reportDefect: false,
   });
@@ -1032,6 +1163,40 @@ export function FamilyCollaborationOverviewPanel({
     }
   };
 
+  const handleToggleSubCoordinator = async (node: FamilyCollaborationNode) => {
+    if (togglingCoordinatorThreadId !== null) return;
+    setTogglingCoordinatorThreadId(node.threadId);
+    const rootCoordinatorMode =
+      query.data?.nodes.find((candidate) => candidate.depth === 0)?.coordinatorMode ?? null;
+    const nextMode = buildNodeSubCoordinatorToggleMode({
+      node,
+      rootCoordinatorMode,
+      defaultTemplateId: settings.defaultCoordinatorRoleTemplateId,
+    });
+    const result = await setCoordinatorMode({
+      environmentId: threadRef.environmentId,
+      input: {
+        threadId: node.threadId,
+        coordinatorMode: nextMode,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    setTogglingCoordinatorThreadId(null);
+    if (result._tag === "Success") {
+      query.refresh();
+      return;
+    }
+    if (!isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: formatFailureMessage(
+          squashAtomCommandFailure(result),
+          uiText("Could not update Sub-Coordinator mode"),
+        ),
+      });
+    }
+  };
+
   const handleSetSerializationMode = async (
     serializationMode: SharedWorktreeSerializationMode,
   ): Promise<string | null> => {
@@ -1082,9 +1247,12 @@ export function FamilyCollaborationOverviewPanel({
   return (
     <FamilyCollaborationOverviewView
       overview={query.data}
+      settings={settings}
+      providers={providers}
       isRefreshing={query.isPending}
       summaryRequested={includeSummary}
       stoppingThreadId={stoppingThreadId}
+      togglingCoordinatorThreadId={togglingCoordinatorThreadId}
       onRefresh={query.refresh}
       onRequestSummary={() => {
         if (includeSummary) {
@@ -1097,6 +1265,7 @@ export function FamilyCollaborationOverviewPanel({
       onSelectThread={handleSelectThread}
       onSelectSideChat={handleSelectSideChat}
       onStopNode={handleStopNode}
+      onToggleSubCoordinator={handleToggleSubCoordinator}
       onSetSerializationMode={handleSetSerializationMode}
     />
   );

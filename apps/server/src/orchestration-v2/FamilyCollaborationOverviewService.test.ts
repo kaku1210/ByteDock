@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   EventId,
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   MessageId,
   NodeId,
   ProjectId,
@@ -773,6 +774,120 @@ describe("FamilyCollaborationOverviewService (Phase 2)", () => {
         assert.equal(pendingMergeBacksAfter.length, 1);
         assert.equal(pendingMergeBacksAfter[0]?.status, "pending");
         assert.isNull(pendingMergeBacksAfter[0]?.targetRunId);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "exposes L0 Coordinator and L1 Sub-Coordinator tier overrides on overview nodes and markdown digest",
+    () => {
+      const { instanceId, modelSelection, layer } = makeOverviewTestLayer(
+        "family-collab-coordinator-digest",
+      );
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const overviewService =
+          yield* FamilyCollaborationOverviewService.FamilyCollaborationOverviewService;
+        const now = yield* DateTime.now;
+
+        const projectId = ProjectId.make("proj:collab-coord");
+        const l0Id = ThreadId.make("thread:collab-coord-l0");
+        const l1LeadId = ThreadId.make("thread:collab-coord-l1-lead");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:coord-l0"),
+          threadId: l0Id,
+          projectId,
+          title: "Season Production Root",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:coord-l0-mode"),
+          threadId: l0Id,
+          coordinatorMode: {
+            enabled: true,
+            templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+            tierModelOverrides: {
+              L1: { instanceId, model: "gpt-5.4-mini" },
+            },
+          },
+        });
+
+        const l0Thread = (yield* orchestrator.getThreadProjection(l0Id)).thread;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("ev:coord-l1-created"),
+              type: "thread.created",
+              threadId: l1LeadId,
+              occurredAt: now,
+              payload: {
+                ...l0Thread,
+                id: l1LeadId,
+                title: "Episode 1 Lead",
+                createdBy: "agent",
+                coordinatorMode: undefined,
+                lineage: {
+                  parentThreadId: l0Id,
+                  relationshipToParent: "subtask",
+                  rootThreadId: l0Id,
+                },
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.coordinator-mode.set",
+          commandId: CommandId.make("cmd:coord-l1-mode"),
+          threadId: l1LeadId,
+          coordinatorMode: {
+            enabled: true,
+            templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+            tierModelOverrides: {
+              L2: { instanceId, model: "gpt-5.4-nano" },
+            },
+          },
+        });
+
+        const overview = yield* overviewService.getOverview({
+          threadId: l0Id,
+          includeSummary: true,
+        });
+        const l0Node = overview.nodes.find((node) => node.threadId === l0Id);
+        const l1Node = overview.nodes.find((node) => node.threadId === l1LeadId);
+
+        assert.deepEqual(l0Node?.coordinatorMode, {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          tierModelOverrides: {
+            L1: { instanceId, model: "gpt-5.4-mini" },
+          },
+        });
+        assert.deepEqual(l1Node?.coordinatorMode, {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          tierModelOverrides: {
+            L2: { instanceId, model: "gpt-5.4-nano" },
+          },
+        });
+
+        const digest = overview.summary?.markdownDigest ?? "";
+        assert.include(digest, "Coordinators: L0=1, L1 Sub-Coordinators=1");
+        assert.include(digest, "[Coordinator:general-batch | overrides: L1=codex/gpt-5.4-mini]");
+        assert.include(
+          digest,
+          "[Sub-Coordinator:general-batch | overrides: L2=codex/gpt-5.4-nano]",
+        );
       }).pipe(Effect.provide(layer));
     },
   );

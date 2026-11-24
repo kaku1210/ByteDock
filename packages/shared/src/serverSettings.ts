@@ -7,6 +7,7 @@ import {
   defaultInstanceIdForDriver,
   globalIdleCompaction,
   type IdleCompactionMode,
+  isBuiltInCoordinatorRoleTemplateId,
   isProviderAvailable,
   isUnconfiguredDefaultInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
@@ -662,8 +663,7 @@ export function applyServerSettingsPatch(
     ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),
   };
   const nextDefaultCoordinatorRoleTemplateId =
-    nextWithReplacementsBase.defaultCoordinatorRoleTemplateId ===
-      DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID ||
+    isBuiltInCoordinatorRoleTemplateId(nextWithReplacementsBase.defaultCoordinatorRoleTemplateId) ||
     Object.hasOwn(
       nextWithReplacementsBase.coordinatorRoleTemplates,
       nextWithReplacementsBase.defaultCoordinatorRoleTemplateId,

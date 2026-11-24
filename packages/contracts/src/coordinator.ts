@@ -18,8 +18,14 @@ export type CoordinatorRoleTemplateId = typeof CoordinatorRoleTemplateId.Type;
 export const DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID: CoordinatorRoleTemplateId =
   CoordinatorRoleTemplateId.make("default");
 
+export const GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID: CoordinatorRoleTemplateId =
+  CoordinatorRoleTemplateId.make("general-batch");
+
 export const CoordinatorTier = Schema.Literals(["L0", "L1", "L2"]);
 export type CoordinatorTier = typeof CoordinatorTier.Type;
+
+export const CoordinatorSceneMode = Schema.Literals(["code", "general"]);
+export type CoordinatorSceneMode = typeof CoordinatorSceneMode.Type;
 
 export const CoordinatorDelegationStrategy = Schema.Literals(["tiered", "inherit_root"]);
 export type CoordinatorDelegationStrategy = typeof CoordinatorDelegationStrategy.Type;
@@ -39,20 +45,22 @@ export const DEFAULT_COORDINATOR_TIER_MODEL_SELECTIONS: CoordinatorTierModelSele
 
 /**
  * Persisted coordinator role template configuration stored under `ServerSettings.coordinatorRoleTemplates`.
- * All tier models default to `null` so runtime resolution binds dynamically to available models
- * instead of hardcoding specific model slugs.
+ * All tier models default to `null` so runtime resolution follows the current coordinating thread
+ * unless a tier is explicitly pinned.
  */
 export const CoordinatorRoleTemplateConfig = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(COORDINATOR_ROLE_TEMPLATE_NAME_MAX_LENGTH)),
   description: TrimmedString.check(
     Schema.isMaxLength(COORDINATOR_ROLE_TEMPLATE_DESCRIPTION_MAX_LENGTH),
   ).pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** Scene mode controlling whether instructions include code/worktree guidance or general deliverable guidance. */
+  mode: CoordinatorSceneMode.pipe(Schema.withDecodingDefault(Effect.succeed("code" as const))),
   tierModels: CoordinatorTierModelSelections.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COORDINATOR_TIER_MODEL_SELECTIONS)),
   ),
-  /** Constrain the L0 coordinator to focus on decomposition, delegation, review, and synthesis. */
+  /** Constrain the coordinator to focus on decomposition, delegation, review, and synthesis. */
   preferDelegation: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  /** Route L1/L2 through dynamically resolved tiered models or inherit the L0 root model. */
+  /** Legacy strategy field kept for backward compatibility with persisted settings. */
   delegationStrategy: CoordinatorDelegationStrategy.pipe(
     Schema.withDecodingDefault(Effect.succeed("tiered" as const)),
   ),
@@ -85,7 +93,8 @@ export type CoordinatorRoleTemplatesMap = typeof CoordinatorRoleTemplatesMap.Typ
 export const BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG: CoordinatorRoleTemplateConfig = {
   name: "Default Coordinator",
   description:
-    "Focus L0 on decomposition, tiered delegation, progress review, and final synthesis using currently available models.",
+    "Coordinate engineering workflows: plan, delegate implementation to L1/L2, review outputs, and synthesize results.",
+  mode: "code",
   tierModels: DEFAULT_COORDINATOR_TIER_MODEL_SELECTIONS,
   preferDelegation: true,
   delegationStrategy: "tiered",
@@ -98,19 +107,62 @@ export const BUILT_IN_COORDINATOR_ROLE_TEMPLATE: CoordinatorRoleTemplate = {
   ...BUILT_IN_COORDINATOR_ROLE_TEMPLATE_CONFIG,
 };
 
+const BUILT_IN_GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_CONFIG: CoordinatorRoleTemplateConfig = {
+  name: "General Batch Collaboration",
+  description:
+    "Coordinate multi-item content, research, or batch production workflows without code/worktree assumptions.",
+  mode: "general",
+  tierModels: DEFAULT_COORDINATOR_TIER_MODEL_SELECTIONS,
+  preferDelegation: true,
+  delegationStrategy: "tiered",
+  instructions: "",
+};
+
+export const BUILT_IN_GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE: CoordinatorRoleTemplate = {
+  id: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+  builtIn: true,
+  ...BUILT_IN_GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_CONFIG,
+};
+
+export const BUILT_IN_COORDINATOR_ROLE_TEMPLATES: ReadonlyArray<CoordinatorRoleTemplate> = [
+  BUILT_IN_COORDINATOR_ROLE_TEMPLATE,
+  BUILT_IN_GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE,
+];
+
+export const BUILT_IN_COORDINATOR_ROLE_TEMPLATE_BY_ID: ReadonlyMap<
+  CoordinatorRoleTemplateId,
+  CoordinatorRoleTemplate
+> = new Map(BUILT_IN_COORDINATOR_ROLE_TEMPLATES.map((template) => [template.id, template]));
+
+export function isBuiltInCoordinatorRoleTemplateId(id: string): id is CoordinatorRoleTemplateId {
+  return BUILT_IN_COORDINATOR_ROLE_TEMPLATE_BY_ID.has(id as CoordinatorRoleTemplateId);
+}
+
 /**
- * Per-thread L0 coordinator mode configuration persisted on `OrchestrationV2AppThread`.
- * Keeping `templateId` alongside `enabled` preserves the user's chosen template when toggling off.
+ * Per-thread overrides for delegated tiers (`L1`, `L2`):
+ * omitted inherits from template, `ModelSelection` pins for this thread, `null` forces follow-current.
+ */
+export const CoordinatorTierModelOverrides = Schema.Struct({
+  L1: Schema.optional(Schema.NullOr(ModelSelection)),
+  L2: Schema.optional(Schema.NullOr(ModelSelection)),
+});
+export type CoordinatorTierModelOverrides = typeof CoordinatorTierModelOverrides.Type;
+
+/**
+ * Per-thread coordinator mode configuration persisted on `OrchestrationV2AppThread`
+ * (for L0 root coordinators and L1 opt-in sub-coordinators).
  */
 export const ThreadCoordinatorMode = Schema.Struct({
   enabled: Schema.Boolean,
   templateId: CoordinatorRoleTemplateId.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)),
   ),
+  tierModelOverrides: Schema.optional(CoordinatorTierModelOverrides),
 });
 export type ThreadCoordinatorMode = typeof ThreadCoordinatorMode.Type;
 
 export const CoordinatorTierResolutionSource = Schema.Literals([
+  "thread_override",
   "template_configured",
   "root_thread",
   "dynamic_available",

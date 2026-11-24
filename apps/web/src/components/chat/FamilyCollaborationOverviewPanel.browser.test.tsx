@@ -1,6 +1,7 @@
 import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import {
+  GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
   IsoDateTime,
   NodeId,
   ProjectId,
@@ -21,8 +22,11 @@ import { AppRoot } from "~/AppRoot";
 import "~/components/ChatView";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useThreadDetailsPreferences } from "./threadDetailsPreferences";
 import {
+  CLAUDE_PROVIDER,
+  CODEX_PROVIDER,
   ENVIRONMENT_ID,
   type FakeDriver,
   type FakeThread,
@@ -85,6 +89,7 @@ function enableTestSettings() {
 }
 
 it("renders L0 -> L1 -> L2 collaboration overview read-only, navigates nodes, and targets Stop accurately", async () => {
+  using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
   using _details = pinThreadDetailsOpen();
   const l0Base = threadWithHistory("collab-ui-l0", 1);
   const l1ActiveBase = threadWithHistory("collab-ui-l1-active", 0);
@@ -421,5 +426,317 @@ it("renders L0 -> L1 -> L2 collaboration overview read-only, navigates nodes, an
   await screen.getByTestId(`collaboration-node-open-${l2Leaf.id}`).click();
   await vi.waitFor(() => {
     expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${l2Leaf.id}`);
+  });
+});
+
+it("displays L0 Coordinator and L1 Sub-Coordinator routing with overrides and quick-toggles L1 Sub-Coordinator mode", async () => {
+  using _registry = { [Symbol.dispose]: () => appAtomRegistry.reset() };
+  using _details = pinThreadDetailsOpen();
+  const l0 = threadWithHistory("collab-coord-l0", 1);
+  const l1Lead: FakeThread = {
+    ...threadWithHistory("collab-coord-l1-lead", 0),
+    title: "Episode 1 Lead",
+    subtaskOf: l0.id,
+    rootThreadId: l0.id,
+  };
+  const l1Direct: FakeThread = {
+    ...threadWithHistory("collab-coord-l1-direct", 0),
+    title: "Episode 2 Direct",
+    subtaskOf: l0.id,
+    rootThreadId: l0.id,
+  };
+  const l2Specialist: FakeThread = {
+    ...threadWithHistory("collab-coord-l2-specialist", 0),
+    title: "Storyboard Specialist",
+    subtaskOf: l1Lead.id,
+    rootThreadId: l0.id,
+  };
+
+  const codexInstance = ProviderInstanceId.make("codex");
+  const claudeInstance = ProviderInstanceId.make("claudeAgent");
+  const nowIso = IsoDateTime.make("2026-10-20T00:00:00.000Z");
+
+  const makeOverview = (
+    input: FamilyCollaborationGetOverviewInput,
+  ): FamilyCollaborationOverview => ({
+    rootThreadId: l0.id,
+    requestedThreadId: input.threadId,
+    projectId: ProjectId.make("project-1"),
+    generatedAt: nowIso,
+    readOnlyGuaranteed: true,
+    nodes: [
+      {
+        threadId: l0.id,
+        parentThreadId: null,
+        rootThreadId: l0.id,
+        depth: 0,
+        nodeKind: "root",
+        createdBy: "user",
+        title: l0.title,
+        modelSelection: { instanceId: codexInstance, model: "gpt-5.4" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        coordinatorMode: {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          tierModelOverrides: {
+            L1: { instanceId: codexInstance, model: "gpt-5.5" },
+          },
+        },
+        worktreePath: null,
+        branch: null,
+        usesSharedWorktree: false,
+        isCurrentThread: input.threadId === l0.id,
+        isArchived: false,
+        settled: false,
+        sessionStatus: "idle",
+        queuedMessageCount: 0,
+        taskStatus: "none",
+        activeRunId: null,
+        delegatedTaskId: null,
+        blockingKind: null,
+        blockingReason: null,
+        canStop: false,
+        deliveryStatus: "none",
+        delegatedDeliveryState: null,
+        pendingMergeBackCount: 0,
+        boundMergeBackCount: 0,
+        deliveredMergeBackCount: 0,
+        interimReportCount: 0,
+        finalReportCount: 0,
+        latestArtifactSummary: null,
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservationPaths: [],
+        hasPathOverlap: false,
+        remoteChildren: [],
+        updatedAt: nowIso,
+      },
+      {
+        threadId: l1Lead.id,
+        parentThreadId: l0.id,
+        rootThreadId: l0.id,
+        depth: 1,
+        nodeKind: "subtask",
+        createdBy: "agent",
+        title: l1Lead.title,
+        modelSelection: { instanceId: codexInstance, model: "gpt-5.5" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        coordinatorMode: {
+          enabled: true,
+          templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+          tierModelOverrides: {
+            L2: { instanceId: claudeInstance, model: "claude-opus-4-6" },
+          },
+        },
+        worktreePath: null,
+        branch: null,
+        usesSharedWorktree: false,
+        isCurrentThread: input.threadId === l1Lead.id,
+        isArchived: false,
+        settled: false,
+        sessionStatus: "idle",
+        queuedMessageCount: 0,
+        taskStatus: "running",
+        activeRunId: null,
+        delegatedTaskId: null,
+        blockingKind: null,
+        blockingReason: null,
+        canStop: false,
+        deliveryStatus: "none",
+        delegatedDeliveryState: null,
+        pendingMergeBackCount: 0,
+        boundMergeBackCount: 0,
+        deliveredMergeBackCount: 0,
+        interimReportCount: 0,
+        finalReportCount: 0,
+        latestArtifactSummary: "Drafting episode outline",
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservationPaths: [],
+        hasPathOverlap: false,
+        remoteChildren: [],
+        updatedAt: nowIso,
+      },
+      {
+        threadId: l2Specialist.id,
+        parentThreadId: l1Lead.id,
+        rootThreadId: l0.id,
+        depth: 2,
+        nodeKind: "subtask",
+        createdBy: "agent",
+        title: l2Specialist.title,
+        modelSelection: { instanceId: claudeInstance, model: "claude-opus-4-6" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        worktreePath: null,
+        branch: null,
+        usesSharedWorktree: false,
+        isCurrentThread: input.threadId === l2Specialist.id,
+        isArchived: false,
+        settled: false,
+        sessionStatus: "idle",
+        queuedMessageCount: 0,
+        taskStatus: "completed",
+        activeRunId: null,
+        delegatedTaskId: null,
+        blockingKind: null,
+        blockingReason: null,
+        canStop: false,
+        deliveryStatus: "delivered",
+        delegatedDeliveryState: null,
+        pendingMergeBackCount: 0,
+        boundMergeBackCount: 0,
+        deliveredMergeBackCount: 0,
+        interimReportCount: 0,
+        finalReportCount: 0,
+        latestArtifactSummary: "Storyboard shots ready",
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservationPaths: [],
+        hasPathOverlap: false,
+        remoteChildren: [],
+        updatedAt: nowIso,
+      },
+      {
+        threadId: l1Direct.id,
+        parentThreadId: l0.id,
+        rootThreadId: l0.id,
+        depth: 1,
+        nodeKind: "subtask",
+        createdBy: "agent",
+        title: l1Direct.title,
+        modelSelection: { instanceId: codexInstance, model: "gpt-5.5" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        coordinatorMode: null,
+        worktreePath: null,
+        branch: null,
+        usesSharedWorktree: false,
+        isCurrentThread: input.threadId === l1Direct.id,
+        isArchived: false,
+        settled: false,
+        sessionStatus: "idle",
+        queuedMessageCount: 0,
+        taskStatus: "running",
+        activeRunId: null,
+        delegatedTaskId: null,
+        blockingKind: null,
+        blockingReason: null,
+        canStop: false,
+        deliveryStatus: "none",
+        delegatedDeliveryState: null,
+        pendingMergeBackCount: 0,
+        boundMergeBackCount: 0,
+        deliveredMergeBackCount: 0,
+        interimReportCount: 0,
+        finalReportCount: 0,
+        latestArtifactSummary: null,
+        plannedPaths: [],
+        confirmedWritePaths: [],
+        activeReservationPaths: [],
+        hasPathOverlap: false,
+        remoteChildren: [],
+        updatedAt: nowIso,
+      },
+    ],
+    sideChats: [],
+    pendingEscalations: [],
+    pendingWorktreeApprovals: [],
+    sharedWorktree: null,
+    summary: null,
+  });
+
+  using _environment = installFakeEnvironment([l0, l1Lead, l1Direct, l2Specialist], {
+    acceptCommands: true,
+    providers: [CODEX_PROVIDER, CLAUDE_PROVIDER],
+    familyCollaborationOverview: (input) => Effect.succeed(makeOverview(input)),
+  });
+  enableTestSettings();
+  await page.viewport(1400, 900);
+
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${l0.id}`] }),
+  );
+  await router.load();
+  await using screen = await render(<AppRoot router={router} />, { router: false });
+
+  await screen.getByTestId("open-collaboration-overview").click();
+  await expect.element(screen.getByTestId("family-collaboration-overview")).toBeVisible();
+
+  // L0 Coordinator badge shows localized template name, General scene badge, and override chip.
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-${l0.id}`))
+    .toHaveTextContent("Coordinator: General Batch Collaboration");
+  await expect
+    .element(screen.getByTestId(`collaboration-node-scene-${l0.id}`))
+    .toHaveTextContent("General");
+  await expect
+    .element(screen.getByTestId(`collaboration-node-overrides-${l0.id}`))
+    .toHaveTextContent("L1: GPT-5.5");
+
+  // L1 Sub-Coordinator badge shows Sub-Coordinator role, template name, and L2 override chip.
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-${l1Lead.id}`))
+    .toHaveTextContent("Sub-Coordinator: General Batch Collaboration");
+  await expect
+    .element(screen.getByTestId(`collaboration-node-overrides-${l1Lead.id}`))
+    .toHaveTextContent("L2: Claude Opus 4.6");
+
+  // Expand L0 & L1 to inspect expanded Coordinator routing details.
+  await screen.getByTestId(`collaboration-node-expand-${l0.id}`).click();
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-details-${l0.id}`))
+    .toBeVisible();
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-tier-${l0.id}-L1`))
+    .toHaveTextContent("L1 GPT-5.5 (This thread)");
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-tier-${l0.id}-L2`))
+    .toHaveTextContent("L2 Follows current");
+
+  await screen.getByTestId(`collaboration-node-expand-${l1Lead.id}`).click();
+  await expect
+    .element(screen.getByTestId(`collaboration-node-coordinator-tier-${l1Lead.id}-L2`))
+    .toHaveTextContent("L2 Claude Opus 4.6 (This thread)");
+
+  // Quick-toggle button appears only on L1 subtasks, never on L0 or L2.
+  await expect
+    .element(screen.getByTestId(`collaboration-node-toggle-subcoordinator-${l0.id}`))
+    .not.toBeInTheDocument();
+  await expect
+    .element(screen.getByTestId(`collaboration-node-toggle-subcoordinator-${l2Specialist.id}`))
+    .not.toBeInTheDocument();
+
+  const coordinatorCommands = () =>
+    dispatchedCommands().filter((command) => command.type === "thread.coordinator-mode.set");
+  expect(coordinatorCommands()).toHaveLength(0);
+
+  // Promoting an OFF L1 subtask inherits L0's templateId.
+  await screen.getByTestId(`collaboration-node-toggle-subcoordinator-${l1Direct.id}`).click();
+  await vi.waitFor(() => expect(coordinatorCommands()).toHaveLength(1));
+  expect(coordinatorCommands()[0]).toMatchObject({
+    type: "thread.coordinator-mode.set",
+    threadId: l1Direct.id,
+    coordinatorMode: {
+      enabled: true,
+      templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+    },
+  });
+
+  // Disabling an ON L1 Sub-Coordinator preserves its templateId and tierModelOverrides.
+  await screen.getByTestId(`collaboration-node-toggle-subcoordinator-${l1Lead.id}`).click();
+  await vi.waitFor(() => expect(coordinatorCommands()).toHaveLength(2));
+  expect(coordinatorCommands()[1]).toMatchObject({
+    type: "thread.coordinator-mode.set",
+    threadId: l1Lead.id,
+    coordinatorMode: {
+      enabled: false,
+      templateId: GENERAL_BATCH_COORDINATOR_ROLE_TEMPLATE_ID,
+      tierModelOverrides: {
+        L2: { instanceId: claudeInstance, model: "claude-opus-4-6" },
+      },
+    },
   });
 });

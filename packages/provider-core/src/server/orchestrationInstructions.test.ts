@@ -119,6 +119,7 @@ function makeCoordinatorConfig(
       builtIn: true,
       name: "Default Coordinator",
       description: "Break work down and delegate.",
+      mode: "code",
       tierModels: { L0: null, L1: null, L2: null },
       preferDelegation: true,
       delegationStrategy: "tiered",
@@ -139,17 +140,17 @@ function makeCoordinatorConfig(
       L1: {
         tier: "L1",
         modelSelection: { instanceId: providerB, model: "custom-lead-model" },
-        configuredModelSelection: null,
-        source: "dynamic_available",
+        configuredModelSelection: { instanceId: providerB, model: "custom-lead-model" },
+        source: "template_configured",
         fallbackUsed: false,
         fallbackReason: null,
       },
       L2: {
         tier: "L2",
-        modelSelection: { instanceId: providerB, model: "custom-worker-model" },
+        modelSelection: null,
         configuredModelSelection: { instanceId: providerA, model: "offline-model" },
-        source: "fallback_available",
-        fallbackUsed: true,
+        source: "unavailable",
+        fallbackUsed: false,
         fallbackReason: "Configured provider is disabled.",
       },
     },
@@ -157,8 +158,8 @@ function makeCoordinatorConfig(
   };
 }
 
-describe("L0 coordinator instructions", () => {
-  it("renders dynamic tier models, strategies, and fallback notes without hardcoded models", () => {
+describe("coordinator instructions", () => {
+  it("renders L0 code mode instructions with tier models, unavailable notes, and fallback warning", () => {
     const config = makeCoordinatorConfig({
       requestedTemplateId: CoordinatorRoleTemplateId.make("deleted-template"),
       templateFallbackUsed: true,
@@ -168,48 +169,93 @@ describe("L0 coordinator instructions", () => {
 
     assert.include(rendered, "## T3 Code L0 Coordinator Mode (Default Coordinator)");
     assert.include(rendered, "Prefer delegating research, implementation, tests, and bulk edits");
-    assert.include(rendered, "Delegation strategy: `tiered`");
+    assert.include(rendered, "`plannedPaths`");
+    assert.include(rendered, "`t3_worktree_coordinate`");
+    assert.include(rendered, "`escalationRequestId`");
     assert.include(rendered, "`provider-alpha/custom-root-model` [root_thread]");
-    assert.include(rendered, "`provider-beta/custom-lead-model` [dynamic_available]");
-    assert.include(
-      rendered,
-      "`provider-beta/custom-worker-model` [fallback_available; fallback: Configured provider is disabled.]",
-    );
+    assert.include(rendered, "`provider-beta/custom-lead-model` [template_configured]");
+    assert.include(rendered, "- L2 (worker): unavailable (Configured provider is disabled.)");
     assert.include(rendered, "requested template `deleted-template` was unavailable");
     assert.include(rendered, "Always verify tests before reporting back.");
     assert.isAtMost(new TextEncoder().encode(rendered).length, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
   });
 
-  it("adapts copy for preferDelegation=false, inherit_root strategy, and unavailable tiers", () => {
+  it("adapts L0 code mode copy when preferDelegation=false and custom instructions are empty", () => {
     const base = makeCoordinatorConfig();
     const rendered = buildCoordinatorInstructions({
       ...base,
       template: {
         ...base.template,
         preferDelegation: false,
-        delegationStrategy: "inherit_root",
         instructions: "",
+      },
+    });
+
+    assert.include(rendered, "direct execution is acceptable for small focused tasks");
+    assert.notInclude(rendered, "Template guidance:");
+  });
+
+  it("omits code/worktree wording in general scene mode for both L0 and L1", () => {
+    const base = makeCoordinatorConfig();
+    const generalConfig: ResolvedCoordinatorConfiguration = {
+      ...base,
+      template: {
+        ...base.template,
+        name: "General Batch Collaboration",
+        mode: "general",
+        instructions: "Keep output artifacts structured per episode.",
       },
       tiers: {
         ...base.tiers,
         L2: {
           tier: "L2",
-          modelSelection: null,
-          configuredModelSelection: null,
-          source: "unavailable",
-          fallbackUsed: true,
-          fallbackReason: "No orchestration-capable provider available.",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("provider-beta"),
+            model: "c-model",
+          },
+          configuredModelSelection: {
+            instanceId: ProviderInstanceId.make("provider-beta"),
+            model: "c-model",
+          },
+          source: "template_configured",
+          fallbackUsed: false,
+          fallbackReason: null,
         },
       },
-    });
+    };
 
-    assert.include(rendered, "direct execution is acceptable for small focused tasks");
-    assert.include(rendered, "Delegation strategy: `inherit_root`");
-    assert.include(
-      rendered,
-      "- L2 (worker): unavailable (No orchestration-capable provider available.)",
-    );
-    assert.notInclude(rendered, "Template guidance:");
+    const l0General = buildCoordinatorInstructions(generalConfig, { tierView: "L0" });
+    assert.include(l0General, "## T3 Code L0 Coordinator Mode (General Batch Collaboration)");
+    assert.include(l0General, "batch/general workflow");
+    assert.include(l0General, "- L2 (specialist): `provider-beta/c-model` [template_configured]");
+    assert.notInclude(l0General, "plannedPaths");
+    assert.notInclude(l0General, "t3_worktree_coordinate");
+    assert.notInclude(l0General, "worktree");
+    assert.notInclude(l0General, "tests");
+    assert.include(l0General, "Keep output artifacts structured per episode.");
+
+    const l1General = buildCoordinatorInstructions(generalConfig, { tierView: "L1" });
+    assert.include(l1General, "## T3 Code L1 Sub-Coordinator Mode (General Batch Collaboration)");
+    assert.include(l1General, "L1 sub-coordinator");
+    assert.include(l1General, "- L2 (specialist): `provider-beta/c-model` [template_configured]");
+    assert.notInclude(l1General, "L0 (root coordinator)");
+    assert.notInclude(l1General, "escalationRequestId");
+    assert.notInclude(l1General, "plannedPaths");
+    assert.notInclude(l1General, "t3_worktree_coordinate");
+    assert.notInclude(l1General, "worktree");
+    assert.notInclude(l1General, "tests");
+  });
+
+  it("renders L1 sub-coordinator code mode instructions without L0-only lines", () => {
+    const base = makeCoordinatorConfig();
+    const l1Code = buildCoordinatorInstructions(base, { tierView: "L1" });
+    assert.include(l1Code, "## T3 Code L1 Sub-Coordinator Mode (Default Coordinator)");
+    assert.include(l1Code, "L1 sub-coordinator");
+    assert.include(l1Code, "`plannedPaths`");
+    assert.include(l1Code, "`t3_worktree_coordinate`");
+    assert.notInclude(l1Code, "L0 (coordinator)");
+    assert.notInclude(l1Code, "escalationRequestId");
+    assert.isAtMost(new TextEncoder().encode(l1Code).length, COORDINATOR_INSTRUCTIONS_MAX_BYTES);
   });
 
   it("clamps long CJK custom instructions safely within COORDINATOR_INSTRUCTIONS_MAX_BYTES", () => {

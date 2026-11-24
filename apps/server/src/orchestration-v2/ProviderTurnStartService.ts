@@ -6,6 +6,7 @@ import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCi
 import {
   CommandId,
   isCoordinatorEligibleThread,
+  isSubCoordinatorEligibleThread,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   latestProviderTurnForAttempt,
   withMessageSenderNote,
@@ -2181,10 +2182,17 @@ export const layer: Layer.Layer<
           events,
         });
       });
-      const coordinatorInstructions =
+      const coordinatorTierView: "L0" | "L1" | null =
         projection.thread.coordinatorMode?.enabled === true &&
-        projection.thread.lineage !== undefined &&
-        isCoordinatorEligibleThread(projection.thread)
+        projection.thread.lineage !== undefined
+          ? isCoordinatorEligibleThread(projection.thread)
+            ? "L0"
+            : isSubCoordinatorEligibleThread(projection.thread)
+              ? "L1"
+              : null
+          : null;
+      const coordinatorInstructions =
+        coordinatorTierView !== null
           ? yield* Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
               const providers = Option.isSome(providerRegistryOption)
@@ -2199,11 +2207,14 @@ export const layer: Layer.Layer<
                   providers,
                   projectId: projection.thread.projectId,
                   templateId: projection.thread.coordinatorMode!.templateId,
+                  tierModelOverrides: projection.thread.coordinatorMode!.tierModelOverrides,
                   rootModelSelection: run.modelSelection,
+                  callerTier: coordinatorTierView,
                   ...(orchestrationCapableInstanceIds === undefined
                     ? {}
                     : { orchestrationCapableInstanceIds }),
                 }),
+                { tierView: coordinatorTierView },
               );
             }).pipe(
               Effect.catchCause((cause) =>

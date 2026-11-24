@@ -39,6 +39,7 @@ import type {
   RunId,
   ScopedThreadRef,
   ServerProvider,
+  CoordinatorRoleTemplateId,
   ThreadCoordinatorMode,
   ThreadId,
 } from "@t3tools/contracts";
@@ -437,6 +438,8 @@ export interface ChatComposerProps {
   runtimeMode: RuntimeMode;
   defaultRuntimeMode?: RuntimeMode;
   coordinatorControlVisible?: boolean;
+  coordinatorControlTier?: "L0" | "L1";
+  inheritedCoordinatorTemplateId?: CoordinatorRoleTemplateId | null;
   coordinatorMode?: ThreadCoordinatorMode | null;
   onCoordinatorModeChange?: (next: ThreadCoordinatorMode) => void;
 
@@ -2750,6 +2753,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               providers={providerStatuses}
               projectId={activeProjectId}
               rootModelSelection={selectedModelSelection}
+              callerTier={props.coordinatorControlTier ?? "L0"}
+              inheritedRootTemplateId={props.inheritedCoordinatorTemplateId}
               size={composerControlsCollapsed ? "xs" : "sm"}
               compact={composerControlsCollapsed}
               disabled={!canOperateThread || isSendBusy}

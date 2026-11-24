@@ -60,6 +60,7 @@ import {
 import {
   CoordinatorDelegationStrategy,
   CoordinatorRoleTemplateId,
+  CoordinatorSceneMode,
   CoordinatorTier,
   CoordinatorTierResolutionSource,
 } from "./coordinator.ts";
@@ -767,6 +768,7 @@ export const OrchestratorMcpCoordinatorCapabilities = Schema.Struct({
   requestedTemplateId: CoordinatorRoleTemplateId,
   templateName: Schema.String,
   templateFallbackUsed: Schema.Boolean,
+  mode: Schema.optional(CoordinatorSceneMode),
   preferDelegation: Schema.Boolean,
   delegationStrategy: CoordinatorDelegationStrategy,
   tiers: Schema.Struct({

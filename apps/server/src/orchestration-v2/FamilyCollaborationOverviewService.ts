@@ -648,6 +648,42 @@ function buildDigest(input: {
     );
   }
 
+  const l0CoordinatorCount = nodes.filter(
+    (node) => node.depth === 0 && node.coordinatorMode?.enabled === true,
+  ).length;
+  const l1SubCoordinatorCount = nodes.filter(
+    (node) => node.depth === 1 && node.coordinatorMode?.enabled === true,
+  ).length;
+
+  const formatNodeCoordinatorTag = (node: FamilyCollaborationNode): string => {
+    if ((node.depth !== 0 && node.depth !== 1) || node.coordinatorMode?.enabled !== true) {
+      return "";
+    }
+    const role = node.depth === 0 ? "Coordinator" : "Sub-Coordinator";
+    const tiers: ReadonlyArray<"L1" | "L2"> = node.depth === 0 ? ["L1", "L2"] : ["L2"];
+    const overrides = node.coordinatorMode.tierModelOverrides;
+    const overrideParts: Array<string> = [];
+    if (overrides) {
+      for (const tier of tiers) {
+        if (!Object.hasOwn(overrides, tier)) {
+          continue;
+        }
+        const selection = overrides[tier];
+        overrideParts.push(
+          selection === null
+            ? `${tier}=follow_current`
+            : selection !== undefined
+              ? `${tier}=${selection.instanceId}/${selection.model}`
+              : "",
+        );
+      }
+    }
+    const cleanedOverrides = overrideParts.filter((part) => part.length > 0);
+    const overrideSuffix =
+      cleanedOverrides.length > 0 ? ` | overrides: ${cleanedOverrides.join(", ")}` : "";
+    return ` [${role}:${node.coordinatorMode.templateId}${overrideSuffix}]`;
+  };
+
   const rootTitle = nodes.find((node) => node.threadId === rootThreadId)?.title ?? rootThreadId;
   const lines: Array<string> = [
     `# Collaboration Overview: ${rootTitle}`,
@@ -657,6 +693,11 @@ function buildDigest(input: {
     `- Execution: Running/Queued=${runningCount}, Blocked=${blockedCount}, Draft=${awaitingInitialSendCount}, Completed=${completedCount}, Failed=${failedCount}`,
     `- Handoff & Governance: Pending Delivery=${pendingDeliveryCount}, Pending/Bound Merge-Back=${pendingMergeBackCount}, Pending Escalations=${pendingEscalations.length}, Pending Worktree Approvals=${pendingWorktreeApprovals.length}`,
   ];
+  if (l0CoordinatorCount > 0 || l1SubCoordinatorCount > 0) {
+    lines.push(
+      `- Coordinators: L0=${l0CoordinatorCount}, L1 Sub-Coordinators=${l1SubCoordinatorCount}`,
+    );
+  }
   if (overlapCount > 0 || observedUnverifiedCount > 0) {
     lines.push(
       `- Shared Worktree: Overlaps=${overlapCount}, Observed Unverified=${observedUnverifiedCount}`,
@@ -672,10 +713,11 @@ function buildDigest(input: {
   for (const node of nodes) {
     const indent = "  ".repeat(node.depth);
     const modelLabel = `${node.modelSelection.instanceId}/${node.modelSelection.model}`;
+    const coordinatorTag = formatNodeCoordinatorTag(node);
     const statusTuple = `session=${node.sessionStatus} | task=${node.taskStatus} | delivery=${node.deliveryStatus}`;
     const extra = node.blockingReason !== null ? ` (${node.blockingReason})` : "";
     lines.push(
-      `${indent}- [L${node.depth}] **${node.title}** (${modelLabel}): ${statusTuple}${extra}`,
+      `${indent}- [L${node.depth}] **${node.title}** (${modelLabel})${coordinatorTag}: ${statusTuple}${extra}`,
     );
     if (node.latestArtifactSummary !== null) {
       lines.push(`${indent}  - Latest: ${node.latestArtifactSummary}`);

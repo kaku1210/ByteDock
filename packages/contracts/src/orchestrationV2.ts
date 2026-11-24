@@ -237,6 +237,23 @@ export const isCoordinatorEligibleThread = (thread: {
   thread.lineage.temporary !== true &&
   thread.delegatedFrom === undefined;
 
+/**
+ * Persistent L1 direct child threads (depth 1: `parentThreadId === rootThreadId`, never L2,
+ * side chats, temporary, workflow steps, or remotely delegated threads) may opt in as L1
+ * sub-coordinators to delegate work to L2 workers.
+ */
+export const isSubCoordinatorEligibleThread = (thread: {
+  readonly lineage: OrchestrationV2AppThreadLineage;
+  readonly delegatedFrom?: OrchestrationV2DelegatedFrom | undefined;
+}): boolean =>
+  isTaskChildLineage(thread.lineage) &&
+  thread.lineage.parentThreadId !== null &&
+  thread.lineage.parentThreadId === thread.lineage.rootThreadId &&
+  thread.lineage.sideChat !== true &&
+  thread.lineage.temporary !== true &&
+  thread.lineage.workflowStep !== true &&
+  thread.delegatedFrom === undefined;
+
 export const OrchestrationV2ContextTransferType = Schema.Literals([
   "fork",
   "provider_handoff",

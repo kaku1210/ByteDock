@@ -1,9 +1,9 @@
 import {
   DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
-  type CoordinatorDelegationStrategy,
   type CoordinatorRoleTemplate,
   type CoordinatorRoleTemplateConfig,
   type CoordinatorRoleTemplateId,
+  type CoordinatorSceneMode,
   type CoordinatorTier,
   type EnvironmentId,
   type ModelSelection,
@@ -29,7 +29,7 @@ import { cn } from "~/lib/utils";
 import { CoordinatorTierPreviewList } from "../chat/CoordinatorModeControl";
 import {
   COORDINATOR_TIERS,
-  coordinatorDelegationStrategyLabel,
+  coordinatorSceneModeLabel,
   coordinatorTierRoleLabel,
 } from "../chat/coordinatorModeControl.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
@@ -83,6 +83,13 @@ import {
   useScopedSettingsWriteAllowed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
+
+function templateDisplayName(
+  template: Pick<CoordinatorRoleTemplate, "name" | "builtIn">,
+  uiText: (source: string) => string,
+): string {
+  return template.builtIn ? uiText(template.name) : template.name;
+}
 
 function CoordinatorRoleTemplateEditorDialog({
   draft: initialDraft,
@@ -166,7 +173,7 @@ function CoordinatorRoleTemplateEditorDialog({
           </DialogTitle>
           <DialogDescription>
             {uiText(
-              "Configure L0 coordination behavior and optional per-tier model overrides. Leave any tier on Auto to resolve dynamically against available models.",
+              "Configure scene mode, delegation behavior, and optional per-tier pinned models. Unpinned tiers follow the current coordinating thread.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -215,9 +222,7 @@ function CoordinatorRoleTemplateEditorDialog({
                 size="sm"
                 maxLength={240}
                 value={draft.description}
-                placeholder={uiText(
-                  "Describe when this L0 coordinator role template should be used.",
-                )}
+                placeholder={uiText("Describe when this coordinator role template should be used.")}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, description: event.target.value }))
                 }
@@ -232,7 +237,7 @@ function CoordinatorRoleTemplateEditorDialog({
                     {uiText("Prefer delegation")}
                   </div>
                   <div className="text-2xs text-muted-foreground">
-                    {uiText("Keep L0 focused on planning, delegation, and synthesis.")}
+                    {uiText("Keep the coordinator focused on planning, delegation, and synthesis.")}
                   </div>
                 </div>
                 <Switch
@@ -246,36 +251,34 @@ function CoordinatorRoleTemplateEditorDialog({
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="coordinator-template-strategy">
-                  {uiText("Delegation strategy")}
-                </Label>
+                <Label htmlFor="coordinator-template-scene-mode">{uiText("Scene mode")}</Label>
                 <Select
-                  value={draft.delegationStrategy}
+                  value={draft.sceneMode}
                   onValueChange={(value) => {
-                    if (value === "tiered" || value === "inherit_root") {
-                      setDraft((current) => ({ ...current, delegationStrategy: value }));
+                    if (value === "code" || value === "general") {
+                      setDraft((current) => ({ ...current, sceneMode: value }));
                     }
                   }}
                 >
                   <SelectTrigger
-                    id="coordinator-template-strategy"
+                    id="coordinator-template-scene-mode"
                     size="sm"
                     className="w-full"
-                    aria-label={uiText("Delegation strategy")}
-                    data-testid="coordinator-template-strategy-select"
+                    aria-label={uiText("Scene mode")}
+                    data-testid="coordinator-template-scene-mode-select"
                   >
                     <SelectValue>
-                      {(value: CoordinatorDelegationStrategy | null) =>
-                        value ? uiText(coordinatorDelegationStrategyLabel(value)) : ""
+                      {(value: CoordinatorSceneMode | null) =>
+                        value ? uiText(coordinatorSceneModeLabel(value)) : ""
                       }
                     </SelectValue>
                   </SelectTrigger>
                   <SelectPopup align="start" alignItemWithTrigger={false}>
-                    <SelectItem value="tiered">
-                      {uiText(coordinatorDelegationStrategyLabel("tiered"))}
+                    <SelectItem value="code">
+                      {uiText(coordinatorSceneModeLabel("code"))}
                     </SelectItem>
-                    <SelectItem value="inherit_root">
-                      {uiText(coordinatorDelegationStrategyLabel("inherit_root"))}
+                    <SelectItem value="general">
+                      {uiText(coordinatorSceneModeLabel("general"))}
                     </SelectItem>
                   </SelectPopup>
                 </Select>
@@ -288,7 +291,7 @@ function CoordinatorRoleTemplateEditorDialog({
                   {uiText("Tier model overrides (optional)")}
                 </span>
                 <span className="text-2xs text-muted-foreground">
-                  {uiText("Auto resolves from live available models")}
+                  {uiText("Unpinned tiers follow the current thread model")}
                 </span>
               </div>
               <div className="space-y-2 rounded-lg border border-border/80 bg-muted/20 p-2.5">
@@ -350,7 +353,7 @@ function CoordinatorRoleTemplateEditorDialog({
                               data-testid={`coordinator-template-tier-auto-${tier}`}
                               onClick={() => handleTierModelChange(tier, null)}
                             >
-                              {uiText("Use Auto")}
+                              {uiText("Follow current")}
                             </Button>
                           </>
                         ) : (
@@ -359,7 +362,7 @@ function CoordinatorRoleTemplateEditorDialog({
                               data-testid={`coordinator-template-tier-auto-badge-${tier}`}
                               className="text-xs text-muted-foreground"
                             >
-                              {uiText("Auto (Dynamic)")}
+                              {uiText("Follows current")}
                             </span>
                             <Button
                               type="button"
@@ -404,7 +407,7 @@ function CoordinatorRoleTemplateEditorDialog({
                 maxLength={2000}
                 value={draft.instructions}
                 placeholder={uiText(
-                  "Optional guidance appended to the L0 coordinator prompt (e.g. require a test plan before delegating).",
+                  "Optional guidance appended to the coordinator prompt (e.g. require a checklist before delegating).",
                 )}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, instructions: event.target.value }))
@@ -415,7 +418,7 @@ function CoordinatorRoleTemplateEditorDialog({
 
             <div className="space-y-1.5 border-t border-border/70 pt-3">
               <div className="text-xs font-medium text-foreground">
-                {uiText("Live dynamic tier preview")}
+                {uiText("Live tier preview")}
               </div>
               <CoordinatorTierPreviewList
                 resolved={draftPreview}
@@ -474,7 +477,6 @@ export function CoordinatorRoleTemplatesSettings() {
 
   const templates = resolveCoordinatorRoleTemplates(settings);
   const existingIds = new Set(templates.map((template) => template.id));
-  const builtInCustomized = isBuiltInTemplateCustomized(settings);
   const canCreate = !readOnly && canCreateCoordinatorRoleTemplate(settings);
 
   const [previewTemplateId, setPreviewTemplateId] = useState<CoordinatorRoleTemplateId | null>(
@@ -508,10 +510,10 @@ export function CoordinatorRoleTemplatesSettings() {
     setPreviewTemplateId(id);
   };
 
-  const handleResetBuiltIn = () => {
+  const handleResetBuiltIn = (templateId: CoordinatorRoleTemplateId) => {
     updateSettings({
       coordinatorRoleTemplates: {
-        [DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID]: null,
+        [templateId]: null,
       },
     });
   };
@@ -554,7 +556,7 @@ export function CoordinatorRoleTemplatesSettings() {
           mixed={mixedDefaultTemplate}
           {...searchableSetting("default-coordinator-role-template")}
           description={uiText(
-            "Role template pre-selected when enabling L0 Coordinator Mode on a root thread.",
+            "Role template pre-selected when enabling Coordinator Mode on a thread.",
           )}
           resetAction={
             hasServerTargets &&
@@ -596,14 +598,14 @@ export function CoordinatorRoleTemplatesSettings() {
                     {(value: string | null) => {
                       if (value === null) return uiText("Mixed");
                       const matched = templates.find((item) => item.id === value);
-                      return matched ? matched.name : value;
+                      return matched ? templateDisplayName(matched, uiText) : value;
                     }}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   {templates.map((template) => (
                     <SelectItem key={template.id} value={template.id}>
-                      {template.name}
+                      {templateDisplayName(template, uiText)}
                     </SelectItem>
                   ))}
                 </SelectPopup>
@@ -615,19 +617,22 @@ export function CoordinatorRoleTemplatesSettings() {
         {templates.map((template) => {
           const isDefaultSelection = settings.defaultCoordinatorRoleTemplateId === template.id;
           const isPreviewed = previewResolved.template.id === template.id;
+          const isCustomizedBuiltIn =
+            template.builtIn && isBuiltInTemplateCustomized(settings, template.id);
+          const displayName = templateDisplayName(template, uiText);
           return (
             <SettingsRow
               key={template.id}
               title={
                 <span className="inline-flex flex-wrap items-center gap-1.5">
                   <LayersIcon className="size-3.5 shrink-0 text-primary" aria-hidden />
-                  <span>{template.name}</span>
+                  <span>{displayName}</span>
                   {template.builtIn ? (
                     <span className="rounded border border-border bg-muted px-1.5 py-0.25 text-3xs font-medium text-muted-foreground">
                       {uiText("Built-in")}
                     </span>
                   ) : null}
-                  {template.builtIn && builtInCustomized ? (
+                  {isCustomizedBuiltIn ? (
                     <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.25 text-3xs font-medium text-primary">
                       {uiText("Customized")}
                     </span>
@@ -645,7 +650,10 @@ export function CoordinatorRoleTemplatesSettings() {
                     <span className="block">{template.description}</span>
                   ) : null}
                   <span className="block text-2xs text-muted-foreground">
-                    {uiText(coordinatorDelegationStrategyLabel(template.delegationStrategy))} ·{" "}
+                    {uiText("Scene: {value0}", {
+                      value0: uiText(coordinatorSceneModeLabel(template.mode)),
+                    })}{" "}
+                    ·{" "}
                     {template.preferDelegation
                       ? uiText("Prefer delegation")
                       : uiText("Flexible execution")}{" "}
@@ -682,13 +690,13 @@ export function CoordinatorRoleTemplatesSettings() {
                         <PencilIcon className="size-3" aria-hidden />
                         {uiText("Edit")}
                       </Button>
-                      {template.builtIn && builtInCustomized ? (
+                      {isCustomizedBuiltIn ? (
                         <Button
                           type="button"
                           size="xs"
                           variant="ghost"
-                          data-testid="coordinator-template-reset-default"
-                          onClick={handleResetBuiltIn}
+                          data-testid={`coordinator-template-reset-${template.id}`}
+                          onClick={() => handleResetBuiltIn(template.id)}
                         >
                           <RotateCcwIcon className="size-3" aria-hidden />
                           {uiText("Reset")}
@@ -699,7 +707,7 @@ export function CoordinatorRoleTemplatesSettings() {
                           type="button"
                           size="xs"
                           variant="ghost"
-                          aria-label={uiText("Delete {value0}", { value0: template.name })}
+                          aria-label={uiText("Delete {value0}", { value0: displayName })}
                           data-testid={`coordinator-template-delete-${template.id}`}
                           onClick={() => setDeletingTemplate(template)}
                         >
@@ -721,7 +729,7 @@ export function CoordinatorRoleTemplatesSettings() {
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-xs font-semibold text-foreground">
-                {uiText("Dynamic tier preview")} · {previewResolved.template.name}
+                {uiText("Tier preview")} · {templateDisplayName(previewResolved.template, uiText)}
               </div>
               <div className="text-2xs text-muted-foreground">
                 {uiText(
