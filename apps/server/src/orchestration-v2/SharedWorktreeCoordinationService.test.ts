@@ -862,4 +862,175 @@ describe("SharedWorktreeCoordinationService", () => {
       ).pipe(Effect.provide(harness.layer));
     },
   );
+
+  it.live(
+    "ignores historical confirmed_write edits from completed/idle runs in overlaps while detecting active-run conflicts",
+    () => {
+      const dirtyFiles = {
+        files: [{ path: "api/report.md", insertions: 2, deletions: 0 }],
+      };
+      const harness = makeHarness(dirtyFiles);
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tmpDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sw-hist-" });
+          yield* fs.makeDirectory(path.join(tmpDir, "api"), { recursive: true });
+          yield* fs.writeFileString(path.join(tmpDir, "api", "report.md"), "v0\n");
+
+          const { childAId, childBId } = yield* seedSharedFamily({
+            modelSelection: harness.modelSelection,
+            workspaceRoot: tmpDir,
+          });
+          const coord = yield* SharedWorktreeCoordinationService.SharedWorktreeCoordinationService;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const sink = yield* EventSink.EventSinkV2;
+
+          // Start active runs on both threads so both have activeRunId set.
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("cmd:hist-a-msg"),
+            threadId: childAId,
+            messageId: MessageId.make("msg:hist-a"),
+            text: "Edit api/report.md in A",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("cmd:hist-b-msg"),
+            threadId: childBId,
+            messageId: MessageId.make("msg:hist-b"),
+            text: "Edit api/report.md in B",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+
+          const projA = yield* orchestrator.getThreadProjection(childAId);
+          const projB = yield* orchestrator.getThreadProjection(childBId);
+          const runA = projA.runs[0]!;
+          const runB = projB.runs[0]!;
+          const now = yield* DateTime.now;
+
+          // Record confirmed file_change turn items on both active runs for the same file.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("evt:hist-fc-a"),
+                threadId: childAId,
+                runId: runA.id,
+                nodeId: runA.rootNodeId!,
+                driver: ProviderDriverKind.make("codex"),
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make("item:hist-fc-a"),
+                  threadId: childAId,
+                  runId: runA.id,
+                  nodeId: runA.rootNodeId!,
+                  providerThreadId: null,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: "completed",
+                  title: null,
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "file_change",
+                  fileName: "api/report.md",
+                  additions: 2,
+                  deletions: 0,
+                },
+                type: "turn-item.updated",
+              },
+              {
+                id: EventId.make("evt:hist-fc-b"),
+                threadId: childBId,
+                runId: runB.id,
+                nodeId: runB.rootNodeId!,
+                driver: ProviderDriverKind.make("codex"),
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make("item:hist-fc-b"),
+                  threadId: childBId,
+                  runId: runB.id,
+                  nodeId: runB.rootNodeId!,
+                  providerThreadId: null,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: "completed",
+                  title: null,
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "file_change",
+                  fileName: "api/report.md",
+                  additions: 1,
+                  deletions: 0,
+                },
+                type: "turn-item.updated",
+              },
+            ],
+          });
+
+          // While both runs are active, the concurrent write overlap IS detected.
+          const activeSnap = yield* coord.getSnapshot(childAId);
+          assert.equal(activeSnap.overlaps.length, 1);
+          assert.equal(activeSnap.overlaps[0]?.normalizedPath, "api/report.md");
+
+          // Complete both runs so both threads become idle with historical file_change records.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("evt:hist-complete-a"),
+                threadId: childAId,
+                runId: runA.id,
+                nodeId: runA.rootNodeId!,
+                driver: ProviderDriverKind.make("codex"),
+                occurredAt: now,
+                payload: {
+                  ...runA,
+                  status: "completed",
+                  completedAt: now,
+                },
+                type: "run.updated",
+              },
+              {
+                id: EventId.make("evt:hist-complete-b"),
+                threadId: childBId,
+                runId: runB.id,
+                nodeId: runB.rootNodeId!,
+                driver: ProviderDriverKind.make("codex"),
+                occurredAt: now,
+                payload: {
+                  ...runB,
+                  status: "completed",
+                  completedAt: now,
+                },
+                type: "run.updated",
+              },
+            ],
+          });
+
+          const idleSnap = yield* coord.getSnapshot(childAId);
+          // Historical confirmed_write entries must NOT create false-positive overlaps.
+          assert.equal(idleSnap.overlaps.length, 0);
+          // Layer 2 confirmed write attribution and Layer 3 exclusion remain intact.
+          assert.isTrue(
+            idleSnap.threads
+              .find((t) => t.threadId === childAId)
+              ?.confirmedWritePaths.some((e) => e.normalizedPath === "api/report.md") ?? false,
+          );
+          assert.equal(idleSnap.observedUnverifiedPaths.length, 0);
+        }),
+      ).pipe(Effect.provide(harness.layer));
+    },
+  );
 });

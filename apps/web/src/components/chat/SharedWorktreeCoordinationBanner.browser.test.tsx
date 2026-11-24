@@ -368,14 +368,14 @@ describe("SharedWorktreeCoordinationBannerView", () => {
             {
               threadId: idleA,
               threadTitle: "Old Thread A",
-              runId: null,
+              runId: RunId.make("run:hist-a"),
               layers: ["confirmed_write"],
               rawPaths: [".gitignore"],
             },
             {
               threadId: idleB,
               threadTitle: "Old Thread B",
-              runId: null,
+              runId: RunId.make("run:hist-b"),
               layers: ["confirmed_write"],
               rawPaths: [".gitignore"],
             },

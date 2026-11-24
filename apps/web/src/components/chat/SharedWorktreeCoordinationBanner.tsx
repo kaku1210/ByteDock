@@ -64,22 +64,49 @@ function isThreadActive(thread: SharedWorktreeThreadAttribution): boolean {
   );
 }
 
-function getActiveOverlaps(
+function isOverlapParticipantActive(
+  overlap: SharedWorktreePathOverlap,
+  participant: SharedWorktreePathOverlap["participants"][number],
+  threadById: ReadonlyMap<ThreadId, SharedWorktreeThreadAttribution>,
+): boolean {
+  if (participant.layers.includes("reserved")) return true;
+  const thread = threadById.get(participant.threadId);
+  if (thread === undefined || !isThreadActive(thread)) return false;
+  if (participant.layers.includes("planned")) return true;
+  if (thread.activeRunId === null) return false;
+  if (participant.runId === thread.activeRunId) return true;
+  return thread.confirmedWritePaths.some(
+    (entry) =>
+      entry.runId === thread.activeRunId &&
+      (entry.normalizedPath === overlap.normalizedPath ||
+        entry.oldNormalizedPath === overlap.normalizedPath ||
+        participant.rawPaths.includes(entry.normalizedPath) ||
+        (entry.oldNormalizedPath !== null &&
+          participant.rawPaths.includes(entry.oldNormalizedPath))),
+  );
+}
+
+export function getActiveOverlaps(
   snapshot: SharedWorktreeCoordinationSnapshot,
 ): ReadonlyArray<SharedWorktreePathOverlap> {
   if (snapshot.overlaps.length === 0) return [];
   const threadById = new Map<ThreadId, SharedWorktreeThreadAttribution>(
     snapshot.threads.map((thread) => [thread.threadId, thread]),
   );
-  return snapshot.overlaps.filter((overlap) => {
-    if (overlap.severity === "blocking") return true;
-    return overlap.participants.some((participant) => {
-      if (participant.runId !== null) return true;
-      if (participant.layers.includes("reserved")) return true;
-      const thread = threadById.get(participant.threadId);
-      return thread !== undefined && isThreadActive(thread);
-    });
-  });
+  const activeOverlaps: Array<SharedWorktreePathOverlap> = [];
+  for (const overlap of snapshot.overlaps) {
+    const activeParticipants = overlap.participants.filter((participant) =>
+      isOverlapParticipantActive(overlap, participant, threadById),
+    );
+    if (activeParticipants.length >= 2) {
+      activeOverlaps.push(
+        activeParticipants.length === overlap.participants.length
+          ? overlap
+          : { ...overlap, participants: activeParticipants },
+      );
+    }
+  }
+  return activeOverlaps;
 }
 
 function hasVisibleActivity(snapshot: SharedWorktreeCoordinationSnapshot): boolean {

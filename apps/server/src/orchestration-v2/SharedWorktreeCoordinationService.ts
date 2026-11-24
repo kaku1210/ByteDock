@@ -1075,28 +1075,32 @@ const make = Effect.gen(function* () {
           updatedAt: entry.updatedAt,
         });
 
-        const isRename = entry.oldCanonicalKey !== null && entry.oldNormalizedPath !== null;
-        overlapEntries.push({
-          threadId: candidate.id,
-          threadTitle: candidate.title,
-          runId: entry.runId,
-          layer: "confirmed_write",
-          rawPath: entry.rawPath,
-          normalizedPath: entry.normalizedPath,
-          canonicalKey: entry.canonicalKey,
-          ...(isRename ? { isRenameEndpoint: true } : {}),
-        });
-        if (isRename) {
+        const isActiveRunConfirmedWrite =
+          candidate.activeRunId !== null && entry.runId === candidate.activeRunId;
+        if (isActiveRunConfirmedWrite) {
+          const isRename = entry.oldCanonicalKey !== null && entry.oldNormalizedPath !== null;
           overlapEntries.push({
             threadId: candidate.id,
             threadTitle: candidate.title,
             runId: entry.runId,
             layer: "confirmed_write",
-            rawPath: entry.oldRawPath!,
-            normalizedPath: entry.oldNormalizedPath!,
-            canonicalKey: entry.oldCanonicalKey!,
-            isRenameEndpoint: true,
+            rawPath: entry.rawPath,
+            normalizedPath: entry.normalizedPath,
+            canonicalKey: entry.canonicalKey,
+            ...(isRename ? { isRenameEndpoint: true } : {}),
           });
+          if (isRename) {
+            overlapEntries.push({
+              threadId: candidate.id,
+              threadTitle: candidate.title,
+              runId: entry.runId,
+              layer: "confirmed_write",
+              rawPath: entry.oldRawPath!,
+              normalizedPath: entry.oldNormalizedPath!,
+              canonicalKey: entry.oldCanonicalKey!,
+              isRenameEndpoint: true,
+            });
+          }
         }
       };
 
