@@ -127,6 +127,7 @@ export function makeReplayServerConfig(
       logLevel: "Error",
       traceMinLevel: "Info",
       traceTimingEnabled: true,
+      traceMinDurationMs: 0,
       traceBatchWindowMs: 200,
       traceMaxBytes: 10 * 1024 * 1024,
       traceMaxFiles: 10,

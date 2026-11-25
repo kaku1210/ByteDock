@@ -1,15 +1,12 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's File.Info has no ctime, which the cache fingerprint needs.
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Effect's File.Info has no ctime, and worker_threads offloads sync node:sqlite + protobuf decoding off the event loop.
 import * as NodeFSP from "node:fs/promises";
-import { pipe } from "effect/Function";
+import * as NodeWorkerThreads from "node:worker_threads";
 
 import type { UsageRecord } from "@t3tools/provider-core/server/usage";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
 
 type FieldValue = number | bigint | Uint8Array;
 type Fields = Map<number, FieldValue[]>;
@@ -68,10 +65,6 @@ const bytesAt = (value: Fields, key: number) => {
 const nested = (value: Fields, key: number) => {
   const bytes = bytesAt(value, key);
   return bytes === undefined ? new Map<number, FieldValue[]>() : fields(bytes);
-};
-const textAt = (value: Fields, key: number) => {
-  const bytes = bytesAt(value, key);
-  return bytes === undefined ? "" : new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
 };
 const timestamp = (value: Fields) => {
   const seconds = numberAt(value, 1);
@@ -158,22 +151,6 @@ function withRateModel(record: UsageRecord): UsageRecord {
   return rateModel === record.model ? record : { ...record, rateModel };
 }
 
-function modelName(name: string): string {
-  if (name) {
-    const normalized = name
-      .toLowerCase()
-      .replace(/\s*\(([^)]*)\)\s*$/, "-$1")
-      .replace(/\s+/g, "-");
-    if (normalized.startsWith("claude-")) {
-      return normalized
-        .replace(/^claude-(\d+(?:\.\d+)?)-(sonnet|opus|haiku)/, "claude-$2-$1")
-        .replaceAll(".", "-");
-    }
-    return normalized;
-  }
-  return "";
-}
-
 function isConcreteModel(model: string): boolean {
   return (
     /^(?:gemini-\d|claude-(?:sonnet|opus|haiku)-\d|gpt-)/.test(model) &&
@@ -186,45 +163,27 @@ function rememberModel(models: Map<number, string | null>, id: number, model: st
   models.set(id, previous === undefined || previous === model ? model : null);
 }
 
+interface CompactUsage {
+  readonly modelId: number;
+  readonly uncachedInputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly cacheCreationTokens: number;
+  readonly outputTokens: number;
+  readonly reasoningTokens: number;
+  readonly keys: readonly string[];
+}
+
 interface Metadata {
-  model: string;
-  modelId: number;
-  timestampMs: number | null;
-  usages: Fields[];
+  readonly model: string;
+  readonly modelId: number;
+  readonly timestampMs: number | null;
+  readonly usages: readonly CompactUsage[];
 }
 
-function metadata(bytes: Uint8Array, step: boolean): Metadata {
-  const root = fields(bytes);
-  if (!step && bytesAt(root, 1) === undefined) {
-    throw new Error("Missing Antigravity generation metadata");
-  }
-  const data = step ? root : nested(root, 1);
-  const model = step ? nested(data, 24) : data;
-  const usage = bytesAt(data, step ? 9 : 4);
-  // Copy the usage bytes: subarrays kept in usages would hold each row's whole blob alive.
-  const primaryUsage = usage === undefined ? undefined : fields(usage.slice());
-  const usages = primaryUsage === undefined ? [] : [primaryUsage];
-  for (const retry of data.get(step ? 28 : 17) ?? []) {
-    if (!(retry instanceof Uint8Array)) throw new Error("Invalid retry metadata");
-    const retryUsage = bytesAt(fields(retry), 2);
-    if (retryUsage !== undefined) usages.push(fields(retryUsage.slice()));
-  }
-  const names = [textAt(model, step ? 12 : 19), textAt(model, step ? 8 : 21)].map(modelName);
-  return {
-    model:
-      names.find(isConcreteModel) ?? names.find((name) => name && !/^model[_-]/.test(name)) ?? "",
-    modelId:
-      numberAt(model, step ? 1 : 3) || (primaryUsage === undefined ? 0 : numberAt(primaryUsage, 1)),
-    timestampMs: step
-      ? (timestamp(nested(data, 8)) ?? timestamp(nested(data, 1)))
-      : timestamp(nested(nested(data, 9), 4)),
-    usages,
-  };
-}
-
-function blob(value: unknown): Uint8Array {
-  if (!(value instanceof Uint8Array)) throw new Error("Invalid Antigravity metadata blob");
-  return value;
+interface RowMetadataEntry {
+  readonly rowId: number;
+  readonly idx: number;
+  readonly entry: Metadata;
 }
 
 interface UsageCandidate {
@@ -235,6 +194,47 @@ interface UsageCandidate {
   timestampQuality: number;
 }
 
+interface IncrementalCursor {
+  readonly genCount: number;
+  readonly genMaxRowId: number;
+  readonly stepCount: number;
+  readonly stepMaxRowId: number;
+  readonly nullStepRowIds: readonly number[];
+  readonly trajectoryTimestamp: number | null;
+  readonly generations: readonly RowMetadataEntry[];
+  readonly steps: readonly RowMetadataEntry[];
+}
+
+interface WorkerReadRequest {
+  readonly id: number;
+  readonly path: string;
+  readonly incremental?: {
+    readonly genCount: number;
+    readonly genMaxRowId: number;
+    readonly stepCount: number;
+    readonly stepMaxRowId: number;
+    readonly nullStepRowIds: readonly number[];
+    readonly hasTrajectoryTimestamp: boolean;
+  };
+}
+
+interface WorkerReadPayload {
+  readonly empty: boolean;
+  readonly incremental: boolean;
+  readonly genCount: number;
+  readonly genMaxRowId: number;
+  readonly stepCount: number;
+  readonly stepMaxRowId: number;
+  readonly nullStepRowIds: readonly number[];
+  readonly trajectoryTimestamp: number | null;
+  readonly generations: readonly RowMetadataEntry[];
+  readonly steps: readonly RowMetadataEntry[];
+}
+
+type WorkerReadResponse =
+  | { readonly id: number; readonly ok: true; readonly data: WorkerReadPayload | null }
+  | { readonly id: number; readonly ok: false; readonly error: string };
+
 class AntigravityDatabaseDecodeError extends Schema.TaggedError<AntigravityDatabaseDecodeError>()(
   "AntigravityDatabaseDecodeError",
   { path: Schema.String, cause: Schema.optional(Schema.Defect()) },
@@ -244,107 +244,553 @@ class AntigravityDatabaseDecodeError extends Schema.TaggedError<AntigravityDatab
   }
 }
 
-/** Generation rows can hold megabytes of context; read one at a time to bound blocking statement.all(). */
-const GENERATION_PAGE_ROWS = 1;
-const STEP_PAGE_ROWS = 64;
+/** Databases at or above this size use incremental rowid scanning on subsequent changes. */
+const INCREMENTAL_MIN_BYTES = 2 * 1024 * 1024;
+/** Re-check a small tail window on incremental scans in case the latest turn row updated in-place. */
+const INCREMENTAL_TAIL_RECHECK_ROWS = 4;
+const WORKER_IDLE_TIMEOUT_MS = 30_000;
 
-const readDatabase = Effect.fn("readDatabase")(function* (
+// Inline worker source runs off the main event loop across dev, vp pack bundles, server.asar, and SEA builds.
+const ANTIGRAVITY_WORKER_SOURCE = `
+const { parentPort } = require("node:worker_threads");
+const { DatabaseSync } = require("node:sqlite");
+
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const GENERATION_PAGE_ROWS = 16;
+const STEP_PAGE_ROWS = 128;
+const TAIL_RECHECK_ROWS = ${INCREMENTAL_TAIL_RECHECK_ROWS};
+
+function fields(bytes) {
+  let offset = 0;
+  const result = new Map();
+  const varint = () => {
+    let value = 0n;
+    for (let shift = 0n; shift < 70n; shift += 7n) {
+      const byte = bytes[offset++];
+      if (byte === undefined || (shift === 63n && byte > 1)) {
+        throw new Error("Invalid Antigravity protobuf varint");
+      }
+      value |= BigInt(byte & 127) << shift;
+      if (byte < 128) {
+        return value > BigInt(Number.MAX_SAFE_INTEGER) ? value : Number(value);
+      }
+    }
+    throw new Error("Invalid Antigravity protobuf varint");
+  };
+  while (offset < bytes.length) {
+    const tag = varint();
+    if (typeof tag !== "number") throw new Error("Invalid protobuf field");
+    const number = Math.floor(tag / 8);
+    const wire = tag % 8;
+    if (number === 0) throw new Error("Invalid protobuf field");
+    let value;
+    if (wire === 0) {
+      value = varint();
+    } else if (wire === 1 || wire === 5 || wire === 2) {
+      const length = wire === 2 ? varint() : wire === 1 ? 8 : 4;
+      if (typeof length !== "number") throw new Error("Invalid protobuf field length");
+      if (length > bytes.length - offset) throw new Error("Truncated protobuf field");
+      value = bytes.subarray(offset, offset + length);
+      offset += length;
+      if (wire !== 2) continue;
+    } else {
+      throw new Error("Unsupported protobuf wire type");
+    }
+    const entries = result.get(number);
+    if (entries === undefined) result.set(number, [value]);
+    else entries.push(value);
+  }
+  return result;
+}
+
+const numberAt = (value, key) => {
+  const entry = value.get(key)?.[0];
+  return typeof entry === "number" ? entry : 0;
+};
+const bytesAt = (value, key) => {
+  const entry = value.get(key)?.[0];
+  return entry instanceof Uint8Array ? entry : undefined;
+};
+const nested = (value, key) => {
+  const bytes = bytesAt(value, key);
+  return bytes === undefined ? new Map() : fields(bytes);
+};
+const textAt = (value, key) => {
+  const bytes = bytesAt(value, key);
+  return bytes === undefined ? "" : decoder.decode(bytes).trim();
+};
+const timestamp = (value) => {
+  const seconds = numberAt(value, 1);
+  return seconds > 0 ? seconds * 1000 + Math.floor(numberAt(value, 2) / 1000000) : null;
+};
+
+function modelName(name) {
+  if (!name) return "";
+  const normalized = name
+    .toLowerCase()
+    .replace(/\\s*\\(([^)]*)\\)\\s*$/, "-$1")
+    .replace(/\\s+/g, "-");
+  if (normalized.startsWith("claude-")) {
+    return normalized
+      .replace(/^claude-(\\d+(?:\\.\\d+)?)-(sonnet|opus|haiku)/, "claude-$2-$1")
+      .replaceAll(".", "-");
+  }
+  return normalized;
+}
+
+function isConcreteModel(model) {
+  return (
+    /^(?:gemini-\\d|claude-(?:sonnet|opus|haiku)-\\d|gpt-)/.test(model) &&
+    !/^gemini-3-flash-(?:agent(?:-[ab])?|[ab])$/.test(model)
+  );
+}
+
+function compactUsage(usageFields) {
+  const outputTokens = Math.max(
+    numberAt(usageFields, 3),
+    numberAt(usageFields, 9) + numberAt(usageFields, 10),
+  );
+  const keys = [];
+  for (const key of [11, 12, 7]) {
+    const id = textAt(usageFields, key);
+    if (id) keys.push("antigravity:" + key + ":" + id);
+  }
+  return {
+    modelId: numberAt(usageFields, 1),
+    uncachedInputTokens: numberAt(usageFields, 2),
+    cachedInputTokens: numberAt(usageFields, 5),
+    cacheCreationTokens: numberAt(usageFields, 4),
+    outputTokens,
+    reasoningTokens: Math.min(outputTokens, numberAt(usageFields, 9)),
+    keys,
+  };
+}
+
+function decodeMetadata(bytes, step) {
+  const root = fields(bytes);
+  if (!step && bytesAt(root, 1) === undefined) {
+    throw new Error("Missing Antigravity generation metadata");
+  }
+  const data = step ? root : nested(root, 1);
+  const model = step ? nested(data, 24) : data;
+  const usageBytes = bytesAt(data, step ? 9 : 4);
+  const primaryUsageFields = usageBytes === undefined ? undefined : fields(usageBytes);
+  const usages = primaryUsageFields === undefined ? [] : [compactUsage(primaryUsageFields)];
+  for (const retry of data.get(step ? 28 : 17) ?? []) {
+    if (!(retry instanceof Uint8Array)) throw new Error("Invalid retry metadata");
+    const retryUsage = bytesAt(fields(retry), 2);
+    if (retryUsage !== undefined) usages.push(compactUsage(fields(retryUsage)));
+  }
+  const names = [textAt(model, step ? 12 : 19), textAt(model, step ? 8 : 21)].map(modelName);
+  return {
+    model:
+      names.find(isConcreteModel) ?? names.find((name) => name && !/^model[_-]/.test(name)) ?? "",
+    modelId:
+      numberAt(model, step ? 1 : 3) ||
+      (primaryUsageFields === undefined ? 0 : numberAt(primaryUsageFields, 1)),
+    timestampMs: step
+      ? (timestamp(nested(data, 8)) ?? timestamp(nested(data, 1)))
+      : timestamp(nested(nested(data, 9), 4)),
+    usages,
+  };
+}
+
+function assertBlob(value) {
+  if (!(value instanceof Uint8Array)) throw new Error("Invalid Antigravity metadata blob");
+  return value;
+}
+
+function tableStats(db, table) {
+  const row = db
+    .prepare("SELECT COUNT(*) AS cnt, COALESCE(MAX(rowid), -1) AS max_id FROM " + table)
+    .get();
+  return {
+    count: Number(row?.cnt ?? 0),
+    maxRowId: Number(row?.max_id ?? -1),
+  };
+}
+
+function readPagedRows(db, query, pageRows, step, startAfter, nullRowIdsOut) {
+  const stmt = db.prepare(query);
+  const entries = [];
+  let after = startAfter;
+  while (true) {
+    const rows = stmt.all(after, pageRows);
+    for (const row of rows) {
+      if (step && row.data === null) {
+        if (nullRowIdsOut !== null) nullRowIdsOut.push(Number(row.row_id));
+        continue;
+      }
+      if (typeof row.idx !== "number") throw new Error("Invalid Antigravity metadata idx");
+      entries.push({
+        rowId: Number(row.row_id),
+        idx: row.idx,
+        entry: decodeMetadata(assertBlob(row.data), step),
+      });
+    }
+    if (rows.length < pageRows) break;
+    after = Number(rows[rows.length - 1].row_id);
+  }
+  return entries;
+}
+
+function readSpecificStepRowIds(db, rowIds, stillNullOut) {
+  if (rowIds.length === 0) return [];
+  const entries = [];
+  const stmt = db.prepare("SELECT rowid AS row_id, idx, metadata AS data FROM steps WHERE rowid = ?");
+  for (const rowId of rowIds) {
+    const row = stmt.get(rowId);
+    if (!row) continue;
+    if (row.data === null) {
+      stillNullOut.push(Number(row.row_id));
+      continue;
+    }
+    if (typeof row.idx !== "number") throw new Error("Invalid Antigravity metadata idx");
+    entries.push({
+      rowId: Number(row.row_id),
+      idx: row.idx,
+      entry: decodeMetadata(assertBlob(row.data), true),
+    });
+  }
+  return entries;
+}
+
+function readDatabaseFile(req) {
+  const db = new DatabaseSync(req.path, { readOnly: true, allowExtension: false });
+  try {
+    db.exec("PRAGMA busy_timeout = 100");
+    db.exec("BEGIN");
+    try {
+      const tableRows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+      const tables = new Set(tableRows.map((row) => row.name));
+      if (tables.size === 0) {
+        return {
+          empty: true,
+          incremental: false,
+          genCount: 0,
+          genMaxRowId: -1,
+          stepCount: 0,
+          stepMaxRowId: -1,
+          nullStepRowIds: [],
+          trajectoryTimestamp: null,
+          generations: [],
+          steps: [],
+        };
+      }
+      if (!tables.has("gen_metadata") && !tables.has("steps")) {
+        return null;
+      }
+
+      const genStats = tables.has("gen_metadata")
+        ? tableStats(db, "gen_metadata")
+        : { count: 0, maxRowId: -1 };
+      const stepStats = tables.has("steps")
+        ? tableStats(db, "steps")
+        : { count: 0, maxRowId: -1 };
+
+      const inc = req.incremental;
+      const canIncremental =
+        inc !== undefined &&
+        genStats.count >= inc.genCount &&
+        genStats.maxRowId >= inc.genMaxRowId &&
+        stepStats.count >= inc.stepCount &&
+        stepStats.maxRowId >= inc.stepMaxRowId;
+
+      let trajectoryTimestamp = null;
+      if (tables.has("trajectory_metadata_blob") && (!canIncremental || !inc.hasTrajectoryTimestamp)) {
+        const trajRows = db.prepare("SELECT data FROM trajectory_metadata_blob").all();
+        for (const row of trajRows) {
+          if (trajectoryTimestamp === null) {
+            trajectoryTimestamp = timestamp(nested(fields(assertBlob(row.data)), 2));
+          }
+        }
+      }
+
+      const nullStepRowIds = [];
+      let generations = [];
+      let steps = [];
+
+      if (canIncremental) {
+        if (tables.has("gen_metadata")) {
+          const genStart = Math.max(-1, inc.genMaxRowId - TAIL_RECHECK_ROWS);
+          generations = readPagedRows(
+            db,
+            "SELECT rowid AS row_id, idx, data FROM gen_metadata WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            GENERATION_PAGE_ROWS,
+            false,
+            genStart,
+            null,
+          );
+        }
+        if (tables.has("steps")) {
+          const stepStart = Math.max(-1, inc.stepMaxRowId - TAIL_RECHECK_ROWS);
+          const recheckNulls = inc.nullStepRowIds.filter((id) => id <= stepStart);
+          const resolvedNulls = readSpecificStepRowIds(db, recheckNulls, nullStepRowIds);
+          const tailAndNew = readPagedRows(
+            db,
+            "SELECT rowid AS row_id, idx, metadata AS data FROM steps WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            STEP_PAGE_ROWS,
+            true,
+            stepStart,
+            nullStepRowIds,
+          );
+          steps = resolvedNulls.concat(tailAndNew);
+        }
+      } else {
+        if (tables.has("gen_metadata")) {
+          generations = readPagedRows(
+            db,
+            "SELECT rowid AS row_id, idx, data FROM gen_metadata WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            GENERATION_PAGE_ROWS,
+            false,
+            -1,
+            null,
+          );
+        }
+        if (tables.has("steps")) {
+          steps = readPagedRows(
+            db,
+            "SELECT rowid AS row_id, idx, metadata AS data FROM steps WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            STEP_PAGE_ROWS,
+            true,
+            -1,
+            nullStepRowIds,
+          );
+        }
+      }
+
+      return {
+        empty: false,
+        incremental: canIncremental,
+        genCount: genStats.count,
+        genMaxRowId: genStats.maxRowId,
+        stepCount: stepStats.count,
+        stepMaxRowId: stepStats.maxRowId,
+        nullStepRowIds,
+        trajectoryTimestamp,
+        generations,
+        steps,
+      };
+    } finally {
+      try {
+        db.exec("ROLLBACK");
+      } catch {}
+    }
+  } finally {
+    db.close();
+  }
+}
+
+parentPort.on("message", (req) => {
+  try {
+    const data = readDatabaseFile(req);
+    parentPort.postMessage({ id: req.id, ok: true, data });
+  } catch (err) {
+    parentPort.postMessage({
+      id: req.id,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+`;
+
+interface PendingWorkerJob {
+  readonly resolve: (value: WorkerReadPayload | null) => void;
+  readonly reject: (reason: unknown) => void;
+}
+
+class AntigravityWorkerClient {
+  private worker: NodeWorkerThreads.Worker | null = null;
+  private nextId = 1;
+  private readonly pending = new Map<number, PendingWorkerJob>();
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private clearIdleTimer() {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  private scheduleIdleShutdown() {
+    this.clearIdleTimer();
+    if (this.pending.size > 0 || this.worker === null) return;
+    // @effect-diagnostics-next-line globalTimers:off - Plain Worker idle shutdown timer outside Effect runtime.
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.pending.size === 0 && this.worker !== null) {
+        const w = this.worker;
+        this.worker = null;
+        void w.terminate();
+      }
+    }, WORKER_IDLE_TIMEOUT_MS);
+    this.idleTimer.unref?.();
+  }
+
+  private failAll(error: Error) {
+    for (const [, job] of this.pending) {
+      job.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  private ensureWorker(): NodeWorkerThreads.Worker {
+    if (this.worker !== null) return this.worker;
+    const worker = new NodeWorkerThreads.Worker(ANTIGRAVITY_WORKER_SOURCE, { eval: true });
+    worker.unref();
+    worker.on("message", (msg: WorkerReadResponse) => {
+      const job = this.pending.get(msg.id);
+      if (!job) return;
+      this.pending.delete(msg.id);
+      if (msg.ok) {
+        job.resolve(msg.data);
+      } else {
+        job.reject(new Error(msg.error));
+      }
+      this.scheduleIdleShutdown();
+    });
+    worker.on("error", (err) => {
+      if (this.worker === worker) this.worker = null;
+      this.clearIdleTimer();
+      this.failAll(err instanceof Error ? err : new Error(String(err)));
+    });
+    worker.on("exit", (code) => {
+      if (this.worker === worker) this.worker = null;
+      this.clearIdleTimer();
+      if (this.pending.size > 0) {
+        this.failAll(new Error(`Antigravity usage worker exited unexpectedly (code=${code})`));
+      }
+    });
+    this.worker = worker;
+    return worker;
+  }
+
+  read(request: Omit<WorkerReadRequest, "id">): Promise<WorkerReadPayload | null> {
+    this.clearIdleTimer();
+    const id = this.nextId++;
+    const worker = this.ensureWorker();
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node worker_threads Worker.postMessage has no targetOrigin parameter.
+      worker.postMessage({ ...request, id });
+    });
+  }
+}
+
+const sharedAntigravityWorker = new AntigravityWorkerClient();
+
+function mergeRowEntries(
+  previous: readonly RowMetadataEntry[],
+  updates: readonly RowMetadataEntry[],
+): RowMetadataEntry[] {
+  if (updates.length === 0) return [...previous];
+  const byRowId = new Map<number, RowMetadataEntry>();
+  for (const item of previous) byRowId.set(item.rowId, item);
+  for (const item of updates) byRowId.set(item.rowId, item);
+  return [...byRowId.values()].sort((a, b) => a.idx - b.idx || a.rowId - b.rowId);
+}
+
+function buildDatabaseResult(
+  sessionId: string,
+  generations: readonly RowMetadataEntry[],
+  steps: readonly RowMetadataEntry[],
+  trajectoryTimestamp: number | null,
+  fallbackTimestamp: number,
+) {
+  const models = new Map<number, string | null>();
+  for (const { entry } of generations) {
+    if (entry.modelId > 0 && isConcreteModel(entry.model)) {
+      rememberModel(models, entry.modelId, entry.model);
+    }
+  }
+  for (const { entry } of steps) {
+    if (entry.modelId > 0 && isConcreteModel(entry.model)) {
+      rememberModel(models, entry.modelId, entry.model);
+    }
+  }
+  return {
+    candidates: usageCandidates(
+      sessionId,
+      generations,
+      steps,
+      trajectoryTimestamp,
+      fallbackTimestamp,
+    ),
+    models,
+  };
+}
+
+async function readDatabase(
   path: string,
   sessionId: string,
   fallbackTimestamp: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const decode = <A>(evaluate: () => A) =>
-    Effect.try({
-      try: evaluate,
-      catch: (cause) => new AntigravityDatabaseDecodeError({ path, cause }),
-    });
-  yield* sql.unsafe("PRAGMA busy_timeout = 100");
-  return yield* Effect.gen(function* () {
-    const tables = new Set(
-      (yield* sql.unsafe<{ readonly name: unknown }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table'",
-      )).map((row) => row.name),
-    );
-    // The native client creates empty conversation files before initializing their schema.
-    // SQLite has validated the file; no tables means no recorded usage yet.
-    if (tables.size === 0) return { candidates: [], models: new Map<number, string | null>() };
-    // Not a conversation store, e.g. agy's conversation_summaries.db index.
-    if (!tables.has("gen_metadata") && !tables.has("steps")) return null;
-    // Seek by rowid regardless of indexes; idx normally aliases rowid, but sort for layouts where it does not.
-    const readMetadata = Effect.fnUntraced(function* (
-      query: string,
-      pageRows: number,
-      step: boolean,
-    ) {
-      const entries: Array<{ idx: number; entry: Metadata }> = [];
-      let after = -Infinity;
-      while (true) {
-        const rows = yield* sql
-          .unsafe<{
-            readonly row_id: number;
-            readonly idx: unknown;
-            readonly data: unknown;
-          }>(query, [after, pageRows])
-          .pipe(Effect.withTracerEnabled(false));
-        for (const row of rows) {
-          // Filter outside SQL to bound scans to one page, including rows without metadata.
-          if (step && row.data === null) continue;
-          const idx = row.idx;
-          if (typeof idx !== "number") {
-            return yield* new AntigravityDatabaseDecodeError({ path });
-          }
-          entries.push({ idx, entry: yield* decode(() => metadata(blob(row.data), step)) });
+  fileSizeBytes: number,
+  previousCursor?: IncrementalCursor,
+): Promise<{ data: DecodedDatabase; cursor: IncrementalCursor | undefined }> {
+  const useIncremental = previousCursor !== undefined && fileSizeBytes >= INCREMENTAL_MIN_BYTES;
+  const payload = await sharedAntigravityWorker.read({
+    path,
+    ...(useIncremental
+      ? {
+          incremental: {
+            genCount: previousCursor.genCount,
+            genMaxRowId: previousCursor.genMaxRowId,
+            stepCount: previousCursor.stepCount,
+            stepMaxRowId: previousCursor.stepMaxRowId,
+            nullStepRowIds: previousCursor.nullStepRowIds,
+            hasTrajectoryTimestamp: previousCursor.trajectoryTimestamp !== null,
+          },
         }
-        if (rows.length < pageRows) break;
-        after = rows[rows.length - 1]!.row_id;
-        yield* Effect.yieldNow;
-      }
-      return entries.sort((a, b) => a.idx - b.idx);
-    });
-    const generations = tables.has("gen_metadata")
-      ? yield* readMetadata(
-          "SELECT rowid AS row_id, idx, data FROM gen_metadata WHERE rowid > ? ORDER BY rowid LIMIT ?",
-          GENERATION_PAGE_ROWS,
-          false,
-        )
-      : [];
-    let trajectoryTimestamp: number | null = null;
-    if (tables.has("trajectory_metadata_blob")) {
-      for (const row of yield* sql.unsafe<{ readonly data: unknown }>(
-        "SELECT data FROM trajectory_metadata_blob",
-      )) {
-        trajectoryTimestamp ??= yield* decode(() =>
-          pipe(blob(row.data), fields, (message) => nested(message, 2), timestamp),
-        );
-      }
-    }
-    const steps = tables.has("steps")
-      ? yield* readMetadata(
-          "SELECT rowid AS row_id, idx, metadata AS data FROM steps WHERE rowid > ? ORDER BY rowid LIMIT ?",
-          STEP_PAGE_ROWS,
-          true,
-        )
-      : [];
-    return yield* decode(() => {
-      const models = new Map<number, string | null>();
-      for (const { entry } of [...generations, ...steps]) {
-        if (entry.modelId > 0 && isConcreteModel(entry.model))
-          rememberModel(models, entry.modelId, entry.model);
-      }
-      return {
-        candidates: usageCandidates(
-          sessionId,
+      : {}),
+  });
+
+  if (payload === null) {
+    return { data: null, cursor: undefined };
+  }
+  if (payload.empty) {
+    return {
+      data: { candidates: [] as UsageCandidate[], models: new Map<number, string | null>() },
+      cursor: undefined,
+    };
+  }
+
+  const generations =
+    payload.incremental && previousCursor !== undefined
+      ? mergeRowEntries(previousCursor.generations, payload.generations)
+      : [...payload.generations].sort((a, b) => a.idx - b.idx || a.rowId - b.rowId);
+  const steps =
+    payload.incremental && previousCursor !== undefined
+      ? mergeRowEntries(previousCursor.steps, payload.steps)
+      : [...payload.steps].sort((a, b) => a.idx - b.idx || a.rowId - b.rowId);
+  const trajectoryTimestamp =
+    payload.incremental && previousCursor !== undefined
+      ? (previousCursor.trajectoryTimestamp ?? payload.trajectoryTimestamp)
+      : payload.trajectoryTimestamp;
+
+  const data = buildDatabaseResult(
+    sessionId,
+    generations,
+    steps,
+    trajectoryTimestamp,
+    fallbackTimestamp,
+  );
+  const cursor: IncrementalCursor | undefined =
+    fileSizeBytes >= INCREMENTAL_MIN_BYTES
+      ? {
+          genCount: payload.genCount,
+          genMaxRowId: payload.genMaxRowId,
+          stepCount: payload.stepCount,
+          stepMaxRowId: payload.stepMaxRowId,
+          nullStepRowIds: payload.nullStepRowIds,
+          trajectoryTimestamp,
           generations,
           steps,
-          trajectoryTimestamp,
-          fallbackTimestamp,
-        ),
-        models,
-      };
-    });
-  }).pipe(sql.withTransaction);
-});
+        }
+      : undefined;
+
+  return { data, cursor };
+}
 
 function usageCandidates(
   sessionId: string,
@@ -361,36 +807,31 @@ function usageCandidates(
   ] as const) {
     for (const [index, { idx, entry }] of entries.entries()) {
       for (const [usageIndex, usage] of entry.usages.entries()) {
-        const modelId = numberAt(usage, 1) || entry.modelId;
+        const modelId = usage.modelId || entry.modelId;
         const generation = source === "step" ? generationModels.get(idx) : undefined;
         // A retry can use a different model than its enclosing generation or step.
-        const matches = (metadata: Metadata) => modelId === 0 || metadata.modelId === modelId;
+        const matches = (meta: Metadata) => modelId === 0 || meta.modelId === modelId;
         const model =
           matches(entry) && entry.model
             ? entry.model
             : generation && matches(generation)
               ? generation.model
               : "";
-        const outputTokens = Math.max(numberAt(usage, 3), numberAt(usage, 9) + numberAt(usage, 10));
         const totals = {
-          uncachedInputTokens: numberAt(usage, 2),
-          cachedInputTokens: numberAt(usage, 5),
-          cacheCreationTokens: numberAt(usage, 4),
-          outputTokens,
-          reasoningTokens: Math.min(outputTokens, numberAt(usage, 9)),
+          uncachedInputTokens: usage.uncachedInputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          cacheCreationTokens: usage.cacheCreationTokens,
+          outputTokens: usage.outputTokens,
+          reasoningTokens: usage.reasoningTokens,
         };
         if (
           totals.uncachedInputTokens +
             totals.cachedInputTokens +
             totals.cacheCreationTokens +
-            outputTokens ===
+            usage.outputTokens ===
           0
         )
           continue;
-        const keys = ([11, 12, 7] as const).flatMap((key) => {
-          const id = textAt(usage, key);
-          return id ? [`antigravity:${key}:${id}`] : [];
-        });
         const record: UsageRecord = {
           provider: "antigravity",
           sessionId,
@@ -399,13 +840,13 @@ function usageCandidates(
           totals,
           reportedCostUsd: null,
           speed: "standard",
-          dedupeKey: keys[0] ?? `antigravity:${sessionId}:${source}:${index}:${usageIndex}`,
+          dedupeKey: usage.keys[0] ?? `antigravity:${sessionId}:${source}:${index}:${usageIndex}`,
         };
         records.push({
           record,
           modelId,
           modelQuality: isConcreteModel(model) ? 4 : model ? 1 : 0,
-          keys,
+          keys: usage.keys,
           timestampQuality: entry.timestampMs !== null ? 2 : trajectoryTimestamp !== null ? 1 : 0,
         });
       }
@@ -414,10 +855,21 @@ function usageCandidates(
   return records;
 }
 
+type DecodedDatabase = {
+  readonly candidates: UsageCandidate[];
+  readonly models: Map<number, string | null>;
+} | null;
+
 interface CachedDatabase {
   readonly fingerprint: string;
-  readonly data: Effect.Success<ReturnType<typeof readDatabase>>;
+  readonly data: DecodedDatabase;
+  readonly cursor?: IncrementalCursor | undefined;
 }
+
+const inFlightByCache = new WeakMap<
+  Map<string, CachedDatabase>,
+  Map<string, Promise<DecodedDatabase>>
+>();
 
 /** Fingerprint canonical DB/WAL paths by size, mtime and ctime; WAL holds new rows, and ctime catches restored mtimes. */
 export const makeAntigravityUsageCache = () => new Map<string, CachedDatabase>();
@@ -433,10 +885,16 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     typeof conversationsDirectories === "string"
       ? [conversationsDirectories]
       : conversationsDirectories;
+  const canonicalRoots: string[] = [];
+  for (const root of roots) {
+    canonicalRoots.push(
+      yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => pathService.resolve(root))),
+    );
+  }
   const files: Array<{ root: string; path: string; records: UsageRecord[] }> = [];
   const errors: string[] = [];
   const models = new Map<number, string | null>();
-  const pending: Array<{ data: NonNullable<CachedDatabase["data"]>; fileIndex: number }> = [];
+  const pending: Array<{ data: NonNullable<DecodedDatabase>; fileIndex: number }> = [];
   const identities = new Map<string, number>();
   const groups: Array<
     UsageCandidate & { parent: number; size: number; owner: number; fileIndex: number }
@@ -503,6 +961,16 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     }
   };
   const visited = new Set<string>();
+  const inFlight =
+    cache === undefined
+      ? undefined
+      : (inFlightByCache.get(cache) ??
+        (() => {
+          const map = new Map<string, Promise<DecodedDatabase>>();
+          inFlightByCache.set(cache, map);
+          return map;
+        })());
+
   const readFile = Effect.fn("readAntigravityUsage.readFile")(function* (path: string) {
     const canonical = yield* fileSystem.realPath(path);
     if (visited.has(canonical)) return null;
@@ -519,42 +987,70 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     const fingerprint = `${part}/${wal._tag === "Some" ? wal.value.part : "-"}`;
     const cached = cache?.get(canonical);
     if (cached?.fingerprint === fingerprint) return cached.data;
-    const data = yield* readDatabase(path, pathService.basename(path, ".db"), stat.mtimeMs).pipe(
-      Effect.provide(NodeSqliteClient.layer({ filename: path, readonly: true })),
-    );
-    cache?.set(canonical, { fingerprint, data });
-    return data;
+
+    const existingFlight = inFlight?.get(`${canonical}\0${fingerprint}`);
+    if (existingFlight !== undefined) {
+      return yield* Effect.tryPromise({
+        try: () => existingFlight,
+        catch: (cause) => new AntigravityDatabaseDecodeError({ path, cause }),
+      });
+    }
+
+    const runRead = readDatabase(
+      path,
+      pathService.basename(path, ".db"),
+      stat.mtimeMs,
+      stat.size,
+      cached?.cursor,
+    ).then((result) => {
+      cache?.set(canonical, { fingerprint, data: result.data, cursor: result.cursor });
+      return result.data;
+    });
+
+    const flightKey = `${canonical}\0${fingerprint}`;
+    inFlight?.set(flightKey, runRead);
+    try {
+      return yield* Effect.tryPromise({
+        try: () => runRead,
+        catch: (cause) => new AntigravityDatabaseDecodeError({ path, cause }),
+      });
+    } finally {
+      if (inFlight?.get(flightKey) === runRead) {
+        inFlight.delete(flightKey);
+      }
+    }
   });
+
   const walk = Effect.fn("antigravityUsageReader.walk")(function* (
     directory: string,
     root: string,
   ): Effect.fn.Return<void> {
-    const names = yield* fileSystem.readDirectory(directory).pipe(
-      Effect.catchTags({
-        PlatformError: (cause) => {
-          if (cause.reason._tag !== "NotFound") errors.push(directory);
-          return Effect.succeed(null);
-        },
+    const dirents = yield* Effect.tryPromise({
+      try: () => NodeFSP.readdir(directory, { withFileTypes: true }),
+      catch: (cause) => new AntigravityDatabaseDecodeError({ path: directory, cause }),
+    }).pipe(
+      Effect.catch((err) => {
+        const cause = err.cause;
+        const code =
+          typeof cause === "object" && cause !== null && "code" in cause
+            ? (cause as { code?: unknown }).code
+            : undefined;
+        if (code !== "ENOENT") errors.push(directory);
+        return Effect.succeed(null);
       }),
     );
-    if (names === null) return;
-    names.sort((a, b) => a.localeCompare(b));
-    for (const name of names) {
-      const path = pathService.join(directory, name);
+    if (dirents === null) return;
+    dirents.sort((a, b) => a.name.localeCompare(b.name));
+    for (const dirent of dirents) {
       // Like a directory listing's entry types: symlinks are neither files nor directories.
-      const isLink = Exit.isSuccess(yield* Effect.exit(fileSystem.readLink(path)));
-      const type = isLink
-        ? "SymbolicLink"
-        : yield* fileSystem.stat(path).pipe(
-            Effect.map((info) => info.type),
-            Effect.orElseSucceed(() => null),
-          );
-      if (type === "Directory") {
-        yield* walk(path, root);
-      } else if ((type === "File" || type === null) && name.endsWith(".db")) {
-        const data = yield* readFile(path).pipe(
+      if (dirent.isSymbolicLink()) continue;
+      const entryPath = pathService.join(directory, dirent.name);
+      if (dirent.isDirectory()) {
+        yield* walk(entryPath, root);
+      } else if (dirent.name.endsWith(".db") && (dirent.isFile() || !dirent.isFIFO())) {
+        const data = yield* readFile(entryPath).pipe(
           Effect.catch(() => {
-            errors.push(path);
+            errors.push(entryPath);
             return Effect.succeed(null);
           }),
         );
@@ -563,14 +1059,27 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
           rememberModel(models, id, model);
         }
         const fileIndex = files.length;
-        files.push({ root, path, records: [] });
+        files.push({ root, path: entryPath, records: [] });
         pending.push({ data, fileIndex });
       }
     }
   });
+
   for (const root of roots) yield* walk(root, root);
   if (cache !== undefined) {
-    for (const key of cache.keys()) if (!visited.has(key)) cache.delete(key);
+    const belongsToScannedRoot = (key: string) =>
+      canonicalRoots.some(
+        (root) =>
+          key === root ||
+          key.startsWith(`${root}${pathService.sep}`) ||
+          (pathService.sep === "\\" &&
+            key.toLowerCase().startsWith(`${root.toLowerCase()}${pathService.sep}`)),
+      );
+    for (const key of cache.keys()) {
+      if (!visited.has(key) && belongsToScannedRoot(key)) {
+        cache.delete(key);
+      }
+    }
   }
   for (const { data, fileIndex } of pending) {
     for (const [index, candidate] of data.candidates.entries()) {

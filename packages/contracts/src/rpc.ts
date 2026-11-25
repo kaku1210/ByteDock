@@ -56,6 +56,18 @@ import { TextGenerationError } from "./git.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
+  ExternalTunnelActionInput,
+  ExternalTunnelBundleExportInput,
+  ExternalTunnelBundleExportResult,
+  ExternalTunnelBundleImportInput,
+  ExternalTunnelInstallEventSchema,
+  ExternalTunnelInstallInput,
+  ExternalTunnelOperationError,
+  ExternalTunnelScanEventSchema,
+  ExternalTunnelScanInput,
+  ExternalTunnelStatusSchema,
+} from "./externalTunnel.ts";
+import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
   ProviderAuthState,
@@ -681,6 +693,13 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverExternalTunnelGetStatus: "server.externalTunnel.getStatus",
+  serverExternalTunnelSubscribe: "server.externalTunnel.subscribe",
+  serverExternalTunnelAction: "server.externalTunnel.action",
+  serverExternalTunnelScan: "server.externalTunnel.scan",
+  serverExternalTunnelInstall: "server.externalTunnel.install",
+  serverExternalTunnelExportBundle: "server.externalTunnel.exportBundle",
+  serverExternalTunnelImportBundle: "server.externalTunnel.importBundle",
 
   workflowsSubscribe: "workflows.subscribe",
   workflowsCounts: "workflows.counts",
@@ -2625,12 +2644,76 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const ExternalTunnelRpcError = Schema.Union([
+  ExternalTunnelOperationError,
+  EnvironmentAuthorizationError,
+]);
+
+const WsServerExternalTunnelGetStatusRpc = Rpc.make(WS_METHODS.serverExternalTunnelGetStatus, {
+  payload: Schema.Struct({}),
+  success: ExternalTunnelStatusSchema,
+  error: ExternalTunnelRpcError,
+});
+
+const WsServerExternalTunnelSubscribeRpc = Rpc.make(WS_METHODS.serverExternalTunnelSubscribe, {
+  payload: Schema.Struct({}),
+  success: ExternalTunnelStatusSchema,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsServerExternalTunnelActionRpc = Rpc.make(WS_METHODS.serverExternalTunnelAction, {
+  payload: ExternalTunnelActionInput,
+  success: ExternalTunnelStatusSchema,
+  error: ExternalTunnelRpcError,
+});
+
+const WsServerExternalTunnelScanRpc = Rpc.make(WS_METHODS.serverExternalTunnelScan, {
+  payload: ExternalTunnelScanInput,
+  success: ExternalTunnelScanEventSchema,
+  error: ExternalTunnelRpcError,
+  stream: true,
+});
+
+const WsServerExternalTunnelInstallRpc = Rpc.make(WS_METHODS.serverExternalTunnelInstall, {
+  payload: ExternalTunnelInstallInput,
+  success: ExternalTunnelInstallEventSchema,
+  error: ExternalTunnelRpcError,
+  stream: true,
+});
+
+const WsServerExternalTunnelExportBundleRpc = Rpc.make(
+  WS_METHODS.serverExternalTunnelExportBundle,
+  {
+    payload: ExternalTunnelBundleExportInput,
+    success: ExternalTunnelBundleExportResult,
+    error: ExternalTunnelRpcError,
+  },
+);
+
+const WsServerExternalTunnelImportBundleRpc = Rpc.make(
+  WS_METHODS.serverExternalTunnelImportBundle,
+  {
+    payload: ExternalTunnelBundleImportInput,
+    success: ExternalTunnelInstallEventSchema,
+    error: ExternalTunnelRpcError,
+    stream: true,
+  },
+);
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
+  WsServerExternalTunnelGetStatusRpc,
+  WsServerExternalTunnelSubscribeRpc,
+  WsServerExternalTunnelActionRpc,
+  WsServerExternalTunnelScanRpc,
+  WsServerExternalTunnelInstallRpc,
+  WsServerExternalTunnelExportBundleRpc,
+  WsServerExternalTunnelImportBundleRpc,
   WsIssuesListRpc,
   WsIssuesDetailRpc,
   WsIssuesCommentsRpc,

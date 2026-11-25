@@ -61,6 +61,7 @@ const layerConfig = (overrides: Partial<ServerConfig.ServerConfig["Service"]>) =
         logLevel: "Info",
         traceMinLevel: "Info",
         traceTimingEnabled: false,
+        traceMinDurationMs: 0,
         traceBatchWindowMs: 200,
         traceMaxBytes: 1024,
         traceMaxFiles: 1,

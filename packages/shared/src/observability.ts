@@ -183,6 +183,8 @@ export interface TraceSink {
 export interface LocalFileTracerOptions extends TraceSinkOptions {
   readonly delegate?: Tracer.Tracer;
   readonly sink?: TraceSink;
+  /** Minimum span duration (ms) to persist for healthy spans without events. Defaults to 0 (record all). */
+  readonly minDurationMs?: number | undefined;
 }
 
 type OtlpSpan = OtlpTracer.ScopeSpan["spans"][number];
@@ -597,14 +599,17 @@ class LocalFileSpan implements Tracer.Span {
   events: Array<[name: string, startTime: bigint, attributes: Record<string, unknown>]>;
   private readonly delegate: Tracer.Span;
   private readonly push: (record: EffectTraceRecord) => void;
+  private readonly minDurationNs: bigint;
 
   constructor(
     options: Parameters<Tracer.Tracer["span"]>[0],
     delegate: Tracer.Span,
     push: (record: EffectTraceRecord) => void,
+    minDurationNs: bigint,
   ) {
     this.delegate = delegate;
     this.push = push;
+    this.minDurationNs = minDurationNs;
     this.name = delegate.name;
     this.spanId = delegate.spanId;
     this.traceId = delegate.traceId;
@@ -633,7 +638,15 @@ class LocalFileSpan implements Tracer.Span {
     this.delegate.end(endTime, redactExitCredentials(traceExit));
 
     if (this.sampled) {
-      this.push(spanToTraceRecord(this));
+      const durationNs = endTime > this.status.startTime ? endTime - this.status.startTime : 0n;
+      if (
+        this.minDurationNs <= 0n ||
+        !ExitRuntime.isSuccess(traceExit) ||
+        this.events.length > 0 ||
+        durationNs >= this.minDurationNs
+      ) {
+        this.push(spanToTraceRecord(this));
+      }
     }
   }
 
@@ -681,9 +694,15 @@ export const makeLocalFileTracer = Effect.fn("makeLocalFileTracer")(function* (
       span: (spanOptions) => new Tracer.NativeSpan(spanOptions),
     });
 
+  const minDurationMs = options.minDurationMs ?? 0;
+  const minDurationNs =
+    Number.isFinite(minDurationMs) && minDurationMs > 0
+      ? BigInt(Math.round(minDurationMs * 1_000_000))
+      : 0n;
+
   return Tracer.make({
     span(spanOptions) {
-      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), sink.push);
+      return new LocalFileSpan(spanOptions, delegate.span(spanOptions), sink.push, minDurationNs);
     },
     ...(delegate.context ? { context: delegate.context } : {}),
   });

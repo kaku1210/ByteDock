@@ -79,6 +79,7 @@ it.effect.each([
         logLevel: "Error",
         traceMinLevel: "Info",
         traceTimingEnabled: false,
+        traceMinDurationMs: 0,
         traceBatchWindowMs: 200,
         traceMaxBytes: 1024,
         traceMaxFiles: 1,

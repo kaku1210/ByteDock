@@ -202,6 +202,7 @@ import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
+import * as ExternalTunnelService from "./tunnel/ExternalTunnelService.ts";
 import * as NpmRelease from "./cloud/npmRelease.ts";
 import * as RelayTracing from "./cloud/relayTracing.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -1598,6 +1599,7 @@ export const layerWsRpc = (
       const providerAuth = yield* ProviderAuthService.ProviderAuthService;
       const providerInstallation = yield* ProviderInstallation.ProviderInstallation;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+      const externalTunnel = yield* ExternalTunnelService.ExternalTunnelService;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -3860,6 +3862,20 @@ export const layerWsRpc = (
               Stream.concat(Stream.make(latest), changes),
             ),
           ),
+        [WS_METHODS.serverExternalTunnelGetStatus]: (_input) => externalTunnel.getStatus,
+        [WS_METHODS.serverExternalTunnelSubscribe]: (_input) =>
+          Stream.unwrap(
+            Effect.map(externalTunnel.subscribe, ({ initial, changes }) =>
+              Stream.concat(Stream.make(initial), changes),
+            ),
+          ),
+        [WS_METHODS.serverExternalTunnelAction]: (input) => externalTunnel.action(input),
+        [WS_METHODS.serverExternalTunnelScan]: (input) => externalTunnel.scan(input),
+        [WS_METHODS.serverExternalTunnelInstall]: (input) => externalTunnel.install(input),
+        [WS_METHODS.serverExternalTunnelExportBundle]: (input) =>
+          externalTunnel.exportBundle(input),
+        [WS_METHODS.serverExternalTunnelImportBundle]: (input) =>
+          externalTunnel.importBundle(input),
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
       const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
@@ -3881,6 +3897,7 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+    const externalTunnel = yield* ExternalTunnelService.ExternalTunnelService;
     const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3982,6 +3999,9 @@ export const layer = Layer.unwrap(
               ),
               Layer.provide(Layer.succeed(NpmRelease.NpmRelease, npmRelease)),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
+              Layer.provide(
+                Layer.succeed(ExternalTunnelService.ExternalTunnelService, externalTunnel),
+              ),
               // Share server-lifetime PR caches so WS mutations invalidate every client's HTTP diffs.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(IssueService.IssueService, issues)),

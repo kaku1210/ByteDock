@@ -282,6 +282,13 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeDeviceState]: "device",
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
+  [WS_METHODS.serverExternalTunnelGetStatus]: "server",
+  [WS_METHODS.serverExternalTunnelAction]: "server",
+  [WS_METHODS.serverExternalTunnelScan]: "server",
+  [WS_METHODS.serverExternalTunnelInstall]: "server",
+  [WS_METHODS.serverExternalTunnelExportBundle]: "server",
+  [WS_METHODS.serverExternalTunnelImportBundle]: "server",
+  [WS_METHODS.serverExternalTunnelSubscribe]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 

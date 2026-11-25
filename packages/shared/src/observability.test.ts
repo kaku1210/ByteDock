@@ -13,6 +13,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import type { OtlpTracer } from "effect/observability";
 
@@ -567,6 +568,58 @@ describe("observability", () => {
         assert.equal(records[0]?.name, "interrupt-span");
         assert.equal(records[0]?.exit?._tag, "Interrupted");
       }),
+    );
+
+    it.effect(
+      "drops fast healthy event-free spans below minDurationMs while keeping errors, events, and slow spans",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tracePath = path.join(tempDir, "filtered.trace.ndjson");
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const tracer = yield* makeLocalFileTracer({
+                filePath: tracePath,
+                maxBytes: 1024 * 1024,
+                maxFiles: 2,
+                batchWindowMs: 10,
+                minDurationMs: 25,
+              });
+              const layer = Layer.succeed(Tracer.Tracer, tracer);
+
+              // Fast healthy event-free span -> should be dropped
+              yield* Effect.void.pipe(Effect.withSpan("fast-healthy"), Effect.provide(layer));
+
+              // Fast failed span -> must be kept
+              yield* Effect.exit(
+                Effect.fail("boom").pipe(Effect.withSpan("fast-failed"), Effect.provide(layer)),
+              );
+
+              // Fast span with an event -> must be kept
+              yield* Effect.annotateCurrentSpan({ ok: true }).pipe(
+                Effect.andThen(Effect.logInfo("important-event")),
+                Effect.withSpan("fast-with-event"),
+                Effect.provide(layer),
+              );
+
+              // Slow healthy span (>= 25ms) -> must be kept
+              yield* TestClock.adjust("40 millis").pipe(
+                Effect.withSpan("slow-healthy"),
+                Effect.provide(layer),
+              );
+            }),
+          );
+
+          const records = yield* readTraceRecords(tracePath);
+          const names = records.map((r) => r.name);
+          assert.equal(names.includes("fast-healthy"), false);
+          assert.equal(names.includes("fast-failed"), true);
+          assert.equal(names.includes("fast-with-event"), true);
+          assert.equal(names.includes("slow-healthy"), true);
+        }),
     );
   });
 });

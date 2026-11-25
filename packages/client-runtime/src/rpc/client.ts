@@ -80,6 +80,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeDeviceState
   | typeof WS_METHODS.subscribeResourceTelemetry
+  | typeof WS_METHODS.serverExternalTunnelSubscribe
   | typeof WS_METHODS.pullRequestsSubscribeRefreshes
   | typeof WS_METHODS.pullRequestsSubscribeLinkedThreadRefreshes
   | typeof WS_METHODS.subscribeVcsStatus
@@ -94,6 +95,9 @@ export type EnvironmentStreamCommandRpcTag =
   | typeof WS_METHODS.chatGptHandoffSubscribe
   | typeof WS_METHODS.cloudInstallRelayClient
   | typeof WS_METHODS.serverUpdateServerWithProgress
+  | typeof WS_METHODS.serverExternalTunnelScan
+  | typeof WS_METHODS.serverExternalTunnelInstall
+  | typeof WS_METHODS.serverExternalTunnelImportBundle
   | typeof WS_METHODS.gitRunStackedAction;
 
 export type EnvironmentStreamRpcTag =

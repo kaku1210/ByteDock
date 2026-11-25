@@ -9,6 +9,8 @@ import {
 import {
   type DesktopUpdateChannel,
   type EnvironmentId,
+  type ExternalTunnelInstallEvent,
+  type ExternalTunnelScanEvent,
   type ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -1731,6 +1733,11 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeResourceTelemetry,
       idleTtlMs: 0,
     }),
+    externalTunnelStatus: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:external-tunnel:status",
+      tag: WS_METHODS.serverExternalTunnelSubscribe,
+      idleTtlMs: 0,
+    }),
     resourceTelemetryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:resource-telemetry-history",
       tag: WS_METHODS.serverGetResourceTelemetryHistory,
@@ -2075,6 +2082,89 @@ export function createServerEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
       },
+    }),
+    externalTunnelAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:external-tunnel:action",
+      tag: WS_METHODS.serverExternalTunnelAction,
+    }),
+    externalTunnelExportBundle: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:external-tunnel:export-bundle",
+      tag: WS_METHODS.serverExternalTunnelExportBundle,
+    }),
+    externalTunnelScan: createRuntimeCommand<
+      EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
+      E,
+      {
+        readonly environmentId: EnvironmentId;
+        readonly input: EnvironmentRpcInput<typeof WS_METHODS.serverExternalTunnelScan>;
+        readonly onEvent?: (event: ExternalTunnelScanEvent) => void;
+      },
+      ExternalTunnelScanEvent | undefined,
+      unknown
+    >(runtime, {
+      label: "environment-data:server:external-tunnel:scan",
+      execute: Effect.fn("execute")(function* ({ environmentId, input, onEvent }) {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const last = yield* registry
+          .runStream(
+            environmentId,
+            runStream(WS_METHODS.serverExternalTunnelScan, input).pipe(
+              Stream.tap((event) => Effect.sync(() => onEvent?.(event))),
+            ),
+          )
+          .pipe(Stream.runLast);
+        return Option.getOrUndefined(last);
+      }),
+    }),
+    externalTunnelInstall: createRuntimeCommand<
+      EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
+      E,
+      {
+        readonly environmentId: EnvironmentId;
+        readonly input: EnvironmentRpcInput<typeof WS_METHODS.serverExternalTunnelInstall>;
+        readonly onEvent?: (event: ExternalTunnelInstallEvent) => void;
+      },
+      ExternalTunnelInstallEvent | undefined,
+      unknown
+    >(runtime, {
+      label: "environment-data:server:external-tunnel:install",
+      execute: Effect.fn("execute")(function* ({ environmentId, input, onEvent }) {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const last = yield* registry
+          .runStream(
+            environmentId,
+            runStream(WS_METHODS.serverExternalTunnelInstall, input).pipe(
+              Stream.tap((event) => Effect.sync(() => onEvent?.(event))),
+            ),
+          )
+          .pipe(Stream.runLast);
+        return Option.getOrUndefined(last);
+      }),
+    }),
+    externalTunnelImportBundle: createRuntimeCommand<
+      EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
+      E,
+      {
+        readonly environmentId: EnvironmentId;
+        readonly input: EnvironmentRpcInput<typeof WS_METHODS.serverExternalTunnelImportBundle>;
+        readonly onEvent?: (event: ExternalTunnelInstallEvent) => void;
+      },
+      ExternalTunnelInstallEvent | undefined,
+      unknown
+    >(runtime, {
+      label: "environment-data:server:external-tunnel:import-bundle",
+      execute: Effect.fn("execute")(function* ({ environmentId, input, onEvent }) {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const last = yield* registry
+          .runStream(
+            environmentId,
+            runStream(WS_METHODS.serverExternalTunnelImportBundle, input).pipe(
+              Stream.tap((event) => Effect.sync(() => onEvent?.(event))),
+            ),
+          )
+          .pipe(Stream.runLast);
+        return Option.getOrUndefined(last);
+      }),
     }),
   };
 }

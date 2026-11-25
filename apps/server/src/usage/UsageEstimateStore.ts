@@ -467,7 +467,11 @@ export const layerLocal = (stateDir: string) =>
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       yield* fs.makeDirectory(stateDir, { recursive: true });
-      const sqlite = NodeSqliteClient.layer({ filename: path.join(stateDir, DATABASE_FILE_NAME) });
+      const sqlite = NodeSqliteClient.layer({
+        filename: path.join(stateDir, DATABASE_FILE_NAME),
+        readerWorker: true,
+        writerWorker: true,
+      });
       const initialize = Layer.effectDiscard(
         Effect.gen(function* () {
           yield* UsageEstimateStore;

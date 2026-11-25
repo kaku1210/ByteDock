@@ -7,6 +7,7 @@ import {
   TurnItemId,
   type OrchestrationV2Actor,
   type OrchestrationV2ThreadShell,
+  type ProjectId,
   type SharedWorktreeCheckoutPolicy,
   type SharedWorktreeConfirmedWriteEntry,
   type SharedWorktreeCoordinationSnapshot,
@@ -53,11 +54,24 @@ import {
 const MAX_REVISION_PREVIEW_BYTES = 256 * 1024;
 const CANONICAL_CHECKOUT_CACHE_TTL_MS = 60_000;
 const MAX_CANONICAL_CHECKOUT_CACHE_ENTRIES = 512;
-const NORMALIZED_PATH_CACHE_TTL_MS = 30_000;
-const MAX_NORMALIZED_PATH_CACHE_ENTRIES = 4_096;
-const CHECKOUT_SNAPSHOT_CACHE_TTL_MS = 3_000;
-const GIT_LOCAL_STATUS_CACHE_TTL_MS = 3_000;
+const PROJECT_ROOT_CACHE_TTL_MS = 60_000;
+const MAX_PROJECT_ROOT_CACHE_ENTRIES = 1_024;
+const NORMALIZED_PATH_CACHE_TTL_MS = 60_000;
+const MAX_NORMALIZED_PATH_CACHE_ENTRIES = 8_192;
+const CHECKOUT_SNAPSHOT_CACHE_TTL_MS = 5_000;
+const GIT_LOCAL_STATUS_CACHE_TTL_MS = 5_000;
 const encodeStringArrayJson = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+function evictOldestFraction<K, V>(map: Map<K, V>, maxEntries: number, fraction = 0.25): void {
+  if (map.size < maxEntries) return;
+  const toDelete = Math.max(1, Math.floor(maxEntries * fraction));
+  let deleted = 0;
+  for (const key of map.keys()) {
+    map.delete(key);
+    deleted += 1;
+    if (deleted >= toDelete) break;
+  }
+}
 
 function decodeUtf8OrNull(bytes: Uint8Array, stream: boolean): string | null {
   try {
@@ -101,7 +115,6 @@ interface TurnItemFileChangeSummaryRow {
   readonly thread_id: string;
   readonly item_count: number;
   readonly max_updated_at: string | null;
-  readonly total_payload_bytes: number | null;
   readonly max_ordinal: number | null;
 }
 
@@ -392,12 +405,16 @@ const make = Effect.gen(function* () {
   let checkoutLeaseSignal = Deferred.makeUnsafe<void>();
   let coordinationChangeSignal = Deferred.makeUnsafe<void>();
   let coordinationVersion = 0;
+  const checkoutCoordinationVersions = new Map<string, number>();
+
+  const getCheckoutCoordinationVersion = (checkoutKey: string): string =>
+    `${coordinationVersion}:${checkoutCoordinationVersions.get(checkoutKey) ?? 0}`;
 
   const checkoutSnapshotBaseCache = new Map<
     string,
     {
       readonly shellSequence: number;
-      readonly coordinationVersion: number;
+      readonly coordinationVersion: string;
       readonly expiresAtMs: number;
       readonly base: CheckoutSnapshotBase;
     }
@@ -411,6 +428,10 @@ const make = Effect.gen(function* () {
     { readonly status: GitLocalStatusResult | null; readonly expiresAtMs: number }
   >();
   const inFlightGitStatus = new Map<string, Deferred.Deferred<GitLocalStatusResult | null>>();
+  const projectWorkspaceRootCache = new Map<
+    string,
+    { readonly workspaceRoot: string | null; readonly expiresAtMs: number }
+  >();
   const canonicalCheckoutCache = new Map<
     string,
     { readonly value: CanonicalCheckout; readonly expiresAtMs: number }
@@ -422,10 +443,14 @@ const make = Effect.gen(function* () {
   const threadFileChangeCache = new Map<ThreadId, ThreadFileChangeCacheEntry>();
 
   const bumpCoordinationVersion = (checkoutKey?: string) => {
-    coordinationVersion += 1;
     if (checkoutKey !== undefined) {
+      checkoutCoordinationVersions.set(
+        checkoutKey,
+        (checkoutCoordinationVersions.get(checkoutKey) ?? 0) + 1,
+      );
       checkoutSnapshotBaseCache.delete(checkoutKey);
     } else {
+      coordinationVersion += 1;
       checkoutSnapshotBaseCache.clear();
     }
   };
@@ -465,6 +490,29 @@ const make = Effect.gen(function* () {
       );
     });
 
+  const getProjectWorkspaceRootCached = (
+    projectId: ProjectId,
+    nowMs: number,
+  ): Effect.Effect<string | null> => {
+    const cached = projectWorkspaceRootCache.get(projectId);
+    if (cached !== undefined && nowMs < cached.expiresAtMs) {
+      return Effect.succeed(cached.workspaceRoot);
+    }
+    return projects.get(projectId, { includeDeleted: true }).pipe(
+      Effect.orElseSucceed(() => Option.none()),
+      Effect.map((proj) => (Option.isSome(proj) ? proj.value.workspaceRoot : null)),
+      Effect.tap((workspaceRoot) =>
+        Effect.sync(() => {
+          evictOldestFraction(projectWorkspaceRootCache, MAX_PROJECT_ROOT_CACHE_ENTRIES);
+          projectWorkspaceRootCache.set(projectId, {
+            workspaceRoot,
+            expiresAtMs: nowMs + PROJECT_ROOT_CACHE_TTL_MS,
+          });
+        }),
+      ),
+    );
+  };
+
   const canonicalizeCheckoutCached = (
     rawRoot: string,
     platform: NodeJS.Platform,
@@ -478,9 +526,7 @@ const make = Effect.gen(function* () {
     return canonicalizeCheckoutPathRaw(fileSystem, path, rawRoot, platform).pipe(
       Effect.tap((value) =>
         Effect.sync(() => {
-          if (canonicalCheckoutCache.size >= MAX_CANONICAL_CHECKOUT_CACHE_ENTRIES) {
-            canonicalCheckoutCache.clear();
-          }
+          evictOldestFraction(canonicalCheckoutCache, MAX_CANONICAL_CHECKOUT_CACHE_ENTRIES);
           canonicalCheckoutCache.set(cacheKey, {
             value,
             expiresAtMs: nowMs + CANONICAL_CHECKOUT_CACHE_TTL_MS,
@@ -505,9 +551,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => null),
       Effect.tap((value) =>
         Effect.sync(() => {
-          if (normalizedPathCache.size >= MAX_NORMALIZED_PATH_CACHE_ENTRIES) {
-            normalizedPathCache.clear();
-          }
+          evictOldestFraction(normalizedPathCache, MAX_NORMALIZED_PATH_CACHE_ENTRIES);
           normalizedPathCache.set(cacheKey, {
             value,
             expiresAtMs: nowMs + NORMALIZED_PATH_CACHE_TTL_MS,
@@ -822,7 +866,7 @@ const make = Effect.gen(function* () {
     readonly targetThreadId: ThreadId;
     readonly shell: Awaited<Effect.Success<ReturnType<typeof projections.getShellSnapshot>>>;
     readonly platform: NodeJS.Platform;
-    readonly versionAtStart: number;
+    readonly versionAtStart: string;
   }): Effect.fn.Return<CheckoutSnapshotBase, SharedWorktreeCoordinationError> {
     const { checkout, shell, platform, versionAtStart } = input;
     const nowMs = yield* Clock.currentTimeMillis;
@@ -840,23 +884,13 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const projectRootCache = new Map<string, string | null>();
     const rawRootCheckoutCache = new Map<string, CanonicalCheckout>();
 
     const sharedThreads: Array<OrchestrationV2ThreadShell> = [];
     for (const candidate of activeThreads) {
       let rawRoot = candidate.worktreePath;
       if (rawRoot === null) {
-        const cachedProjectRoot = projectRootCache.get(candidate.projectId);
-        if (cachedProjectRoot !== undefined) {
-          rawRoot = cachedProjectRoot;
-        } else {
-          const proj = yield* projects
-            .get(candidate.projectId, { includeDeleted: true })
-            .pipe(Effect.orElseSucceed(() => Option.none()));
-          rawRoot = Option.isSome(proj) ? proj.value.workspaceRoot : null;
-          projectRootCache.set(candidate.projectId, rawRoot);
-        }
+        rawRoot = yield* getProjectWorkspaceRootCached(candidate.projectId, nowMs);
       }
       if (rawRoot === null) continue;
       let candidateCheckout = rawRootCheckoutCache.get(rawRoot);
@@ -922,7 +956,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-    // Single batched summary query to skip loading & decoding unchanged threads' file_change rows.
+    // Single batched summary query without reading payload_json blobs to skip unchanged threads.
     const fileChangeSummaryRows =
       encodedSharedThreadIds === null
         ? []
@@ -931,7 +965,6 @@ const make = Effect.gen(function* () {
                 thread_id,
                 COUNT(*) AS item_count,
                 MAX(updated_at) AS max_updated_at,
-                SUM(LENGTH(payload_json)) AS total_payload_bytes,
                 MAX(ordinal) AS max_ordinal
               FROM orchestration_v2_projection_turn_items
               WHERE type = 'file_change'
@@ -1112,7 +1145,7 @@ const make = Effect.gen(function* () {
           threadFileChangeCache.delete(candidate.id);
           turnItemFileChanges = [];
         } else {
-          const fingerprint = `${checkout.checkoutKey}\0${summary.item_count}\0${summary.max_updated_at ?? ""}\0${summary.total_payload_bytes ?? 0}\0${summary.max_ordinal ?? 0}`;
+          const fingerprint = `${checkout.checkoutKey}\0${summary.item_count}\0${summary.max_updated_at ?? ""}\0${summary.max_ordinal ?? 0}`;
           const cached = threadFileChangeCache.get(candidate.id);
           if (cached !== undefined && cached.fingerprint === fingerprint) {
             turnItemFileChanges = cached.entries;
@@ -1287,7 +1320,7 @@ const make = Effect.gen(function* () {
     };
 
     const completedAtMs = yield* Clock.currentTimeMillis;
-    if (coordinationVersion === versionAtStart) {
+    if (getCheckoutCoordinationVersion(checkout.checkoutKey) === versionAtStart) {
       checkoutSnapshotBaseCache.set(checkout.checkoutKey, {
         shellSequence: shell.snapshotSequence,
         coordinationVersion: versionAtStart,
@@ -1352,7 +1385,7 @@ const make = Effect.gen(function* () {
     );
 
     const nowMs = yield* Clock.currentTimeMillis;
-    const versionAtStart = coordinationVersion;
+    const versionAtStart = getCheckoutCoordinationVersion(checkout.checkoutKey);
     const cached = checkoutSnapshotBaseCache.get(checkout.checkoutKey);
     const base =
       cached !== undefined &&

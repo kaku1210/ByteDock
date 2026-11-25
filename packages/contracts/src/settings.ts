@@ -43,6 +43,7 @@ import {
 } from "./coordinator.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
+import { DEFAULT_EXTERNAL_TUNNEL_SETTINGS, ExternalTunnelSettings } from "./externalTunnel.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import {
   BrowserRecordingFrameRate,
@@ -1696,6 +1697,9 @@ export const ServerSettings = Schema.Struct({
   defaultCoordinatorRoleTemplateId: CoordinatorRoleTemplateId.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID)),
   ),
+  externalTunnel: ExternalTunnelSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXTERNAL_TUNNEL_SETTINGS)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -2095,6 +2099,7 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(CoordinatorRoleTemplateId, Schema.NullOr(CoordinatorRoleTemplateConfig)),
   ),
   defaultCoordinatorRoleTemplateId: Schema.optionalKey(CoordinatorRoleTemplateId),
+  externalTunnel: Schema.optionalKey(ExternalTunnelSettings),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
@@ -2122,7 +2127,11 @@ export function requiredScopesForServerSettingsPatch(
   let changesAccess = false;
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
-    if (key === "requireConnectDeviceApproval" || key === "enablePreviewTunnel") {
+    if (
+      key === "requireConnectDeviceApproval" ||
+      key === "enablePreviewTunnel" ||
+      key === "externalTunnel"
+    ) {
       changesAccess = true;
     } else if (
       key === "providers" ||
