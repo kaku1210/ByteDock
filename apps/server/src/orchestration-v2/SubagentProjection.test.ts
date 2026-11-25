@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
   EnvironmentId,
   type ModelSelection,
   NodeId,
@@ -86,7 +87,7 @@ function makeParentThread(): OrchestrationV2AppThread {
   };
 }
 
-it("resets a subagent child's snooze, title job and remote delegation but keeps its workspace", () => {
+it("resets a subagent child's snooze, title job, remote delegation, and coordinatorMode while keeping its workspace", () => {
   const parentThread: OrchestrationV2AppThread = {
     ...makeParentThread(),
     titleRegeneration: { requestId: CommandId.make("command:parent-title"), startedAt: snoozedAt },
@@ -94,6 +95,13 @@ it("resets a subagent child's snooze, title job and remote delegation but keeps 
       environmentId: EnvironmentId.make("linked-environment"),
       threadId: ThreadId.make("linked-parent"),
       title: "Linked parent",
+    },
+    coordinatorMode: {
+      enabled: true,
+      templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+      tierModelOverrides: {
+        L1: childModelSelection,
+      },
     },
   };
   const childProviderThreadId = ProviderThreadId.make("provider-thread:subagent-awake-child");
@@ -115,6 +123,7 @@ it("resets a subagent child's snooze, title job and remote delegation but keeps 
   assert.isNull(childThread.snoozedAt);
   assert.isNull(childThread.titleRegeneration);
   assert.isUndefined(childThread.delegatedFrom);
+  assert.isUndefined(childThread.coordinatorMode);
   assert.equal(childThread.projectId, parentThread.projectId);
   assert.equal(childThread.runtimeMode, parentThread.runtimeMode);
   assert.equal(childThread.interactionMode, parentThread.interactionMode);

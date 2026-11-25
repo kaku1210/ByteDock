@@ -1180,4 +1180,106 @@ describe("L0 coordinator turn-start instruction injection (P3-B2)", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect(
+    "does not let delegated_task children inherit coordinatorMode or receive L1 sub-coordinator instructions by default",
+    () => {
+      const capturedTurns: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+      const instanceId = ProviderInstanceId.make("codex");
+      const { modelSelection, layer } = makeCoordinatorTestLayer(
+        "coordinator-delegated-no-inherit",
+        {
+          capturedTurns,
+          providers: sampleProviders(instanceId),
+        },
+      );
+      const existingWorktreePath = NodeOS.tmpdir();
+
+      return Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const projectId = ProjectId.make("proj:coord-delegated-no-inherit");
+        const l0Id = ThreadId.make("thread:coord-delegated-l0");
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd:create-delegated-l0"),
+          threadId: l0Id,
+          projectId,
+          title: "L0 Coordinator Root",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          coordinatorMode: {
+            enabled: true,
+            templateId: DEFAULT_COORDINATOR_ROLE_TEMPLATE_ID,
+            tierModelOverrides: {
+              L1: { instanceId, model: "model-beta" },
+              L2: { instanceId, model: "model-gamma" },
+            },
+          },
+          branch: "main",
+          worktreePath: existingWorktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cmd:start-delegated-l0"),
+          threadId: l0Id,
+          messageId: MessageId.make("msg:delegated-l0"),
+          text: "Split this feature into implementation and review",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* drainWorker;
+
+        const l0Projection = yield* projectionStore.getThreadProjection(l0Id);
+        const l0Run = l0Projection.runs[0]!;
+        assert.isNotNull(l0Run.rootNodeId);
+
+        const delegatedResult = yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make("cmd:delegate-l1-from-l0"),
+          parentThreadId: l0Id,
+          parentRunId: l0Run.id,
+          parentNodeId: l0Run.rootNodeId!,
+          task: "Implement the feature directly",
+          title: "L1 Implementer",
+          modelSelection: { instanceId, model: "model-beta" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* drainWorker;
+
+        const subagentEvent = delegatedResult.storedEvents.find(
+          (stored) =>
+            stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
+        );
+        assert.isDefined(subagentEvent);
+        const childThreadId =
+          subagentEvent?.event.type === "subagent.updated"
+            ? subagentEvent.event.payload.childThreadId
+            : null;
+        assert.isNotNull(childThreadId);
+
+        const childThread = yield* projectionStore.getThread(childThreadId!);
+        assert.isUndefined(childThread.coordinatorMode);
+
+        assert.strictEqual(capturedTurns.length, 2);
+        const l0Turn = capturedTurns[0]!;
+        const childTurn = capturedTurns[1]!;
+        assert.isDefined(l0Turn.coordinatorInstructions);
+        assert.isUndefined(childTurn.coordinatorInstructions);
+        assert.include(childTurn.message.text, "Implement the feature directly");
+        assert.notInclude(childTurn.message.text, "<t3_code_coordinator_instructions>");
+        assert.notInclude(childTurn.message.text, "Sub-Coordinator Mode");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
