@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ProjectId,
   ScopedProjectRef,
   SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
@@ -50,8 +51,42 @@ export interface SidebarProjectSnapshot extends Project {
   memberProjects: readonly SidebarProjectGroupMember[];
   memberProjectRefs: readonly ScopedProjectRef[];
   remoteEnvironmentLabels: readonly string[];
+  parentProjectId?: ProjectId | null | undefined;
   pinned: boolean;
   archived: boolean;
+}
+
+/**
+ * Orders project groups so child projects sit immediately beneath their parent
+ * project (preserving relative order among top-level projects and among
+ * siblings). A child whose parent is absent stays at top level.
+ */
+export function orderProjectGroupsHierarchically<
+  TGroup extends Pick<SidebarProjectSnapshot, "environmentId" | "id" | "parentProjectId">,
+>(groups: ReadonlyArray<TGroup>): TGroup[] {
+  const presentKeys = new Set(groups.map((group) => `${group.environmentId}:${group.id}`));
+  const childrenByParentKey = new Map<string, TGroup[]>();
+  const topLevel: TGroup[] = [];
+  for (const group of groups) {
+    const parentKey =
+      group.parentProjectId != null ? `${group.environmentId}:${group.parentProjectId}` : null;
+    if (parentKey !== null && presentKeys.has(parentKey)) {
+      const existing = childrenByParentKey.get(parentKey);
+      if (existing) existing.push(group);
+      else childrenByParentKey.set(parentKey, [group]);
+    } else {
+      topLevel.push(group);
+    }
+  }
+  const ordered: TGroup[] = [];
+  for (const parent of topLevel) {
+    ordered.push(parent);
+    const children = childrenByParentKey.get(`${parent.environmentId}:${parent.id}`);
+    if (children) {
+      ordered.push(...children);
+    }
+  }
+  return ordered;
 }
 
 export function projectGroupsSpanEnvironments(
@@ -211,6 +246,7 @@ export function buildSidebarProjectSnapshots(
       memberProjects: members,
       memberProjectRefs: group.memberProjectRefs,
       remoteEnvironmentLabels,
+      parentProjectId: group.parentProjectId,
       pinned: group.pinned,
       archived: group.archived,
     };

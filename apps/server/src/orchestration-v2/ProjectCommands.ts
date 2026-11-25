@@ -25,6 +25,7 @@ export interface ProjectCreateCommand {
   readonly workspaceRoot: string;
   readonly scripts?: ReadonlyArray<ProjectScript>;
   readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder>;
+  readonly parentProjectId?: ProjectId | null;
 }
 
 export interface ProjectMetaUpdateCommand {
@@ -40,6 +41,7 @@ export interface ProjectMetaUpdateCommand {
   readonly projectIcon?: ProjectIconOverride | null;
   readonly scripts?: ReadonlyArray<ProjectScript>;
   readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder>;
+  readonly parentProjectId?: ProjectId | null;
   readonly pinned?: boolean;
   readonly archived?: boolean;
 }
@@ -169,6 +171,7 @@ export function planProjectCommand(input: {
           ...(command.trackedFolders === undefined || command.trackedFolders.length === 0
             ? {}
             : { trackedFolders: command.trackedFolders }),
+          ...(command.parentProjectId == null ? {} : { parentProjectId: command.parentProjectId }),
           createdAt: occurredAt,
           updatedAt: occurredAt,
         },
@@ -219,6 +222,9 @@ export function planProjectCommand(input: {
           ...(command.trackedFolders === undefined
             ? {}
             : { trackedFolders: command.trackedFolders }),
+          ...(command.parentProjectId === undefined
+            ? {}
+            : { parentProjectId: command.parentProjectId }),
           // Repeating a pin or archive keeps the original time.
           ...(command.pinned === undefined
             ? {}

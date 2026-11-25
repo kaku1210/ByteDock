@@ -27,6 +27,9 @@ export const projectMutationOperation = Effect.fn("projectMutationOperation")(fu
         ...(mutation.trackedFolders === undefined
           ? {}
           : { trackedFolders: mutation.trackedFolders }),
+        ...(mutation.parentProjectId === undefined
+          ? {}
+          : { parentProjectId: mutation.parentProjectId }),
       });
 
     case "project.update":
@@ -52,6 +55,9 @@ export const projectMutationOperation = Effect.fn("projectMutationOperation")(fu
         ...(mutation.untrackFolders === undefined
           ? {}
           : { untrackFolders: mutation.untrackFolders }),
+        ...(mutation.parentProjectId === undefined
+          ? {}
+          : { parentProjectId: mutation.parentProjectId }),
         ...(mutation.pinned === undefined ? {} : { pinned: mutation.pinned }),
         ...(mutation.archived === undefined ? {} : { archived: mutation.archived }),
       });

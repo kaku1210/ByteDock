@@ -9,6 +9,8 @@ export type ThreadActionMenuId =
   | "new-thread-on-branch"
   | "filter-by-project"
   | "turn-into-project"
+  | "move-within-family"
+  | `move-within-family:${string}`
   | "move-to-project"
   | `move-to-project:${string}`
   | "move-to-no-project"
@@ -126,6 +128,12 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Other projects in the same parent-child family this thread can be moved under in the sidebar. */
+  readonly moveWithinFamilyTargets?: ReadonlyArray<{
+    readonly projectId: ProjectId;
+    readonly label: string;
+    readonly isParent?: boolean;
+  }> | null;
   /** Non-archived, non-scratch projects in the same environment that this scratch thread can move into. */
   readonly moveToProjectTargets?: ReadonlyArray<{
     readonly projectId: ProjectId;
@@ -251,6 +259,22 @@ export function buildThreadActionMenuItems(
             label: resolve(msg("Turn into project")),
             icon: "folder-plus",
             disabled: state.isRunning,
+          },
+        ]
+      : []),
+    ...(state.moveWithinFamilyTargets && state.moveWithinFamilyTargets.length > 0
+      ? [
+          {
+            id: "move-within-family" as const,
+            label: resolve(
+              msg("Move to…", { $context: "move thread within parent-child project family" }),
+            ),
+            icon: "folder-input",
+            children: state.moveWithinFamilyTargets.map((target) => ({
+              id: `move-within-family:${target.projectId}` as const,
+              label: target.label,
+              icon: target.isParent ? "folder-tree" : "folder",
+            })),
           },
         ]
       : []),

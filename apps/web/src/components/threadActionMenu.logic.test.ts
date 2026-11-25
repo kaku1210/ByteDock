@@ -141,9 +141,16 @@ describe("buildThreadActionMenuItems", () => {
     const items = buildThreadActionMenuItems({
       ...baseState,
       canOperate: false,
+      moveWithinFamilyTargets: [{ projectId: "child-a" as never, label: "Child A" }],
       moveToProjectTargets: [{ projectId: "project-a" as never, label: "Project A" }],
       canMoveToNoProject: true,
     });
+    expect(items.find((item) => item.id === "move-within-family")?.disabled).toBe(true);
+    expect(
+      items
+        .find((item) => item.id === "move-within-family")
+        ?.children?.every((child) => child.disabled),
+    ).toBe(true);
     expect(items.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
     expect(
       items
@@ -151,6 +158,31 @@ describe("buildThreadActionMenuItems", () => {
         ?.children?.every((child) => child.disabled),
     ).toBe(true);
     expect(items.find((item) => item.id === "move-to-no-project")?.disabled).toBe(true);
+  });
+
+  it("keeps move-within-family enabled even while the thread is running", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      isRunning: true,
+      moveWithinFamilyTargets: [
+        { projectId: "parent-game" as never, label: "Game", isParent: true },
+        { projectId: "child-client" as never, label: "Client" },
+      ],
+      moveToProjectTargets: [{ projectId: "project-other" as never, label: "Other" }],
+    });
+    const moveWithinFamily = items.find((item) => item.id === "move-within-family");
+    expect(moveWithinFamily).toMatchObject({
+      id: "move-within-family",
+      label: "Move to…",
+      icon: "folder-input",
+      children: [
+        { id: "move-within-family:parent-game", label: "Game", icon: "folder-tree" },
+        { id: "move-within-family:child-client", label: "Client", icon: "folder" },
+      ],
+    });
+    expect(moveWithinFamily?.disabled).not.toBe(true);
+    expect(moveWithinFamily?.children?.every((child) => child.disabled !== true)).toBe(true);
+    expect(items.find((item) => item.id === "move-to-project")?.disabled).toBe(true);
   });
 
   it("disables only rename where no inline title editor exists", () => {

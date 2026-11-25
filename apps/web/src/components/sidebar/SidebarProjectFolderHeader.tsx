@@ -42,6 +42,8 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   group: SidebarProjectSnapshot;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
+  depth?: 0 | 1;
+  navigationParent?: string | undefined;
   onToggle: (group: SidebarProjectSnapshot) => void;
   onNewThread: (group: SidebarProjectSnapshot) => void;
   onContextMenu: (
@@ -52,7 +54,8 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
 }) {
   const gt = useGT();
   const m = useMessages();
-  const { group, collapsed, hiddenThreads } = props;
+  const { group, collapsed, hiddenThreads, depth = 0, navigationParent } = props;
+  const isChild = depth > 0;
   const rowId = sidebarFolderRowId(group.projectKey);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -71,11 +74,16 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   return (
     <li
       data-testid="sidebar-project-folder"
-      className="group/project-folder relative mt-2 list-none first:mt-0"
+      data-project-depth={depth}
+      className={cn(
+        "group/project-folder relative list-none first:mt-0",
+        isChild ? "mt-0.5 pl-4" : "mt-2",
+      )}
     >
       <button
         type="button"
         data-sidebar-row={rowId}
+        data-sidebar-parent={navigationParent}
         aria-expanded={!collapsed}
         onClick={() => props.onToggle(group)}
         onContextMenu={(event) => {
@@ -86,10 +94,21 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
             contextMenuSourceOf(event),
           );
         }}
-        className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className={cn(
+          "flex w-full cursor-pointer items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          isChild ? "h-7" : "h-8 gap-2.5",
+        )}
       >
-        <ProjectFavicon project={group} className="size-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
+        <ProjectFavicon
+          project={group}
+          className={cn("shrink-0", isChild ? "size-3.5" : "size-4")}
+        />
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate font-medium",
+            isChild ? "text-xs text-sidebar-foreground/80" : "text-sm text-sidebar-foreground/90",
+          )}
+        >
           {group.displayName}
         </span>
         {dot ? (

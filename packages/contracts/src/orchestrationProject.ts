@@ -22,6 +22,8 @@ export const OrchestrationProjectShell = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   // Absent from older servers; that means a single-folder project.
   trackedFolders: Schema.optional(ProjectTrackedFolders),
+  // Optional parent project for strict 2-level sidebar hierarchy; absent/null = top-level project.
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   // Pinned projects lead project pickers; archived ones leave them. Optional so older servers decode.
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),

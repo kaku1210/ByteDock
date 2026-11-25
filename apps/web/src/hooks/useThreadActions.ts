@@ -32,6 +32,10 @@ import { environmentSession, readEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
 import {
+  getProjectFamilyMembers,
+  resolveThreadSidebarProjectId,
+} from "@t3tools/client-runtime/state/project-grouping";
+import {
   isScratchProject,
   normalizeProjectPathForComparison,
 } from "@t3tools/client-runtime/state/projects";
@@ -364,18 +368,54 @@ export function listMoveThreadToProjectTargets(
   if (!canMoveThreadToProject(threadRef)) return [];
   const config = appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId);
   const scratchRoot = config?.scratchWorkspaceRoot;
-  return readProjects()
-    .filter(
-      (project) =>
-        project.environmentId === threadRef.environmentId &&
-        project.archivedAt == null &&
-        !isScratchProject(project, scratchRoot),
-    )
+  const eligible = readProjects().filter(
+    (project) =>
+      project.environmentId === threadRef.environmentId &&
+      project.archivedAt == null &&
+      !isScratchProject(project, scratchRoot),
+  );
+  const byId = new Map(eligible.map((project) => [project.id, project] as const));
+  return eligible
+    .map((project) => {
+      const parent = project.parentProjectId ? byId.get(project.parentProjectId) : undefined;
+      return {
+        projectId: project.id,
+        label: parent ? `${parent.title} / ${project.title}` : project.title,
+      };
+    })
+    .toSorted((left, right) => left.label.localeCompare(right.label));
+}
+
+/**
+ * Other active projects in the same parent-child family that a thread can be
+ * moved under in the sidebar (changes `sidebarProjectId` only; working
+ * directory, files, and scheduled tasks stay untouched).
+ */
+export function listMoveThreadInFamilyTargets(threadRef: ScopedThreadRef): ReadonlyArray<{
+  readonly projectId: ProjectId;
+  readonly label: string;
+  readonly isParent: boolean;
+}> {
+  const thread = readThreadShell(threadRef);
+  if (!thread || thread.lineage?.relationshipToParent === "subagent") {
+    return [];
+  }
+  const envProjects = readProjects().filter(
+    (project) => project.environmentId === threadRef.environmentId && project.archivedAt == null,
+  );
+  const projectsById = new Map(envProjects.map((project) => [project.id, project] as const));
+  const family = getProjectFamilyMembers(thread.projectId, envProjects);
+  if (family.length <= 1) {
+    return [];
+  }
+  const currentSidebarProjectId = resolveThreadSidebarProjectId(thread, projectsById);
+  return family
+    .filter((project) => project.id !== currentSidebarProjectId)
     .map((project) => ({
       projectId: project.id,
       label: project.title,
-    }))
-    .toSorted((left, right) => left.label.localeCompare(right.label));
+      isParent: project.parentProjectId == null,
+    }));
 }
 
 /** A regular (non-scratch) non-subagent thread that can be reclassified to No project. */
@@ -450,6 +490,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const moveThreadToScratchMutation = useAtomCommand(projectEnvironment.moveThreadToScratch, {
+    reportFailure: false,
+  });
+  const updateThreadMetadataMutation = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession);
@@ -1188,6 +1231,22 @@ export function useThreadActions() {
     return deleteThread(target);
   };
 
+  const moveThreadWithinFamily = async (target: ScopedThreadRef, targetProjectId: ProjectId) => {
+    const permissionFailure = threadOperationFailure(target);
+    if (permissionFailure) return permissionFailure;
+    const thread = readThreadShell(target);
+    if (!thread) {
+      return AsyncResult.failure(Cause.fail(new Error(m(msg("This thread has not loaded yet.")))));
+    }
+    return updateThreadMetadataMutation({
+      environmentId: target.environmentId,
+      input: {
+        threadId: target.threadId,
+        sidebarProjectId: targetProjectId === thread.projectId ? null : targetProjectId,
+      },
+    });
+  };
+
   const moveThreadToProject = async (target: ScopedThreadRef, targetProjectId: ProjectId) => {
     const permissionFailure = threadOperationFailure(target);
     if (permissionFailure) return permissionFailure;
@@ -1242,6 +1301,7 @@ export function useThreadActions() {
         environmentId: target.environmentId,
         input: { threadId: target.threadId },
       }),
+    moveThreadWithinFamily,
     moveThreadToProject,
     moveThreadToNoProject,
   };

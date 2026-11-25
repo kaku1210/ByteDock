@@ -36,11 +36,14 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  resolveSidebarThreadDisplayProjectId,
+  filterSidebarV2VisibleThreads,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
   withoutRemovedCheckout,
 } from "./Sidebar.logic";
+import { orderProjectGroupsHierarchically } from "../sidebarProjectGrouping";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   sortActiveThreadsByOrderKey,
@@ -1830,5 +1833,120 @@ describe("filterSidebarProjectScopeItems", () => {
 
     expect(filter("")).toEqual([ADD_PROJECT_SCOPE_ITEM_VALUE, "all", "p1"]);
     expect(filter("project")).toEqual(["p1"]);
+  });
+});
+
+describe("parent-child project sidebar display routing and ordering", () => {
+  const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+  const game = ProjectId.make("game");
+  const server = ProjectId.make("game-server");
+  const client = ProjectId.make("game-client");
+  const web = ProjectId.make("web");
+
+  const projectByKey = new Map<string, { readonly parentProjectId?: string | null | undefined }>([
+    [`${localEnvironmentId}:${game}`, { parentProjectId: null }],
+    [`${localEnvironmentId}:${server}`, { parentProjectId: game }],
+    [`${localEnvironmentId}:${client}`, { parentProjectId: game }],
+    [`${localEnvironmentId}:${web}`, { parentProjectId: null }],
+    [`${remoteEnvironmentId}:${game}`, { parentProjectId: null }],
+    [`${remoteEnvironmentId}:${server}`, { parentProjectId: null }],
+  ]);
+
+  it("routes threads to sidebarProjectId only within the same environment and parent-child family", () => {
+    expect(
+      resolveSidebarThreadDisplayProjectId(
+        { environmentId: localEnvironmentId, projectId: game, sidebarProjectId: server },
+        projectByKey,
+      ),
+    ).toBe(server);
+    expect(
+      resolveSidebarThreadDisplayProjectId(
+        { environmentId: localEnvironmentId, projectId: server, sidebarProjectId: client },
+        projectByKey,
+      ),
+    ).toBe(client);
+    // Unrelated project falls back to thread.projectId.
+    expect(
+      resolveSidebarThreadDisplayProjectId(
+        { environmentId: localEnvironmentId, projectId: game, sidebarProjectId: web },
+        projectByKey,
+      ),
+    ).toBe(game);
+    // Same IDs on a different environment where server is NOT a child of game fall back.
+    expect(
+      resolveSidebarThreadDisplayProjectId(
+        { environmentId: remoteEnvironmentId, projectId: game, sidebarProjectId: server },
+        projectByKey,
+      ),
+    ).toBe(game);
+  });
+
+  it("groups and filters threads by resolved sidebarProjectId without changing projectId", () => {
+    const groups = [
+      {
+        projectKey: "game",
+        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: game }],
+      },
+      {
+        projectKey: "server",
+        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId: server }],
+      },
+    ];
+    const movedThread = makeThreadFixture({
+      id: ThreadId.make("t-moved"),
+      environmentId: localEnvironmentId,
+      projectId: game,
+      sidebarProjectId: server,
+    });
+    const stayedThread = makeThreadFixture({
+      id: ThreadId.make("t-stayed"),
+      environmentId: localEnvironmentId,
+      projectId: game,
+    });
+
+    const folders = groupSidebarThreadsByProject(
+      groups,
+      [movedThread, stayedThread],
+      () => true,
+      projectByKey,
+    );
+    expect(
+      folders.map((folder) => ({
+        key: folder.group.projectKey,
+        threads: folder.threads.map((thread) => thread.id),
+      })),
+    ).toEqual([
+      { key: "game", threads: ["t-stayed"] },
+      { key: "server", threads: ["t-moved"] },
+    ]);
+
+    const filteredServer = filterSidebarV2VisibleThreads(
+      [movedThread, stayedThread],
+      new Set([`${localEnvironmentId}:${server}`]),
+      new Set(),
+      projectByKey,
+    );
+    expect(filteredServer.map((thread) => thread.id)).toEqual(["t-moved"]);
+  });
+
+  it("orders child project groups immediately beneath their parent and keeps orphans at top level", () => {
+    const ordered = orderProjectGroupsHierarchically([
+      { environmentId: localEnvironmentId, id: client, parentProjectId: game },
+      { environmentId: localEnvironmentId, id: web, parentProjectId: null },
+      { environmentId: localEnvironmentId, id: game, parentProjectId: null },
+      { environmentId: localEnvironmentId, id: server, parentProjectId: game },
+      {
+        environmentId: localEnvironmentId,
+        id: ProjectId.make("orphan-child"),
+        parentProjectId: ProjectId.make("missing-parent"),
+      },
+    ]);
+    expect(ordered.map((group) => group.id)).toEqual([
+      web,
+      game,
+      client,
+      server,
+      ProjectId.make("orphan-child"),
+    ]);
   });
 });

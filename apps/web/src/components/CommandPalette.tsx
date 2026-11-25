@@ -650,8 +650,19 @@ function OpenCommandPaletteDialog(props: {
 
     return options;
   })();
+  const addProjectParentRef =
+    props.openIntent?.kind === "add-project" ? (props.openIntent.parentProjectRef ?? null) : null;
+  const addProjectParentProject = addProjectParentRef
+    ? (projects.find(
+        (candidate) =>
+          candidate.environmentId === addProjectParentRef.environmentId &&
+          candidate.id === addProjectParentRef.projectId,
+      ) ?? null)
+    : null;
   const defaultAddProjectEnvironmentId =
-    addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
+    addProjectParentRef?.environmentId ??
+    addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ??
+    null;
   const wslAddProjectEnvironmentOption =
     addProjectEnvironmentOptions.find((option) => {
       if (!option.isConnected) {
@@ -713,6 +724,12 @@ function OpenCommandPaletteDialog(props: {
   const browseDirectoryPath = browsePath.directoryPath;
   const paletteMode = getCommandPaletteMode({ currentView, isBrowsing });
   const getAddProjectInitialQueryForEnvironment = (environmentId: EnvironmentId | null): string => {
+    if (
+      addProjectParentProject !== null &&
+      environmentId === addProjectParentProject.environmentId
+    ) {
+      return getAddProjectInitialQuery(addProjectParentProject.workspaceRoot);
+    }
     const environment = environments.find((candidate) => candidate.environmentId === environmentId);
     return getAddProjectInitialQuery(environment?.serverConfig?.settings.addProjectBaseDirectory);
   };
@@ -1271,10 +1288,10 @@ function OpenCommandPaletteDialog(props: {
     setOpen(false);
     void navigate({ to: "/settings/connections" });
   };
-  const addProjectEntry = resolveAddProjectEntry(
-    addProjectEnvironmentOptions,
-    defaultAddProjectEnvironmentId,
-  );
+  const addProjectEntry =
+    addProjectParentRef !== null
+      ? ({ kind: "choose-source", environmentId: addProjectParentRef.environmentId } as const)
+      : resolveAddProjectEntry(addProjectEnvironmentOptions, defaultAddProjectEnvironmentId);
 
   const openAddProjectFlow = () => {
     switch (addProjectEntry.kind) {
@@ -2082,6 +2099,10 @@ function OpenCommandPaletteDialog(props: {
       );
       return;
     }
+    const parentProjectIdForCreate =
+      addProjectParentRef !== null && addProjectParentRef.environmentId === input.environmentId
+        ? addProjectParentRef.projectId
+        : undefined;
     const projectId = newProjectId();
     const createResult = await createProject({
       environmentId: input.environmentId,
@@ -2091,6 +2112,9 @@ function OpenCommandPaletteDialog(props: {
         workspaceRoot: cwd,
         createWorkspaceRootIfMissing: true,
         defaultModelSelection: null,
+        ...(parentProjectIdForCreate === undefined
+          ? {}
+          : { parentProjectId: parentProjectIdForCreate }),
       },
     });
     if (createResult._tag === "Failure") {

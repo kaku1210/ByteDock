@@ -202,7 +202,7 @@ const make = Effect.gen(function* () {
                       providerInstanceId: thread.providerInstanceId,
                       occurredAt,
                       // Reclassification is not chat activity: retain dates, bindings and state.
-                      payload: { ...thread, projectId, worktreePath },
+                      payload: { ...thread, projectId, sidebarProjectId: null, worktreePath },
                     },
                   ],
                 }),

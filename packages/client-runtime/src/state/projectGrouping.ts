@@ -3,6 +3,7 @@ import {
   repositoryGroupingDisplayNameOf,
   repositoryGroupingKeyOf,
   type EnvironmentId,
+  type ProjectId,
   type ScopedProjectRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
@@ -145,7 +146,12 @@ function deriveRepositoryScopedKey(
 function deriveLogicalProjectKey(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
+    | "environmentId"
+    | "id"
+    | "workspaceRoot"
+    | "repositoryIdentity"
+    | "isScratch"
+    | "parentProjectId"
   >,
   options?: {
     readonly groupingMode?: SidebarProjectGroupingMode;
@@ -153,6 +159,10 @@ function deriveLogicalProjectKey(
   },
 ): string {
   if (options?.groupScratchProjects && project.isScratch) return SCRATCH_PROJECT_SCOPE_KEY;
+  // Child projects stay distinct so a monorepo subproject isn't folded back into its parent's repository group.
+  if (project.parentProjectId != null) {
+    return derivePhysicalProjectKey(project);
+  }
   const groupingMode = options?.groupingMode ?? "repository";
   if (groupingMode === "separate") {
     return derivePhysicalProjectKey(project);
@@ -168,7 +178,12 @@ function deriveLogicalProjectKey(
 export function deriveLogicalProjectKeyFromSettings(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity" | "isScratch"
+    | "environmentId"
+    | "id"
+    | "workspaceRoot"
+    | "repositoryIdentity"
+    | "isScratch"
+    | "parentProjectId"
   >,
   settings: ProjectGroupingSettings,
   options?: { readonly groupScratchProjects?: boolean },
@@ -291,6 +306,7 @@ export interface ProjectGroup<TProject extends EnvironmentProject = EnvironmentP
   readonly representative: TProject;
   readonly members: ReadonlyArray<ProjectGroupMember<TProject>>;
   readonly memberProjectRefs: ReadonlyArray<ScopedProjectRef>;
+  readonly parentProjectId: ProjectId | null;
   /** Clients write every member together. When members still disagree, the project stays visible. */
   readonly pinned: boolean;
   readonly archived: boolean;
@@ -434,10 +450,85 @@ export function buildProjectGroups<TProject extends EnvironmentProject>(
       representative,
       members,
       memberProjectRefs: projectRefsByLogicalKey.get(key) ?? [],
+      parentProjectId: representative.parentProjectId ?? null,
       pinned: members.some((member) => member.project.pinnedAt != null),
       archived: !members.some(({ project }) => isPickableProjectMember(project)),
     };
   });
+}
+
+export interface ProjectParentLink {
+  readonly id: ProjectId;
+  readonly environmentId?: EnvironmentId | undefined;
+  readonly parentProjectId?: ProjectId | null | undefined;
+}
+
+function resolveProjectFamilyRootId(
+  projectId: ProjectId,
+  projectsById: ReadonlyMap<ProjectId, Pick<ProjectParentLink, "parentProjectId">>,
+): ProjectId {
+  const project = projectsById.get(projectId);
+  const parentId = project?.parentProjectId ?? null;
+  return parentId !== null && projectsById.has(parentId) ? parentId : projectId;
+}
+
+export function areProjectsInSameFamily(
+  leftProjectId: ProjectId,
+  rightProjectId: ProjectId,
+  projectsById: ReadonlyMap<ProjectId, Pick<ProjectParentLink, "parentProjectId">>,
+): boolean {
+  if (leftProjectId === rightProjectId) {
+    return projectsById.has(leftProjectId);
+  }
+  if (!projectsById.has(leftProjectId) || !projectsById.has(rightProjectId)) {
+    return false;
+  }
+  return (
+    resolveProjectFamilyRootId(leftProjectId, projectsById) ===
+    resolveProjectFamilyRootId(rightProjectId, projectsById)
+  );
+}
+
+/**
+ * Sidebar-only ownership: honor `sidebarProjectId` only when it targets an active project in
+ * `thread.projectId`'s family; execution/files/schedules always stay on `thread.projectId`.
+ */
+export function resolveThreadSidebarProjectId(
+  thread: {
+    readonly projectId: ProjectId;
+    readonly sidebarProjectId?: ProjectId | null | undefined;
+  },
+  projectsById: ReadonlyMap<ProjectId, Pick<ProjectParentLink, "parentProjectId">>,
+): ProjectId {
+  const targetId = thread.sidebarProjectId ?? null;
+  if (targetId === null || targetId === thread.projectId) {
+    return thread.projectId;
+  }
+  return areProjectsInSameFamily(thread.projectId, targetId, projectsById)
+    ? targetId
+    : thread.projectId;
+}
+
+export function getProjectFamilyMembers<TProject extends ProjectParentLink>(
+  projectId: ProjectId,
+  projects: ReadonlyArray<TProject>,
+): ReadonlyArray<TProject> {
+  const byId = new Map<ProjectId, TProject>();
+  for (const project of projects) {
+    byId.set(project.id, project);
+  }
+  const source = byId.get(projectId);
+  if (!source) {
+    return [];
+  }
+  const rootId = resolveProjectFamilyRootId(projectId, byId);
+  const root = byId.get(rootId);
+  const children = projects.filter(
+    (candidate) =>
+      candidate.parentProjectId === rootId &&
+      (source.environmentId === undefined || candidate.environmentId === source.environmentId),
+  );
+  return root ? [root, ...children] : children;
 }
 
 export function sortProjectsByGroupOrder<

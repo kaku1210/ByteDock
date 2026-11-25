@@ -4,12 +4,15 @@ import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentProject } from "./models.ts";
 import { chooseLoadBalancedEnvironment } from "../load-balancing.ts";
 import {
+  areProjectsInSameFamily,
   buildProjectGroups,
   deriveLogicalProjectKeyFromSettings,
+  getProjectFamilyMembers,
   pickableProjectGroups,
   derivePhysicalProjectKey,
   resolveGroupDefaultProject,
   resolveScratchProjectScopeKey,
+  resolveThreadSidebarProjectId,
   sortProjectsByGroupOrder,
   type ProjectGroupingSettings,
 } from "./projectGrouping.ts";
@@ -541,5 +544,60 @@ describe("sortProjectsByGroupOrder", () => {
       ],
     );
     expect(sorted.map((entry) => entry.id)).toEqual(["pinned", "recent", "archived", "unlisted"]);
+  });
+});
+
+describe("parent-child project hierarchy and sidebar routing", () => {
+  it("keeps child projects separate from their parent repository group and exposes parentProjectId", () => {
+    const parent = makeProject("game", "/work/game");
+    const server = makeProject("game-server", "/work/game/server", { parentProjectId: parent.id });
+    const client = makeProject("game-client", "/work/game/client", { parentProjectId: parent.id });
+
+    const groups = buildProjectGroups({
+      projects: [parent, server, client],
+      settings: settings("repository"),
+    });
+
+    expect(groups).toHaveLength(3);
+    expect(groups.map((group) => [group.representative.id, group.parentProjectId])).toEqual([
+      [parent.id, null],
+      [server.id, parent.id],
+      [client.id, parent.id],
+    ]);
+  });
+
+  it("identifies family members and resolves valid in-family sidebarProjectId with fallback", () => {
+    const parent = makeProject("game", "/work/game");
+    const server = makeProject("game-server", "/work/game/server", { parentProjectId: parent.id });
+    const client = makeProject("game-client", "/work/game/client", { parentProjectId: parent.id });
+    const unrelated = makeProject("web", "/work/web");
+    const all = [parent, server, client, unrelated];
+    const byId = new Map(all.map((project) => [project.id, project] as const));
+
+    expect(areProjectsInSameFamily(parent.id, server.id, byId)).toBe(true);
+    expect(areProjectsInSameFamily(server.id, client.id, byId)).toBe(true);
+    expect(areProjectsInSameFamily(server.id, unrelated.id, byId)).toBe(false);
+    expect(getProjectFamilyMembers(server.id, all).map((project) => project.id)).toEqual([
+      parent.id,
+      server.id,
+      client.id,
+    ]);
+
+    expect(
+      resolveThreadSidebarProjectId({ projectId: parent.id, sidebarProjectId: server.id }, byId),
+    ).toBe(server.id);
+    expect(
+      resolveThreadSidebarProjectId({ projectId: server.id, sidebarProjectId: client.id }, byId),
+    ).toBe(client.id);
+    // Out-of-family or stale sidebarProjectId falls back to thread.projectId.
+    expect(
+      resolveThreadSidebarProjectId({ projectId: parent.id, sidebarProjectId: unrelated.id }, byId),
+    ).toBe(parent.id);
+    expect(
+      resolveThreadSidebarProjectId(
+        { projectId: parent.id, sidebarProjectId: ProjectId.make("deleted-child") },
+        byId,
+      ),
+    ).toBe(parent.id);
   });
 });

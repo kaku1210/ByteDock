@@ -127,6 +127,7 @@ const layerWithPolicy = (
             projectIcon: null,
             scripts: [],
             trackedFolders: [],
+            parentProjectId: null,
             pinnedAt: null,
             archivedAt: null,
             createdAt: "2026-06-21T00:00:00.000Z",

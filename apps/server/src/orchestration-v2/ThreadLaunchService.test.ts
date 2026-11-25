@@ -316,6 +316,7 @@ function makeHarness(options: HarnessOptions = {}) {
               projectIcon: null,
               scripts: project.scripts,
               trackedFolders: [],
+              parentProjectId: null,
               pinnedAt: null,
               archivedAt: null,
               createdAt: project.createdAt,

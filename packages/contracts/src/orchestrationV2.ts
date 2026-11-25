@@ -571,6 +571,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
+  /** Optional sidebar-only project override within the same parent-child project family; leaves cwd, files, and scheduled tasks untouched. */
+  sidebarProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   title: TrimmedNonEmptyString,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -2469,6 +2471,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
+  /** Optional sidebar-only project override within the same parent-child project family; absent/null falls back to projectId. */
+  sidebarProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   title: Schema.String,
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
@@ -3553,6 +3557,8 @@ export const OrchestrationV2Command = Schema.Union([
     limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecoveryUpdate)),
     /** Link (object) or unlink (null) a pull request; absent leaves it unchanged. */
     linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+    /** Sidebar-only project placement within the same parent-child project family; null resets to projectId. */
+    sidebarProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request.link"),

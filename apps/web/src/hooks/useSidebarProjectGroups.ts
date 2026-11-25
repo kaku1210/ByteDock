@@ -45,5 +45,14 @@ export function useSidebarProjectGroups() {
     },
     resolve,
   );
-  return sortSidebarV2ProjectGroups(unsortedGroups, threads, sortOrder, delegatedUnderParent);
+  const projectByKey = new Map(
+    projects.map((project) => [`${project.environmentId}:${project.id}`, project] as const),
+  );
+  return sortSidebarV2ProjectGroups(
+    unsortedGroups,
+    threads,
+    sortOrder,
+    delegatedUnderParent,
+    projectByKey,
+  );
 }

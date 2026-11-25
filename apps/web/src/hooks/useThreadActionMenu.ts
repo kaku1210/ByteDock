@@ -54,6 +54,7 @@ import { useClientSettings } from "./useSettings";
 import {
   canMoveThreadToNoProject,
   canTurnThreadIntoProject,
+  listMoveThreadInFamilyTargets,
   listMoveThreadToProjectTargets,
   useThreadActions,
 } from "./useThreadActions";
@@ -97,6 +98,7 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
     turnThreadIntoProject,
+    moveThreadWithinFamily,
     moveThreadToProject,
     moveThreadToNoProject,
   } = useThreadActions();
@@ -146,6 +148,7 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      const moveWithinFamilyTargets = listMoveThreadInFamilyTargets(threadRef);
       const moveToProjectTargets = listMoveThreadToProjectTargets(threadRef);
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
@@ -163,6 +166,7 @@ export function useThreadActionMenu(input: {
         snoozePresets,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+        moveWithinFamilyTargets,
         moveToProjectTargets,
         canMoveToNoProject: canMoveThreadToNoProject(threadRef),
       });
@@ -193,6 +197,23 @@ export function useThreadActionMenu(input: {
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
           failureToast(m(msg("Failed to snooze thread")), squashAtomCommandFailure(result));
+        }
+        return;
+      }
+      if (action.startsWith("move-within-family:")) {
+        const targetProjectId = ProjectId.make(action.slice("move-within-family:".length));
+        const targetLabel =
+          moveWithinFamilyTargets.find((target) => target.projectId === targetProjectId)?.label ??
+          thread.title;
+        const result = await moveThreadWithinFamily(threadRef, targetProjectId);
+        if (result._tag === "Success") {
+          toastManager.add({
+            type: "success",
+            title: m(msg("Moved to {project}", { project: targetLabel })),
+            description: thread.title,
+          });
+        } else if (!isAtomCommandInterrupted(result)) {
+          failureToast(m(msg("Could not move thread")), squashAtomCommandFailure(result));
         }
         return;
       }

@@ -5044,6 +5044,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} is no longer empty.`,
         });
     }
+    if (command.type === "thread.metadata.update" && command.sidebarProjectId !== undefined) {
+      if (thread.lineage.relationshipToParent === "subagent") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Subagent thread ${command.threadId} must stay with its parent thread.`,
+        });
+      }
+      if (command.sidebarProjectId !== null && command.sidebarProjectId !== thread.projectId) {
+        const sourceProject = yield* projects.get(thread.projectId).pipe(mapDispatchError(command));
+        const targetProject = yield* projects
+          .get(command.sidebarProjectId)
+          .pipe(mapDispatchError(command));
+        if (Option.isNone(sourceProject) || sourceProject.value.deletedAt !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} source project ${thread.projectId} is missing.`,
+          });
+        }
+        if (Option.isNone(targetProject) || targetProject.value.deletedAt !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Target sidebar project ${command.sidebarProjectId} does not exist.`,
+          });
+        }
+        const sourceFamilyRoot =
+          sourceProject.value.parentProjectId ?? sourceProject.value.projectId;
+        const targetFamilyRoot =
+          targetProject.value.parentProjectId ?? targetProject.value.projectId;
+        if (sourceFamilyRoot !== targetFamilyRoot) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Sidebar project ${command.sidebarProjectId} is not in the same project family as ${thread.projectId}.`,
+          });
+        }
+      }
+    }
     if (command.type === "thread.archive" && thread.archivedAt !== null) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -5686,12 +5726,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       : []),
                   ],
                 }),
+            ...(command.sidebarProjectId === undefined
+              ? {}
+              : {
+                  sidebarProjectId:
+                    command.sidebarProjectId === thread.projectId ? null : command.sidebarProjectId,
+                }),
             ...(command.regenerateTitle === true
               ? { titleRegeneration: { requestId: command.commandId, startedAt: now } }
               : command.regenerateTitle === false || command.title !== undefined
                 ? { titleRegeneration: null }
                 : {}),
-            updatedAt: now,
+            updatedAt:
+              command.sidebarProjectId !== undefined &&
+              command.title === undefined &&
+              command.regenerateTitle === undefined &&
+              command.branch === undefined &&
+              command.worktreePath === undefined &&
+              command.limitRecovery === undefined &&
+              command.linkedPullRequest === undefined
+                ? thread.updatedAt
+                : now,
           };
         }
         case "thread.pull-request.link":
@@ -6519,6 +6574,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: {
           ...thread,
           projectId: command.targetProjectId,
+          sidebarProjectId: null,
           worktreePath: null,
           branch: null,
           activeProviderThreadId: null,

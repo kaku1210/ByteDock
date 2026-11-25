@@ -44,6 +44,7 @@ export const ApplicationProjectCreatedPayload = Schema.Struct({
   projectIcon: Schema.optional(Schema.NullOr(StoredProjectIcon)),
   scripts: Schema.Array(ProjectScript),
   trackedFolders: Schema.optional(ProjectTrackedFolders),
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -62,6 +63,8 @@ export const ApplicationProjectMetaUpdatedPayload = Schema.Struct({
   projectIcon: Schema.optional(Schema.NullOr(StoredProjectIcon)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   trackedFolders: Schema.optional(ProjectTrackedFolders),
+  // Absent = leave unchanged; null = detach to top-level.
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   updatedAt: IsoDateTime,

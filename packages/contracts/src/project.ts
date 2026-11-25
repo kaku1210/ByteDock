@@ -192,6 +192,8 @@ export const Project = Schema.Struct({
   scripts: Schema.Array(ProjectScript),
   // Absent from older servers; that means a single-folder project.
   trackedFolders: Schema.optional(ProjectTrackedFolders),
+  // Optional parent project for strict 2-level sidebar hierarchy; absent/null = top-level project.
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   createdAt: IsoDateTime,
@@ -213,6 +215,7 @@ export const ProjectCreatePayload = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   trackedFolders: Schema.optional(ProjectAddedFolders),
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
 });
 export type ProjectCreatePayload = typeof ProjectCreatePayload.Type;
 
@@ -230,6 +233,7 @@ export const ProjectUpdatePayload = Schema.Struct({
       description: "Extra folders by absolute path. Replaces the whole list.",
     }),
   ),
+  parentProjectId: Schema.optional(Schema.NullOr(ProjectId)),
   pinned: Schema.optional(Schema.Boolean),
   archived: Schema.optional(
     Schema.Boolean.annotate({

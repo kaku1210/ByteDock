@@ -550,6 +550,7 @@ type ScopedSidebarProject = SidebarProject & {
 type ScopedSidebarThread = ThreadSortInput & {
   environmentId: string;
   projectId: string;
+  sidebarProjectId?: string | null;
   archivedAt: string | null;
 };
 
@@ -590,6 +591,47 @@ export async function deleteSelectedThreadEntries<
   return { deletedThreadKeys, firstFailure };
 }
 
+export type SidebarProjectParentLookup = ReadonlyMap<
+  string,
+  { readonly parentProjectId?: string | null | undefined }
+>;
+
+/**
+ * Resolves the project ID a thread should be displayed under in the sidebar.
+ * Only honors `sidebarProjectId` when both the real project and target project
+ * exist in `projectByKey` (same environment) and share the same parent-child
+ * family root; otherwise falls back to `thread.projectId`.
+ */
+export function resolveSidebarThreadDisplayProjectId<TProjectId extends string>(
+  thread: {
+    readonly environmentId: string;
+    readonly projectId: TProjectId;
+    readonly sidebarProjectId?: TProjectId | null | undefined;
+  },
+  projectByKey?: SidebarProjectParentLookup,
+): TProjectId {
+  const targetId = thread.sidebarProjectId ?? null;
+  if (targetId === null || targetId === thread.projectId || !projectByKey) {
+    return thread.projectId;
+  }
+  const sourceKey = `${thread.environmentId}:${thread.projectId}`;
+  const targetKey = `${thread.environmentId}:${targetId}`;
+  const source = projectByKey.get(sourceKey);
+  const target = projectByKey.get(targetKey);
+  if (!source || !target) return thread.projectId;
+  const sourceRoot =
+    source.parentProjectId != null &&
+    projectByKey.has(`${thread.environmentId}:${source.parentProjectId}`)
+      ? source.parentProjectId
+      : thread.projectId;
+  const targetRoot =
+    target.parentProjectId != null &&
+    projectByKey.has(`${thread.environmentId}:${target.parentProjectId}`)
+      ? target.parentProjectId
+      : targetId;
+  return sourceRoot === targetRoot ? targetId : thread.projectId;
+}
+
 /**
  * `delegatedUnderParent` holds the tasks linked environments run for a thread
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
@@ -597,23 +639,29 @@ export async function deleteSelectedThreadEntries<
 export function filterSidebarV2VisibleThreads<
   T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
     projectId: string;
+    sidebarProjectId?: string | null;
   },
 >(
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
   delegatedUnderParent: ReadonlySet<string>,
+  projectByKey?: SidebarProjectParentLookup,
 ): T[] {
-  return threads.filter(
-    (thread) =>
-      thread.archivedAt === null &&
-      !isShownUnderParent(
+  return threads.filter((thread) => {
+    if (
+      thread.archivedAt !== null ||
+      isShownUnderParent(
         { environmentId: thread.environmentId, threadId: thread.id },
         thread.lineage,
         delegatedUnderParent,
-      ) &&
-      (scopedProjectKeys === null ||
-        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-  );
+      )
+    ) {
+      return false;
+    }
+    if (scopedProjectKeys === null) return true;
+    const displayProjectId = resolveSidebarThreadDisplayProjectId(thread, projectByKey);
+    return scopedProjectKeys.has(`${thread.environmentId}:${displayProjectId}`);
+  });
 }
 
 export function buildBulkTitleRegenerationContextMenuItem(input: {
@@ -1082,11 +1130,14 @@ export function groupSidebarThreadsByProject<
       readonly projectId: string;
     }>;
   },
-  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId">,
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId"> & {
+    readonly sidebarProjectId?: string | null;
+  },
 >(
   groups: readonly TGroup[],
   threads: readonly TThread[],
   keepEmpty: (group: TGroup) => boolean,
+  projectByKey?: SidebarProjectParentLookup,
 ): Array<{ group: TGroup; threads: TThread[] }> {
   const folders = groups.map((group) => ({ group, threads: [] as TThread[] }));
   const folderByProject = new Map<string, (typeof folders)[number]>();
@@ -1096,7 +1147,8 @@ export function groupSidebarThreadsByProject<
     }
   }
   for (const thread of threads) {
-    folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
+    const displayProjectId = resolveSidebarThreadDisplayProjectId(thread, projectByKey);
+    folderByProject.get(`${thread.environmentId}:${displayProjectId}`)?.threads.push(thread);
   }
   return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
 }
@@ -1424,6 +1476,7 @@ export function sortLogicalProjectsForSidebar<
   projects: readonly TProject[],
   threads: readonly TThread[],
   sortOrder: SidebarProjectSortOrder,
+  projectByKey?: SidebarProjectParentLookup,
 ): TProject[] {
   const groupKeyByProjectRef = new Map(
     projects.flatMap((project) =>
@@ -1436,7 +1489,8 @@ export function sortLogicalProjectsForSidebar<
   const threadsByProjectKey = new Map<string, TThread[]>();
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
-    const projectKey = groupKeyByProjectRef.get(`${thread.environmentId}\0${thread.projectId}`);
+    const displayProjectId = resolveSidebarThreadDisplayProjectId(thread, projectByKey);
+    const projectKey = groupKeyByProjectRef.get(`${thread.environmentId}\0${displayProjectId}`);
     if (!projectKey) continue;
     const existing = threadsByProjectKey.get(projectKey);
     if (existing) {
@@ -1464,11 +1518,13 @@ export function sortSidebarV2ProjectGroups<
   threads: readonly TThread[],
   sortOrder: SidebarProjectSortOrder,
   delegatedUnderParent: ReadonlySet<string>,
+  projectByKey?: SidebarProjectParentLookup,
 ): TProject[] {
   return sortLogicalProjectsForSidebar(
     projects,
-    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
+    filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent, projectByKey),
     sortOrder,
+    projectByKey,
   );
 }
 
@@ -1479,6 +1535,7 @@ export function sortScopedProjectsForSidebar<
   projects: readonly TProject[],
   threads: readonly TThread[],
   sortOrder: SidebarProjectSortOrder,
+  projectByKey?: SidebarProjectParentLookup,
 ): TProject[] {
   const scopedKey = (environmentId: string, projectId: string) =>
     `${environmentId}\u0000${projectId}`;
@@ -1487,7 +1544,8 @@ export function sortScopedProjectsForSidebar<
     if (thread.archivedAt !== null) {
       continue;
     }
-    const key = scopedKey(thread.environmentId, thread.projectId);
+    const displayProjectId = resolveSidebarThreadDisplayProjectId(thread, projectByKey);
+    const key = scopedKey(thread.environmentId, displayProjectId);
     const existing = threadsByProject.get(key) ?? [];
     existing.push(thread);
     threadsByProject.set(key, existing);

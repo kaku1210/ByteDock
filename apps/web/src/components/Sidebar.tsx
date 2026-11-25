@@ -116,6 +116,7 @@ import {
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
 import {
+  orderProjectGroupsHierarchically,
   projectGroupsSpanEnvironments,
   resolveSidebarProjectScopeKeys,
   getSidebarProjectSettingsKey,
@@ -129,6 +130,7 @@ import {
 import {
   canMoveThreadToNoProject,
   canTurnThreadIntoProject,
+  listMoveThreadInFamilyTargets,
   listMoveThreadToProjectTargets,
   useAcknowledgeThreadWoke,
   useThreadActions,
@@ -160,7 +162,7 @@ import {
 } from "../state/entities";
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { environmentProjects } from "../state/projects";
+import { environmentProjects, projectEnvironment } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
@@ -187,7 +189,9 @@ import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
   groupSidebarThreadsByProject,
+  resolveSidebarThreadDisplayProjectId,
   sidebarFolderExpansionKeys,
+  type SidebarProjectParentLookup,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -367,6 +371,7 @@ type SidebarOptimisticDrop = {
 interface SidebarThreadPartitionInput {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly projectByKey: SidebarProjectParentLookup;
   /** Tasks linked environments run for a listed thread; they show under it. */
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -434,6 +439,7 @@ function routeThreadOnly(
 function useSidebarThreads(input: {
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly projectByKey: SidebarProjectParentLookup;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
   readonly optimisticDrop: SidebarOptimisticDrop | null;
@@ -449,6 +455,7 @@ function useSidebarThreads(input: {
   const {
     projectScopeKey,
     scopedProjectKeys,
+    projectByKey,
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
@@ -501,6 +508,7 @@ function useSidebarThreads(input: {
   const partition = partitionSidebarThreads({
     threads,
     scopedProjectKeys,
+    projectByKey,
     delegatedUnderParent,
     serverConfigs,
     connectedEnvironmentIds,
@@ -544,26 +552,81 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
-  const projectFolders =
-    folderGroups === null
-      ? null
-      : groupSidebarThreadsByProject(folderGroups, activeThreads, keepEmpty).map((folder) => {
-          const collapsed = !resolveProjectExpanded(
-            projectExpandedById,
-            sidebarFolderExpansionKeys(folder.group),
-          );
-          return {
-            group: folder.group,
-            collapsed,
-            // A closed folder still shows the open thread, and hints at the rest.
-            threads: collapsed
-              ? routeThreadOnly(folder.threads, routeRowThreadKey)
-              : folder.threads,
-            hiddenThreads: collapsed
-              ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
-              : EMPTY_THREADS,
-          };
-        });
+  const projectFolders = (() => {
+    if (folderGroups === null) return null;
+    const orderedGroups = orderProjectGroupsHierarchically(folderGroups);
+    const bucketed = groupSidebarThreadsByProject(
+      orderedGroups,
+      activeThreads,
+      () => true,
+      projectByKey,
+    );
+    const activeParentKeys = new Set<string>();
+    for (const folder of bucketed) {
+      if (
+        folder.group.parentProjectId != null &&
+        (folder.threads.length > 0 || keepEmpty(folder.group))
+      ) {
+        activeParentKeys.add(`${folder.group.environmentId}:${folder.group.parentProjectId}`);
+      }
+    }
+    const keptFolders = bucketed.filter(
+      (folder) =>
+        folder.threads.length > 0 ||
+        keepEmpty(folder.group) ||
+        activeParentKeys.has(`${folder.group.environmentId}:${folder.group.id}`),
+    );
+    type SidebarFolderEntry = {
+      group: SidebarProjectSnapshot;
+      depth: 0 | 1;
+      parentFolderRowId: string | undefined;
+      collapsed: boolean;
+      hiddenByParent: boolean;
+      threads: readonly EnvironmentThreadShell[];
+      hiddenThreads: EnvironmentThreadShell[];
+    };
+    const entries: SidebarFolderEntry[] = [];
+    const parentEntryByKey = new Map<string, SidebarFolderEntry>();
+    for (const folder of keptFolders) {
+      const parentKey =
+        folder.group.parentProjectId != null
+          ? `${folder.group.environmentId}:${folder.group.parentProjectId}`
+          : null;
+      const parentEntry = parentKey !== null ? (parentEntryByKey.get(parentKey) ?? null) : null;
+      const collapsed = !resolveProjectExpanded(
+        projectExpandedById,
+        sidebarFolderExpansionKeys(folder.group),
+      );
+      const hiddenByParent = parentEntry !== null && parentEntry.collapsed;
+      const visibleThreads =
+        collapsed || hiddenByParent
+          ? routeThreadOnly(folder.threads, routeRowThreadKey)
+          : folder.threads;
+      const hiddenOwnThreads =
+        collapsed || hiddenByParent
+          ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
+          : [];
+      if (hiddenByParent && hiddenOwnThreads.length > 0) {
+        // Roll hidden child threads up into the collapsed parent's dot & count badge.
+        parentEntry.hiddenThreads.push(...hiddenOwnThreads);
+      }
+      const entry: SidebarFolderEntry = {
+        group: folder.group,
+        depth: parentEntry !== null ? 1 : 0,
+        parentFolderRowId:
+          parentEntry !== null ? sidebarFolderRowId(parentEntry.group.projectKey) : undefined,
+        collapsed,
+        hiddenByParent,
+        threads: visibleThreads,
+        hiddenThreads: hiddenByParent ? [] : hiddenOwnThreads,
+      };
+      entries.push(entry);
+      if (parentEntry === null) {
+        parentEntryByKey.set(`${folder.group.environmentId}:${folder.group.id}`, entry);
+      }
+    }
+    return entries;
+  })();
   const orderedThreads = [
     ...pinnedThreads,
     ...(projectFolders === null
@@ -637,6 +700,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const {
     threads,
     scopedProjectKeys,
+    projectByKey,
     delegatedUnderParent,
     serverConfigs,
     optimisticDrop,
@@ -644,7 +708,12 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const visible = filterSidebarV2VisibleThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+    projectByKey,
+  );
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -851,12 +920,21 @@ function useSidebarLookups() {
   const projectGroupByScopeKey = new Map(
     projectGroups.map((project) => [project.projectKey, project] as const),
   );
+  const orderedPickableGroups = orderProjectGroupsHierarchically(
+    pickableProjectGroups(projectGroups),
+  );
+  const pickableProjectKeys = new Set(
+    orderedPickableGroups.map((project) => `${project.environmentId}:${project.id}`),
+  );
   const projectScopeItems = [
-    { value: ADD_PROJECT_SCOPE_ITEM_VALUE, label: gt("Add project") },
-    { value: "all", label: gt("All projects") },
-    ...pickableProjectGroups(projectGroups).map((project) => ({
+    { value: ADD_PROJECT_SCOPE_ITEM_VALUE, label: gt("Add project"), isChild: false },
+    { value: "all", label: gt("All projects"), isChild: false },
+    ...orderedPickableGroups.map((project) => ({
       value: project.projectKey,
       label: project.displayName,
+      isChild:
+        project.parentProjectId != null &&
+        pickableProjectKeys.has(`${project.environmentId}:${project.parentProjectId}`),
     })),
   ];
   return {
@@ -957,6 +1035,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     confirmAndUnpinThread,
     setThreadAutoSettle,
     turnThreadIntoProject,
+    moveThreadWithinFamily,
     moveThreadToProject,
     moveThreadToNoProject,
     reorderPinnedThread,
@@ -966,6 +1045,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     deleteThread,
     confirmAndDeleteThread,
   } = useThreadActions();
+  const updateProject = useOrchestrationCommand(projectEnvironment.update, {
+    reportFailure: false,
+  });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -1164,6 +1246,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeKeyInPlace,
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
+    projectByKey,
     delegatedUnderParent,
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
   });
@@ -1298,31 +1381,151 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const api = readLocalApi();
       if (!api) return;
       void (async () => {
+        const canOperate = readEnvironmentScope(group.environmentId, AuthOrchestrationOperateScope);
+        const isChild = group.parentProjectId != null;
+        const canAddSubproject = canOperate && !isChild && !group.isScratch && !group.archived;
+        const hasChildren =
+          !isChild &&
+          projects.some(
+            (candidate) =>
+              candidate.environmentId === group.environmentId &&
+              candidate.parentProjectId === group.id,
+          );
+        const canReparent =
+          canOperate &&
+          !group.isScratch &&
+          !group.archived &&
+          group.memberProjectRefs.length === 1 &&
+          !hasChildren;
+        const eligibleParentTargets = canReparent
+          ? projectGroupsRef.current.flatMap((candidate) => {
+              if (candidate.isScratch || candidate.archived || candidate.parentProjectId != null) {
+                return [];
+              }
+              const memberRef = candidate.memberProjectRefs.find(
+                (ref) => ref.environmentId === group.environmentId,
+              );
+              if (
+                !memberRef ||
+                memberRef.projectId === group.id ||
+                memberRef.projectId === group.parentProjectId
+              ) {
+                return [];
+              }
+              return [{ projectId: memberRef.projectId, label: candidate.displayName }];
+            })
+          : [];
+        const hasHierarchyActions =
+          canAddSubproject || (canReparent && (isChild || eligibleParentTargets.length > 0));
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             [
               { id: "new-thread", label: gt("New thread") },
               { id: "copy-path", label: gt("Copy path") },
+              ...(canAddSubproject
+                ? [
+                    {
+                      id: "add-subproject",
+                      label: gt("Add subproject…"),
+                      icon: "folder-plus",
+                      separatorBefore: true,
+                    },
+                  ]
+                : []),
+              ...(canReparent && isChild
+                ? [
+                    {
+                      id: "move-to-top-level",
+                      label: gt("Move to top level"),
+                      icon: "folder",
+                      separatorBefore: !canAddSubproject,
+                    },
+                  ]
+                : []),
+              ...(canReparent && eligibleParentTargets.length > 0
+                ? [
+                    {
+                      id: "move-under-project",
+                      label: gt("Move under project…"),
+                      icon: "folder-input",
+                      separatorBefore: !canAddSubproject && !isChild,
+                      children: eligibleParentTargets.map((target) => ({
+                        id: `move-under-project:${target.projectId}`,
+                        label: target.label,
+                      })),
+                    },
+                  ]
+                : []),
               ...(canPinProject(group)
                 ? [
                     group.pinned
-                      ? { id: "unpin", label: gt("Unpin project"), icon: "pin-off" }
-                      : { id: "pin", label: gt("Pin project"), icon: "pin" },
+                      ? {
+                          id: "unpin",
+                          label: gt("Unpin project"),
+                          icon: "pin-off",
+                          separatorBefore: hasHierarchyActions,
+                        }
+                      : {
+                          id: "pin",
+                          label: gt("Pin project"),
+                          icon: "pin",
+                          separatorBefore: hasHierarchyActions,
+                        },
                   ]
                 : []),
-              { id: "project-settings", label: gt("Project settings"), icon: "settings" },
+              {
+                id: "project-settings",
+                label: gt("Project settings"),
+                icon: "settings",
+                separatorBefore: hasHierarchyActions && !canPinProject(group),
+              },
             ],
             position,
             source,
           ),
         );
-        if (clicked._tag === "Failure") return;
+        if (clicked._tag === "Failure" || clicked.value === null) return;
+        const setParentProject = async (nextParentProjectId: ProjectId | null) => {
+          const result = await updateProject({
+            environmentId: group.environmentId,
+            input: {
+              projectId: group.id,
+              parentProjectId: nextParentProjectId,
+            },
+          });
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: gt("Could not update project hierarchy"),
+                description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
+              }),
+            );
+          }
+        };
+        if (clicked.value.startsWith("move-under-project:")) {
+          const targetParentProjectId = ProjectId.make(
+            clicked.value.slice("move-under-project:".length),
+          );
+          await setParentProject(targetParentProjectId);
+          return;
+        }
         switch (clicked.value) {
           case "new-thread":
             startThreadInProjectFolder(group);
             return;
           case "copy-path":
             copyPathToClipboard(group.workspaceRoot, { path: group.workspaceRoot });
+            return;
+          case "add-subproject":
+            openCommandPalette({
+              open: "add-project",
+              parentProjectRef: scopeProjectRef(group.environmentId, group.id),
+            });
+            return;
+          case "move-to-top-level":
+            await setParentProject(null);
             return;
           case "pin":
           case "unpin":
@@ -1375,6 +1578,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
+    projectByKey,
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
@@ -2716,6 +2920,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           thread.environmentId,
           messages,
         );
+        const displayProjectId = resolveSidebarThreadDisplayProjectId(thread, projectByKey);
+        const displayProjectGroup =
+          projectGroupsRef.current.find((project) =>
+            project.memberProjectRefs.some(
+              (projectRef) =>
+                projectRef.environmentId === thread.environmentId &&
+                projectRef.projectId === displayProjectId,
+            ),
+          ) ?? null;
         const threadProjectGroup =
           projectGroupsRef.current.find((project) =>
             project.memberProjectRefs.some(
@@ -2724,6 +2937,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const moveWithinFamilyTargets = listMoveThreadInFamilyTargets(threadRef);
         const moveToProjectTargets = listMoveThreadToProjectTargets(threadRef);
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
@@ -2736,12 +2950,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 branch: thread.branch ?? null,
                 // An archived project is not a filter choice.
                 projectFilter:
-                  threadProjectGroup && !threadProjectGroup.archived
+                  displayProjectGroup && !displayProjectGroup.archived
                     ? {
-                        label: threadProjectGroup.isScratch
+                        label: displayProjectGroup.isScratch
                           ? gt("No project")
-                          : threadProjectGroup.displayName,
-                        isActive: projectScopeKeys.includes(threadProjectGroup.projectKey),
+                          : displayProjectGroup.displayName,
+                        isActive: projectScopeKeys.includes(displayProjectGroup.projectKey),
                       }
                     : null,
                 isPinned,
@@ -2755,6 +2969,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   canShareWithGuestAtom(threadRef.environmentId),
                 ),
                 canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+                moveWithinFamilyTargets,
                 moveToProjectTargets,
                 canMoveToNoProject: canMoveThreadToNoProject(threadRef),
                 canRename: !fromSearch,
@@ -2788,6 +3003,30 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           if (preset) attemptSnooze(threadRef, preset);
           return;
         }
+        if (clicked.value?.startsWith("move-within-family:")) {
+          const targetProjectId = ProjectId.make(clicked.value.slice("move-within-family:".length));
+          const targetLabel =
+            moveWithinFamilyTargets.find((target) => target.projectId === targetProjectId)?.label ??
+            thread.title;
+          const result = await moveThreadWithinFamily(threadRef, targetProjectId);
+          if (result._tag === "Success") {
+            toastManager.add({
+              type: "success",
+              title: gt("Moved to {project}", { project: targetLabel }),
+              description: thread.title,
+            });
+          } else if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: gt("Could not move thread"),
+                description: thrownErrorMessage(error, m) ?? gt("An error occurred."),
+              }),
+            );
+          }
+          return;
+        }
         if (clicked.value?.startsWith("move-to-project:")) {
           const targetProjectId = ProjectId.make(clicked.value.slice("move-to-project:".length));
           const targetLabel =
@@ -2817,11 +3056,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
         switch (clicked.value) {
           case "filter-by-project":
-            if (threadProjectGroup) {
+            if (displayProjectGroup) {
               setProjectScopeKeys(
-                projectScopeKeys.includes(threadProjectGroup.projectKey)
+                projectScopeKeys.includes(displayProjectGroup.projectKey)
                   ? []
-                  : [threadProjectGroup.projectKey],
+                  : [displayProjectGroup.projectKey],
               );
             }
             return;
@@ -3299,6 +3538,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const isSelected = project
                           ? projectScopeKeys.includes(item.value)
                           : projectScopeKeys.length === 0;
+                        const isIndentedChild =
+                          item.isChild && projectScopeMenuState.query.trim().length === 0;
                         return (
                           <ComboboxItem
                             key={item.value}
@@ -3311,6 +3552,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               if (project) handleProjectSettings(event, project);
                             }}
                           >
+                            {isIndentedChild ? (
+                              <span className="w-3 shrink-0" aria-hidden="true" />
+                            ) : null}
                             <ProjectScopeRowIcon isSelected={isSelected}>
                               {project ? (
                                 <ProjectFavicon project={project} className="size-4 shrink-0" />
@@ -3423,18 +3667,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const threadKey = scopedThreadKey(
                         scopeThreadRef(thread.environmentId, thread.id),
                       );
+                      const displayProjectId = resolveSidebarThreadDisplayProjectId(
+                        thread,
+                        projectByKey,
+                      );
+                      const displayProjectKey =
+                        `${thread.environmentId}:${displayProjectId}` as const;
                       return (
                         <SidebarSearchResultRow
                           isSettled={settledThreadKeys.has(threadKey)}
                           key={threadKey}
                           thread={thread}
-                          project={
-                            projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
-                          }
+                          project={projectByKey.get(displayProjectKey) ?? null}
                           projectDisplayName={
-                            projectDisplayNameByKey.get(
-                              `${thread.environmentId}:${thread.projectId}`,
-                            ) ?? null
+                            projectDisplayNameByKey.get(displayProjectKey) ?? null
                           }
                           environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
                           environmentMachine={
@@ -3575,6 +3821,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
+                        const displayProjectId = resolveSidebarThreadDisplayProjectId(
+                          thread,
+                          projectByKey,
+                        );
+                        const displayProjectKey =
+                          `${thread.environmentId}:${displayProjectId}` as const;
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = folderRow
@@ -3651,14 +3903,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             environmentMachine={
                               environmentMachineById.get(thread.environmentId) ?? "server"
                             }
-                            project={
-                              projectByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
-                              null
-                            }
+                            project={projectByKey.get(displayProjectKey) ?? null}
                             projectDisplayName={
-                              projectDisplayNameByKey.get(
-                                `${thread.environmentId}:${thread.projectId}`,
-                              ) ?? null
+                              projectDisplayNameByKey.get(displayProjectKey) ?? null
                             }
                             providerEntryByInstanceId={
                               providerEntriesByEnvironment.get(thread.environmentId) ??
@@ -3709,17 +3956,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {
                           for (const folder of projectFolders) {
-                            items.push(
-                              <SidebarProjectFolderHeader
-                                key={`project-folder:${folder.group.projectKey}`}
-                                group={folder.group}
-                                collapsed={folder.collapsed}
-                                hiddenThreads={folder.hiddenThreads}
-                                onToggle={toggleProjectFolder}
-                                onNewThread={startThreadInProjectFolder}
-                                onContextMenu={handleProjectFolderContextMenu}
-                              />,
-                            );
+                            if (!folder.hiddenByParent) {
+                              items.push(
+                                <SidebarProjectFolderHeader
+                                  key={`project-folder:${folder.group.projectKey}`}
+                                  group={folder.group}
+                                  collapsed={folder.collapsed}
+                                  hiddenThreads={folder.hiddenThreads}
+                                  depth={folder.depth}
+                                  navigationParent={folder.parentFolderRowId}
+                                  onToggle={toggleProjectFolder}
+                                  onNewThread={startThreadInProjectFolder}
+                                  onContextMenu={handleProjectFolderContextMenu}
+                                />,
+                              );
+                            }
                             for (const thread of folder.threads) {
                               items.push(
                                 renderThreadRow(

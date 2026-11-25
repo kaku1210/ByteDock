@@ -69,6 +69,7 @@ export interface CreateProjectInput extends CommandMetadata {
   readonly defaultModelSelection?: ModelSelection | null;
   readonly scripts?: ReadonlyArray<ProjectScript>;
   readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder>;
+  readonly parentProjectId?: ProjectId | null;
 }
 
 export interface UpdateProjectInput extends CommandMetadata {
@@ -86,6 +87,7 @@ export interface UpdateProjectInput extends CommandMetadata {
   /** Added to, and removed by path from, the list as the server has it. */
   readonly trackFolders?: ReadonlyArray<ProjectTrackedFolder>;
   readonly untrackFolders?: ReadonlyArray<string>;
+  readonly parentProjectId?: ProjectId | null;
   readonly pinned?: boolean;
   readonly archived?: boolean;
 }
@@ -162,6 +164,7 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly worktreePath?: string | null;
   readonly regenerateTitle?: boolean;
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
+  readonly sidebarProjectId?: ProjectId | null;
   readonly expectedEmpty?: boolean;
 }
 
@@ -451,6 +454,7 @@ const mutateProject = Effect.fn("EnvironmentCommands.mutateProject")(function* (
         readonly defaultModelSelection?: ModelSelection | null;
         readonly scripts?: ReadonlyArray<ProjectScript>;
         readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder>;
+        readonly parentProjectId?: ProjectId | null;
       }
     | {
         readonly type: "project.update";
@@ -463,6 +467,7 @@ const mutateProject = Effect.fn("EnvironmentCommands.mutateProject")(function* (
         readonly trackedFolders?: ReadonlyArray<ProjectTrackedFolder>;
         readonly trackFolders?: ReadonlyArray<ProjectTrackedFolder>;
         readonly untrackFolders?: ReadonlyArray<string>;
+        readonly parentProjectId?: ProjectId | null;
       }
     | {
         readonly type: "project.delete";
@@ -491,6 +496,7 @@ export const createProject = Effect.fn("EnvironmentCommands.createProject")(func
       : { defaultModelSelection: input.defaultModelSelection }),
     ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
     ...(input.trackedFolders === undefined ? {} : { trackedFolders: input.trackedFolders }),
+    ...(input.parentProjectId === undefined ? {} : { parentProjectId: input.parentProjectId }),
   });
 });
 
@@ -516,6 +522,7 @@ export const updateProject = Effect.fn("EnvironmentCommands.updateProject")(func
     ...(input.trackedFolders === undefined ? {} : { trackedFolders: input.trackedFolders }),
     ...(input.trackFolders === undefined ? {} : { trackFolders: input.trackFolders }),
     ...(input.untrackFolders === undefined ? {} : { untrackFolders: input.untrackFolders }),
+    ...(input.parentProjectId === undefined ? {} : { parentProjectId: input.parentProjectId }),
     ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
     ...(input.archived === undefined ? {} : { archived: input.archived }),
   });
@@ -757,6 +764,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       input.title !== undefined ||
       input.branch !== undefined ||
       input.worktreePath !== undefined ||
+      input.sidebarProjectId !== undefined ||
       input.regenerateTitle !== undefined ||
       input.linkedPullRequest !== undefined ||
       input.limitRecovery !== undefined
@@ -769,6 +777,9 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         ...(input.title === undefined ? {} : { title: input.title }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
+        ...(input.sidebarProjectId === undefined
+          ? {}
+          : { sidebarProjectId: input.sidebarProjectId }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),
         ...(input.regenerateTitle === undefined ? {} : { regenerateTitle: input.regenerateTitle }),
         ...(input.linkedPullRequest === undefined

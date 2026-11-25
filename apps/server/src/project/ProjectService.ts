@@ -13,7 +13,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Clock from "effect/Clock";
-import { isWslSharePath } from "@t3tools/shared/path";
+import { isWslSharePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -25,6 +25,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import * as ServerConfig from "../config.ts";
 import { withCommandMetrics } from "../observability/Metrics.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -201,6 +202,7 @@ export const make = Effect.gen(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -211,6 +213,76 @@ export const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
+
+  const isScratchWorkspaceRoot = Effect.fn("ProjectService.isScratchWorkspaceRoot")(function* (
+    workspaceRoot: string,
+  ) {
+    const scratchPath = path.join(serverConfig.baseDir, "scratch");
+    const scratchKey = normalizeProjectPathForComparison(scratchPath);
+    const rootKey = normalizeProjectPathForComparison(workspaceRoot);
+    if (rootKey === scratchKey) return true;
+    const realScratch = yield* fileSystem
+      .realPath(scratchPath)
+      .pipe(Effect.orElseSucceed(() => scratchPath));
+    const realRoot = yield* fileSystem
+      .realPath(workspaceRoot)
+      .pipe(Effect.orElseSucceed(() => workspaceRoot));
+    return (
+      normalizeProjectPathForComparison(realRoot) === normalizeProjectPathForComparison(realScratch)
+    );
+  });
+
+  const validateParentProjectId = Effect.fn("ProjectService.validateParentProjectId")(function* (
+    projectId: ProjectId,
+    workspaceRoot: string,
+    parentProjectId: ProjectId | null,
+  ) {
+    if (parentProjectId === null) return;
+    if (parentProjectId === projectId) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: "A project cannot be its own parent.",
+      });
+    }
+    if (yield* isScratchWorkspaceRoot(workspaceRoot)) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: "No project cannot be placed under a parent project.",
+      });
+    }
+    const parentRow = yield* readRow(parentProjectId);
+    if (Option.isNone(parentRow) || parentRow.value.deletedAt !== null) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: `Parent project ${parentProjectId} does not exist.`,
+      });
+    }
+    if (yield* isScratchWorkspaceRoot(parentRow.value.workspaceRoot)) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: "No project cannot have subprojects.",
+      });
+    }
+    if (parentRow.value.parentProjectId !== null) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: "Only two levels of project hierarchy are supported.",
+      });
+    }
+    const activeProjects = yield* projects
+      .list()
+      .pipe(
+        Effect.mapError(
+          (cause) => new ProjectOperationError({ operation: "list-projects", projectId, cause }),
+        ),
+      );
+    if (activeProjects.some((candidate) => candidate.parentProjectId === projectId)) {
+      return yield* new ProjectInvalidError({
+        projectId,
+        detail: "A project that already has subprojects cannot be moved under another project.",
+      });
+    }
+  });
 
   const toProject = (
     row: ProjectStore.ProjectRow,
@@ -227,6 +299,7 @@ export const make = Effect.gen(function* () {
     projectIcon: row.projectIcon,
     scripts: row.scripts,
     trackedFolders: row.trackedFolders,
+    parentProjectId: row.parentProjectId,
     pinnedAt: row.pinnedAt,
     archivedAt: row.archivedAt,
     createdAt: row.createdAt,
@@ -543,6 +616,9 @@ export const make = Effect.gen(function* () {
         createIfMissing: input.createWorkspaceRootIfMissing ?? false,
       });
       yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
+      if (input.parentProjectId != null) {
+        yield* validateParentProjectId(input.projectId, workspaceRoot, input.parentProjectId);
+      }
       const trackedFolders = yield* normalizeTrackedFolders(
         input.projectId,
         workspaceRoot,
@@ -556,6 +632,7 @@ export const make = Effect.gen(function* () {
         workspaceRoot,
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
         trackedFolders,
+        ...(input.parentProjectId == null ? {} : { parentProjectId: input.parentProjectId }),
       });
       yield* projectEnrichment.invalidate([workspaceRoot]);
       return yield* readCommitted(input.projectId);
@@ -582,6 +659,9 @@ export const make = Effect.gen(function* () {
       if (workspaceRoot !== previousRoot) {
         yield* rejectWorktreeContainer(input.projectId, workspaceRoot);
       }
+      if (input.parentProjectId !== undefined) {
+        yield* validateParentProjectId(input.projectId, workspaceRoot, input.parentProjectId);
+      }
       const command = {
         type: "project.meta.update",
         commandId: input.commandId,
@@ -598,6 +678,7 @@ export const make = Effect.gen(function* () {
           ? {}
           : { defaultThreadEnvMode: input.defaultThreadEnvMode }),
         ...(input.scripts === undefined ? {} : { scripts: input.scripts }),
+        ...(input.parentProjectId === undefined ? {} : { parentProjectId: input.parentProjectId }),
         ...(input.pinned === undefined ? {} : { pinned: input.pinned }),
         ...(input.archived === undefined ? {} : { archived: input.archived }),
       } as const;
@@ -608,6 +689,9 @@ export const make = Effect.gen(function* () {
         Effect.fnUntraced(function* (current) {
           if (current === undefined || current.deletedAt !== null) return command;
           const root = command.workspaceRoot ?? current.workspaceRoot;
+          if (input.parentProjectId !== undefined) {
+            yield* validateParentProjectId(input.projectId, root, input.parentProjectId);
+          }
           // Moving the project's folder re-checks the folders it keeps tracking.
           const untracked = new Set(
             (input.untrackFolders ?? []).map((entry) => path.resolve(entry)),
@@ -758,6 +842,35 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const detachChildProjects = Effect.fn("ProjectService.detachChildProjects")(function* (
+    input: ProjectDeleteInput,
+  ) {
+    const activeProjects = yield* projects.list().pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProjectOperationError({
+            operation: "list-projects",
+            projectId: input.projectId,
+            cause,
+          }),
+      ),
+    );
+    const children = activeProjects.filter(
+      (candidate) => candidate.parentProjectId === input.projectId,
+    );
+    yield* Effect.forEach(
+      children,
+      (child) =>
+        commit({
+          type: "project.meta.update",
+          commandId: CommandId.make(`${input.commandId}:detach-child:${child.projectId}`),
+          projectId: child.projectId,
+          parentProjectId: null,
+        }),
+      { concurrency: 1, discard: true },
+    );
+  });
+
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
@@ -770,6 +883,7 @@ export const make = Effect.gen(function* () {
       const isFirstDelete = existing.value.deletedAt === null;
       if (isFirstDelete) {
         yield* deleteChildThreads(input);
+        yield* detachChildProjects(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
       if (isFirstDelete) {
