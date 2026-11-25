@@ -102,6 +102,7 @@ describe("V2 preview upgrade", () => {
         [120, "SharedWorktreeCoordination"],
         [121, "SubtaskSummaryCache"],
         [122, "ProjectionProjectsParentProject"],
+        [123, "WorkflowMailSender"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -247,6 +248,7 @@ describe("V2 preview upgrade", () => {
         [120, "SharedWorktreeCoordination"],
         [121, "SubtaskSummaryCache"],
         [122, "ProjectionProjectsParentProject"],
+        [123, "WorkflowMailSender"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

@@ -45,6 +45,8 @@ import {
 import {
   ANTIGRAVITY_MILESTONE_PROGRESS_INSTRUCTIONS,
   antigravityApprovalOptions,
+  antigravitySwarmAddChildSessionId,
+  antigravitySwarmAddModel,
   antigravityToolOutlivesPrompt,
   antigravityCommandOutlivesPrompt,
   antigravitySubagentOutput,
@@ -138,9 +140,9 @@ const extractAntigravitySubagentUpdate: NonNullable<AcpAdapterV2Flavor["extractS
       toolCall.title ??
       ANTIGRAVITY_SUBAGENT_BATCH_TITLE,
     title: launch?.title ?? ANTIGRAVITY_SUBAGENT_BATCH_TITLE,
-    model: null,
+    model: antigravitySwarmAddModel(toolCall),
     status,
-    childSessionId: null,
+    childSessionId: antigravitySwarmAddChildSessionId(toolCall),
     result: status === "failed" ? (antigravitySubagentOutput(toolCall) ?? null) : null,
   };
 };

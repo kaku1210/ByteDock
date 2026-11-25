@@ -148,7 +148,6 @@ const MAINTENANCE = makeManualOnlyProviderMaintenanceCapabilities({
   packageName: null,
 });
 
-
 function modelsFromDiscovery(
   discovery:
     | Pick<
@@ -626,6 +625,7 @@ export const AcpRegistryDriver: ProviderDriver<
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "ACP Registry",
+    snapshotOmitsDisplayName: true,
     supportsMultipleInstances: true,
     hasDefaultInstance: false,
   },
