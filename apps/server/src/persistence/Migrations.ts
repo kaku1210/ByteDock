@@ -118,12 +118,18 @@ import Migration0107 from "./Migrations/107_DeferredSlashCommandIndex.ts";
 import Migration0108 from "./Migrations/108_AgentFeedback.ts";
 import Migration0109 from "./Migrations/109_IssueTrackerAccounts.ts";
 import Migration0110 from "./Migrations/110_Workflows.ts";
-import Migration0111 from "./Migrations/111_ThreadParentIndex.ts";
-import Migration0112 from "./Migrations/112_WorktreeApprovalRequests.ts";
-import Migration0113 from "./Migrations/113_SubtaskEscalationRequests.ts";
-import Migration0114 from "./Migrations/114_SharedWorktreeCoordination.ts";
-import Migration0115 from "./Migrations/115_SubtaskSummaryCache.ts";
-import Migration0116 from "./Migrations/116_ProjectionProjectsParentProject.ts";
+import Migration0111 from "./Migrations/111_SupersededRunAttemptIndex.ts";
+import Migration0112 from "./Migrations/112_LayoutCommandApprovals.ts";
+import Migration0113 from "./Migrations/113_WorkflowSkippedRuns.ts";
+import Migration0114 from "./Migrations/114_WorkflowRunIndexes.ts";
+import Migration0115 from "./Migrations/115_WorkflowRunTags.ts";
+import Migration0116 from "./Migrations/116_ForkHistoryMembership.ts";
+import Migration0117 from "./Migrations/117_ThreadParentIndex.ts";
+import Migration0118 from "./Migrations/118_WorktreeApprovalRequests.ts";
+import Migration0119 from "./Migrations/119_SubtaskEscalationRequests.ts";
+import Migration0120 from "./Migrations/120_SharedWorktreeCoordination.ts";
+import Migration0121 from "./Migrations/121_SubtaskSummaryCache.ts";
+import Migration0122 from "./Migrations/122_ProjectionProjectsParentProject.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -237,12 +243,18 @@ const migrationEntries = [
   [108, "AgentFeedback", Migration0108],
   [109, "IssueTrackerAccounts", Migration0109],
   [110, "Workflows", Migration0110],
-  [111, "ThreadParentIndex", Migration0111],
-  [112, "WorktreeApprovalRequests", Migration0112],
-  [113, "SubtaskEscalationRequests", Migration0113],
-  [114, "SharedWorktreeCoordination", Migration0114],
-  [115, "SubtaskSummaryCache", Migration0115],
-  [116, "ProjectionProjectsParentProject", Migration0116],
+  [111, "SupersededRunAttemptIndex", Migration0111],
+  [112, "LayoutCommandApprovals", Migration0112],
+  [113, "WorkflowSkippedRuns", Migration0113],
+  [114, "WorkflowRunIndexes", Migration0114],
+  [115, "WorkflowRunTags", Migration0115],
+  [116, "ForkHistoryMembership", Migration0116],
+  [117, "ThreadParentIndex", Migration0117],
+  [118, "WorktreeApprovalRequests", Migration0118],
+  [119, "SubtaskEscalationRequests", Migration0119],
+  [120, "SharedWorktreeCoordination", Migration0120],
+  [121, "SubtaskSummaryCache", Migration0121],
+  [122, "ProjectionProjectsParentProject", Migration0122],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -259,9 +271,9 @@ const makeMigrationLoader = (throughId?: number) =>
 const FIRST_V2_MIGRATION_ID = 55;
 const FIRST_PLUS_PRE_SYNC_MIGRATION_ID = 95;
 
-// Pre-sync Plus builds recorded 5 Plus migrations at ids 95-99 before upstream added 95-110.
-// Remove only those matching ledger rows (leaving tables/indexes/data untouched) so upstream
-// 095-110 run normally and the renumbered idempotent Plus migrations 111-115 re-record cleanly.
+// Pre-sync Plus builds recorded Plus migrations at ids 95-99 (before 095-110 sync) or 111-116
+// (before 111-116 sync). Remove only those matching ledger rows (leaving tables/indexes/data
+// untouched) so upstream 095-116 run normally and renumbered idempotent Plus 117-122 re-record cleanly.
 const reconcilePlusPreSyncMigrations = Effect.fn("reconcilePlusPreSyncMigrations")(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
@@ -277,7 +289,13 @@ const reconcilePlusPreSyncMigrations = Effect.fn("reconcilePlusPreSyncMigrations
             (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
             (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
             (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
-            (migration_id = 99 AND name = 'SubtaskSummaryCache')
+            (migration_id = 99 AND name = 'SubtaskSummaryCache') OR
+            (migration_id = 111 AND name = 'ThreadParentIndex') OR
+            (migration_id = 112 AND name = 'WorktreeApprovalRequests') OR
+            (migration_id = 113 AND name = 'SubtaskEscalationRequests') OR
+            (migration_id = 114 AND name = 'SharedWorktreeCoordination') OR
+            (migration_id = 115 AND name = 'SubtaskSummaryCache') OR
+            (migration_id = 116 AND name = 'ProjectionProjectsParentProject')
         `;
       if (stale.length === 0) return 0;
       yield* sql`
@@ -287,10 +305,16 @@ const reconcilePlusPreSyncMigrations = Effect.fn("reconcilePlusPreSyncMigrations
             (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
             (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
             (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
-            (migration_id = 99 AND name = 'SubtaskSummaryCache')
+            (migration_id = 99 AND name = 'SubtaskSummaryCache') OR
+            (migration_id = 111 AND name = 'ThreadParentIndex') OR
+            (migration_id = 112 AND name = 'WorktreeApprovalRequests') OR
+            (migration_id = 113 AND name = 'SubtaskEscalationRequests') OR
+            (migration_id = 114 AND name = 'SharedWorktreeCoordination') OR
+            (migration_id = 115 AND name = 'SubtaskSummaryCache') OR
+            (migration_id = 116 AND name = 'ProjectionProjectsParentProject')
         `;
       yield* Effect.log(
-        "Reconciled pre-sync Plus migration tracking rows so upstream 095-110 and renumbered Plus 111-115 can run.",
+        "Reconciled pre-sync Plus migration tracking rows so upstream 095-116 and renumbered Plus 117-122 can run.",
       ).pipe(
         Effect.annotateLogs({
           removed: stale.map((row) => `${row.migration_id}_${row.name}`),
@@ -366,7 +390,13 @@ export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* 
         (migration_id = 96 AND name = 'WorktreeApprovalRequests') OR
         (migration_id = 97 AND name = 'SubtaskEscalationRequests') OR
         (migration_id = 98 AND name = 'SharedWorktreeCoordination') OR
-        (migration_id = 99 AND name = 'SubtaskSummaryCache')
+        (migration_id = 99 AND name = 'SubtaskSummaryCache') OR
+        (migration_id = 111 AND name = 'ThreadParentIndex') OR
+        (migration_id = 112 AND name = 'WorktreeApprovalRequests') OR
+        (migration_id = 113 AND name = 'SubtaskEscalationRequests') OR
+        (migration_id = 114 AND name = 'SharedWorktreeCoordination') OR
+        (migration_id = 115 AND name = 'SubtaskSummaryCache') OR
+        (migration_id = 116 AND name = 'ProjectionProjectsParentProject')
       ) AS plusPreSyncRows
     FROM effect_sql_migrations
   `;

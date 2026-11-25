@@ -8,11 +8,12 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
-import Migration0111 from "./Migrations/111_ThreadParentIndex.ts";
-import Migration0112 from "./Migrations/112_WorktreeApprovalRequests.ts";
-import Migration0113 from "./Migrations/113_SubtaskEscalationRequests.ts";
-import Migration0114 from "./Migrations/114_SharedWorktreeCoordination.ts";
-import Migration0115 from "./Migrations/115_SubtaskSummaryCache.ts";
+import Migration0117 from "./Migrations/117_ThreadParentIndex.ts";
+import Migration0118 from "./Migrations/118_WorktreeApprovalRequests.ts";
+import Migration0119 from "./Migrations/119_SubtaskEscalationRequests.ts";
+import Migration0120 from "./Migrations/120_SharedWorktreeCoordination.ts";
+import Migration0121 from "./Migrations/121_SubtaskSummaryCache.ts";
+import Migration0122 from "./Migrations/122_ProjectionProjectsParentProject.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -206,18 +207,18 @@ describe("runMigrations", () => {
   );
 
   it.effect(
-    "reconciles pre-sync Plus migrations 95-99 into 111-115 while preserving existing Plus tables and data",
+    "reconciles pre-sync Plus migrations 95-99 into 117-121 while preserving existing Plus tables and data",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runMigrations({ toMigrationInclusive: 94 });
 
         // Simulate a pre-sync Plus database that ran Plus migrations at ids 95-99.
-        yield* Migration0111;
-        yield* Migration0112;
-        yield* Migration0113;
-        yield* Migration0114;
-        yield* Migration0115;
+        yield* Migration0117;
+        yield* Migration0118;
+        yield* Migration0119;
+        yield* Migration0120;
+        yield* Migration0121;
         yield* sql`
           INSERT INTO effect_sql_migrations (migration_id, name) VALUES
             (95, 'ThreadParentIndex'),
@@ -253,6 +254,61 @@ describe("runMigrations", () => {
         assert.deepStrictEqual(cachedRows, [{ summary_json: '{"summary":"preserved"}' }]);
 
         // Subsequent startup should see no pending work even in query_only mode.
+        assert.isFalse(yield* hasPendingMigrations());
+        yield* sql`PRAGMA query_only = ON`;
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "reconciles pre-sync Plus migrations 111-116 into 117-122 while preserving existing Plus tables and data",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 110 });
+
+        // Simulate a pre-sync Plus database that ran Plus migrations at ids 111-116.
+        yield* Migration0117;
+        yield* Migration0118;
+        yield* Migration0119;
+        yield* Migration0120;
+        yield* Migration0121;
+        yield* Migration0122;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name) VALUES
+            (111, 'ThreadParentIndex'),
+            (112, 'WorktreeApprovalRequests'),
+            (113, 'SubtaskEscalationRequests'),
+            (114, 'SharedWorktreeCoordination'),
+            (115, 'SubtaskSummaryCache'),
+            (116, 'ProjectionProjectsParentProject')
+        `;
+
+        yield* sql`
+          INSERT INTO subtask_summary_cache (
+            parent_thread_id, source_cutoff_key, content_digest, strategy_version,
+            summary_json, created_at, updated_at, last_accessed_at
+          ) VALUES (
+            'thread-parent-2', 'cutoff-2', 'digest-2', 'v1',
+            '{"summary":"preserved-116"}', '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+          )
+        `;
+
+        assert.isTrue(yield* hasPendingMigrations());
+
+        const executed = yield* runMigrations();
+        assert.deepStrictEqual(
+          executed,
+          migrationManifest.filter(([id]) => id >= 111),
+        );
+        assert.deepStrictEqual(yield* history, migrationManifest);
+
+        const cachedRows = yield* sql<{ readonly summary_json: string }>`
+          SELECT summary_json FROM subtask_summary_cache WHERE parent_thread_id = 'thread-parent-2'
+        `;
+        assert.deepStrictEqual(cachedRows, [{ summary_json: '{"summary":"preserved-116"}' }]);
+
         assert.isFalse(yield* hasPendingMigrations());
         yield* sql`PRAGMA query_only = ON`;
         assert.deepStrictEqual(yield* runMigrations(), []);

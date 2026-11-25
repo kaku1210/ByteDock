@@ -260,6 +260,7 @@ export interface FakeThread {
   readonly worktreePath?: string | null;
   readonly branch?: string | null;
   readonly issues?: OrchestrationV2ThreadShell["issues"];
+  readonly pullRequests?: OrchestrationV2ThreadShell["pullRequests"];
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
   readonly subagents?: OrchestrationV2ThreadProjection["subagents"];
@@ -355,6 +356,7 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     worktreePath: thread.worktreePath ?? null,
     activeProviderThreadId: thread.providerThreads?.[0]?.id ?? null,
     ...(thread.issues === undefined ? {} : { issues: thread.issues }),
+    ...(thread.pullRequests === undefined ? {} : { pullRequests: thread.pullRequests }),
     lineage: {
       rootThreadId,
       parentThreadId,
