@@ -1,4 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off -- fixtures name transcript files by URL.
+// @effect-diagnostics nodeBuiltinImport:off -- fixtures name transcript files by URL and write native session databases.
+import * as NodeSqlite from "node:sqlite";
 import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -13,6 +14,7 @@ import {
   describeAntigravitySubagentLaunches,
   readAntigravityChildrenAtWork,
   readAntigravityChildWork,
+  readAntigravityFinishedCommands,
   readAntigravityPendingReply,
 } from "./AntigravityChildWork.ts";
 import { sanitizeAntigravityToolPayload } from "./AntigravityProtocol.ts";
@@ -680,6 +682,114 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
         yield* fs.remove(transcriptPath);
         yield* fs.symlink(external, transcriptPath);
         expect(yield* pending()).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "reads finished run_command steps from the unlinked session log and ignores running or linked ones",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profile = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-finished-cmd-" });
+        const conversations = path.join(profile, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, `${ROOT}.db`);
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const toolCall = (id: string, name: string) => proto(field(1, id), field(2, name));
+        const metadataFor = (id: string, name = "run_command") =>
+          proto(field(4, toolCall(id, name)));
+        const payloadFor = (id: string, name = "run_command") =>
+          proto(field(5, proto(field(4, toolCall(id, name)))));
+
+        const candidateIds = [
+          "call_pending",
+          "call_running",
+          "call_done",
+          "call_cleared",
+          "call_cancelled",
+          "call_errored",
+          "call_schedule",
+        ];
+
+        // Missing DB, empty toolCallIds, and invalid session id fail closed.
+        expect(
+          yield* readAntigravityFinishedCommands({
+            profileDirectory: profile,
+            sessionId: ROOT,
+            toolCallIds: candidateIds,
+          }),
+        ).toEqual([]);
+        expect(
+          yield* readAntigravityFinishedCommands({
+            profileDirectory: profile,
+            sessionId: ROOT,
+            toolCallIds: [],
+          }),
+        ).toEqual([]);
+        expect(
+          yield* readAntigravityFinishedCommands({
+            profileDirectory: profile,
+            sessionId: "../escape",
+            toolCallIds: candidateIds,
+          }),
+        ).toEqual([]);
+
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        try {
+          db.exec(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+          );
+          const insert = db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          );
+          insert.run(1, 21, 1, metadataFor("call_pending"), null);
+          insert.run(2, 21, 2, metadataFor("call_running"), null);
+          insert.run(3, 21, 3, metadataFor("call_done"), null);
+          insert.run(4, 21, 5, null, payloadFor("call_cleared"));
+          insert.run(5, 21, 6, metadataFor("call_cancelled"), null);
+          insert.run(6, 21, 7, null, payloadFor("call_errored"));
+          insert.run(7, 132, 3, metadataFor("call_schedule", "schedule"), null);
+        } finally {
+          db.close();
+        }
+
+        const finished = yield* readAntigravityFinishedCommands({
+          profileDirectory: profile,
+          sessionId: ROOT,
+          toolCallIds: candidateIds,
+        });
+        expect(finished).toEqual([
+          { toolCallId: "call_errored", status: "failed" },
+          { toolCallId: "call_cancelled", status: "failed" },
+          { toolCallId: "call_cleared", status: "completed" },
+          { toolCallId: "call_done", status: "completed" },
+        ]);
+
+        // Symlinked DB fails closed.
+        const outside = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-finished-outside-" });
+        const externalDb = path.join(outside, `${ROOT}.db`);
+        yield* fs.rename(dbPath, externalDb);
+        yield* fs.symlink(externalDb, dbPath);
+        expect(
+          yield* readAntigravityFinishedCommands({
+            profileDirectory: profile,
+            sessionId: ROOT,
+            toolCallIds: candidateIds,
+          }),
+        ).toEqual([]);
       }),
   );
 });

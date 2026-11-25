@@ -34,10 +34,14 @@ import {
   antigravitySubagentLaunches,
   describeAntigravitySubagentLaunches,
   readAntigravityChildrenAtWork,
+  readAntigravityFinishedCommands,
   readAntigravityPendingReply,
 } from "../../provider/acp/AntigravityChildWork.ts";
 import { readAntigravityClientTextFile } from "../../provider/acp/AntigravityClientFiles.ts";
-import { watchAntigravityPromptOutcome } from "../../provider/acp/AntigravityTurnOutcome.ts";
+import {
+  watchAntigravityActiveWait,
+  watchAntigravityPromptOutcome,
+} from "../../provider/acp/AntigravityTurnOutcome.ts";
 import {
   ANTIGRAVITY_MILESTONE_PROGRESS_INSTRUCTIONS,
   antigravityApprovalOptions,
@@ -257,10 +261,21 @@ export function makeAntigravityAcpAdapterFlavor(
     replyEndsWithUsageUpdate: true,
     toolOutlivesPrompt: antigravityToolOutlivesPrompt,
     // agy sometimes loses the terminal update or wake for a background command, which would
-    // hold the turn in Working forever. 30 minutes still leaves long commands room.
+    // hold the turn in Working forever. Poll native step completion every 20s and keep 30m as fallback.
     postSettleCommandHold: {
       timeout: "30 minutes",
       isCommand: antigravityCommandOutlivesPrompt,
+      ...(profileDirectory === undefined
+        ? {}
+        : {
+            reconcileInterval: "20 seconds",
+            reconcileFinishedCommands: ({ sessionId, toolCallIds }) =>
+              readAntigravityFinishedCommands({
+                profileDirectory,
+                sessionId,
+                toolCallIds,
+              }),
+          }),
     },
     // session/cancel ends the agent's running commands, so only Stop sends it once the prompt
     // has ended. A message sent while a command runs leaves the command alone.
@@ -311,15 +326,19 @@ export function makeAntigravityAcpAdapterFlavor(
     compactViaAdvertisedCommand: true,
     requiresSignIn: isAntigravitySignInRequiredError,
     checksVersionAtHandshake: true,
-    // Antigravity can leave a prompt open without updates; long tools and approvals pause this.
+    // Antigravity can leave a prompt open without updates; long tools, approvals, and native
+    // schedule waits pause this, while repeated 5xx errors fail early at 3 minutes.
     promptInactivityTimeout: "15 minutes",
     reportsPerTurnPromptUsage: true,
     geminiPromptUsage: true,
     ...(profileDirectory === undefined
       ? {}
       : {
+          promptInactivityEarlyCheckAfter: "3 minutes",
           watchPromptOutcome: (sessionId: string) =>
             watchAntigravityPromptOutcome(profileDirectory, sessionId),
+          watchPromptActiveWait: (sessionId: string) =>
+            watchAntigravityActiveWait(profileDirectory, sessionId),
           subagentsOutlivingPrompt: ({ sessionId, nativeTaskIds }) =>
             readAntigravityChildrenAtWork({
               profileDirectory,

@@ -630,6 +630,8 @@ const makePromptInactivityHarness = Effect.fnUntraced(function* (input: {
   readonly environment: (runtimeOrdinal: number) => Readonly<Record<string, string>>;
   readonly runtimeMode?: "full-access" | "approval-required";
   readonly watchPromptOutcome?: AcpAdapterV2Flavor["watchPromptOutcome"];
+  readonly watchPromptActiveWait?: AcpAdapterV2Flavor["watchPromptActiveWait"];
+  readonly promptInactivityEarlyCheckAfter?: AcpAdapterV2Flavor["promptInactivityEarlyCheckAfter"];
   readonly wrapPrompt?: (
     prompt: AcpSessionRuntime.AcpSessionRuntime["Service"]["prompt"],
   ) => AcpSessionRuntime.AcpSessionRuntime["Service"]["prompt"];
@@ -646,9 +648,15 @@ const makePromptInactivityHarness = Effect.fnUntraced(function* (input: {
       driver: ACP_TEST_DRIVER,
       capabilities: AcpProviderCapabilitiesV2,
       promptInactivityTimeout: "15 minutes",
+      ...(input.promptInactivityEarlyCheckAfter === undefined
+        ? {}
+        : { promptInactivityEarlyCheckAfter: input.promptInactivityEarlyCheckAfter }),
       ...(input.watchPromptOutcome === undefined
         ? {}
         : { watchPromptOutcome: input.watchPromptOutcome }),
+      ...(input.watchPromptActiveWait === undefined
+        ? {}
+        : { watchPromptActiveWait: input.watchPromptActiveWait }),
       ...(input.followAgentWorkState === true ? { followAgentWorkState: true } : {}),
       makeRuntime: makeMockRuntime({
         childProcessSpawner,
@@ -1648,6 +1656,110 @@ describe("AcpAdapterV2", () => {
       assert.deepEqual(failed.failure, notFound);
       assert.deepEqual(promptTexts.slice(3), ["continue"], "a turn resumes only once");
     }).pipe(Effect.provide(layerTest)),
+  );
+  it.effect(
+    "resumes a transient 5xx outcome failure up to maxResumes with exponential backoff",
+    () =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("acp-test-prompt-resume-backoff");
+        const threadId = ThreadId.make("thread-acp-prompt-resume-backoff");
+        const badGateway = {
+          class: "provider_error",
+          message: "Bad Gateway: Failed to connect to backend API",
+          code: "502 Bad Gateway",
+          retryable: true,
+        } as const;
+        const promptTexts: Array<string> = [];
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            steersWithPrompt: () => true,
+            watchPromptOutcome: () =>
+              Effect.succeed(() =>
+                Effect.succeed({
+                  failure: badGateway,
+                  threadDisposition: "reusable" as const,
+                  resumeWith: "continue",
+                  maxResumes: 2,
+                  resumeDelay: "2 seconds",
+                }),
+              ),
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              mockAgentPath: yield* bundledMockAgentPath,
+              wrapRuntime: (runtime) => ({
+                ...runtime,
+                prompt: (payload) =>
+                  Effect.sync(() => {
+                    promptTexts.push(
+                      payload.prompt
+                        .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                        .join("\n"),
+                    );
+                    return { stopReason: "end_turn" as const };
+                  }),
+              }),
+            }),
+          },
+        });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-prompt-resume-backoff"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const collector = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy,
+            now: yield* DateTime.now,
+            ordinal: 1,
+          }),
+        );
+        // First resume waits 2s, second resume waits 4s, then the third 502 fails the turn.
+        yield* TestClock.adjust("2 seconds");
+        yield* TestClock.adjust("4 seconds");
+        const events = Array.from(yield* Fiber.join(collector));
+        const terminal = events.at(-1);
+        if (terminal?.type !== "turn.terminal" || terminal.status !== "failed") {
+          return assert.fail("expected a failed terminal after exhausting maxResumes");
+        }
+        assert.deepEqual(terminal.failure, badGateway);
+        assert.deepEqual(promptTexts.slice(1), ["continue", "continue"]);
+        const retries = events.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "error" &&
+          event.turnItem.status === "running" &&
+          event.turnItem.retry !== undefined
+            ? [event.turnItem.retry]
+            : [],
+        );
+        assert.deepEqual(retries, [
+          { attempt: 1, maxAttempts: 2, retryDelayMs: 2000 },
+          { attempt: 2, maxAttempts: 2, retryDelayMs: 4000 },
+        ]);
+      }).pipe(Effect.provide(layerTest)),
   );
   it.live("retains returned usage when Stop finalizes before the prompt callback", () =>
     Effect.gen(function* () {
@@ -6065,6 +6177,159 @@ describe("AcpAdapterV2", () => {
       const [silent] = yield* harness.terminals(1);
       assert.equal(silent?.status, "failed");
       assert.include(silent?.failure?.message, "15 minutes");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect("pauses the inactivity watchdog while native active wait reports running work", () =>
+    Effect.gen(function* () {
+      let nativeWaitActive = true;
+      const harness = yield* makePromptInactivityHarness({
+        environment: () => ({ T3_ACP_HANG_PROMPT_FOREVER: "1" }),
+        watchPromptActiveWait: () => Effect.succeed(() => Effect.sync(() => nativeWaitActive)),
+      });
+      yield* harness.startTurn(1);
+      // Native schedule / run_command wait keeps the prompt alive past the 15-minute bound.
+      yield* TestClock.adjust("30 minutes");
+      assert.isTrue(yield* harness.nextTurnRejected(2));
+
+      // Once native wait clears, the 15-minute inactivity countdown resumes and retires the prompt.
+      nativeWaitActive = false;
+      yield* TestClock.adjust("15 minutes");
+      const [silent] = yield* harness.terminals(1);
+      assert.equal(silent?.status, "failed");
+      assert.include(silent?.failure?.message, "15 minutes");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect(
+    "retires a silent prompt early when the early inactivity outcome check detects a 5xx error",
+    () =>
+      Effect.gen(function* () {
+        const badGateway = {
+          class: "provider_error",
+          message: "Bad Gateway: Failed to connect to backend API",
+          code: "502 Bad Gateway",
+          retryable: true,
+        } as const;
+        const harness = yield* makePromptInactivityHarness({
+          environment: () => ({ T3_ACP_HANG_PROMPT_FOREVER: "1" }),
+          promptInactivityEarlyCheckAfter: "3 minutes",
+          watchPromptOutcome: () =>
+            Effect.succeed((_result, options) =>
+              Effect.succeed(
+                options?.earlyCheck === true
+                  ? { failure: badGateway, threadDisposition: "reusable" as const }
+                  : undefined,
+              ),
+            ),
+        });
+        yield* harness.startTurn(1);
+        // Before 3 minutes, the early check has not retired the prompt yet.
+        yield* TestClock.adjust("2 minutes");
+        assert.isTrue(yield* harness.nextTurnRejected(2));
+
+        // At 3 minutes, earlyCheck detects the 502 and fails the prompt without waiting 15 minutes.
+        yield* TestClock.adjust("1 minute");
+        const [silent] = yield* harness.terminals(1);
+        assert.equal(silent?.status, "failed");
+        assert.deepEqual(silent?.failure, badGateway);
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect(
+    "retries transient startup authenticate RPC failures with backoff before succeeding",
+    () =>
+      Effect.gen(function* () {
+        const requestEvents = yield* Queue.unbounded<AcpSessionRuntime.AcpSessionRequestLogEvent>();
+        const runtimeLayer = AcpSessionRuntime.layer({
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", title: "T3 Test", version: "0.0.0" },
+          authMethodId: "test",
+          requestLogger: (event) => Queue.offer(requestEvents, event).pipe(Effect.asVoid),
+          spawn: {
+            command: process.execPath,
+            args: [yield* bundledMockAgentPath],
+            cwd: process.cwd(),
+            env: {
+              T3_ACP_SESSION_LIFECYCLE: "1",
+              T3_ACP_REQUIRE_AUTH: "1",
+              T3_ACP_FAIL_AUTH_TIMES: "2",
+              NODE_COMPILE_CACHE: (yield* Deferred.await(bundledAgents)).compileCache,
+            },
+          },
+        }).pipe(
+          Layer.provide(
+            Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              yield* ChildProcessSpawner.ChildProcessSpawner,
+            ),
+          ),
+        );
+        const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
+          Effect.provide(yield* Layer.build(runtimeLayer)),
+        );
+        const awaitAuthEvent = (status: AcpSessionRuntime.AcpSessionRequestLogEvent["status"]) =>
+          Effect.gen(function* () {
+            while (true) {
+              const event = yield* Queue.take(requestEvents);
+              if (event.method === "authenticate" && event.status === status) return event;
+            }
+          });
+
+        const starting = yield* runtime.start().pipe(Effect.forkScoped);
+        yield* awaitAuthEvent("failed");
+        yield* TestClock.adjust("2 seconds");
+        yield* awaitAuthEvent("failed");
+        yield* TestClock.adjust("5 seconds");
+        yield* awaitAuthEvent("succeeded");
+        const started = yield* Fiber.join(starting);
+        assert.equal(started.sessionId, "mock-session-1");
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect("fails startup authenticate with a timeout error when the agent never answers", () =>
+    Effect.gen(function* () {
+      const requestEvents = yield* Queue.unbounded<AcpSessionRuntime.AcpSessionRequestLogEvent>();
+      const runtimeLayer = AcpSessionRuntime.layer({
+        cwd: process.cwd(),
+        clientInfo: { name: "t3-test", title: "T3 Test", version: "0.0.0" },
+        authMethodId: "test",
+        requestLogger: (event) => Queue.offer(requestEvents, event).pipe(Effect.asVoid),
+        spawn: {
+          command: process.execPath,
+          args: [yield* bundledMockAgentPath],
+          cwd: process.cwd(),
+          env: {
+            T3_ACP_SESSION_LIFECYCLE: "1",
+            T3_ACP_REQUIRE_AUTH: "1",
+            T3_ACP_HANG_AUTH: "1",
+            NODE_COMPILE_CACHE: (yield* Deferred.await(bundledAgents)).compileCache,
+          },
+        },
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            yield* ChildProcessSpawner.ChildProcessSpawner,
+          ),
+        ),
+      );
+      const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
+        Effect.provide(yield* Layer.build(runtimeLayer)),
+      );
+
+      const starting = yield* runtime.start().pipe(Effect.forkScoped);
+      while (true) {
+        const event = yield* Queue.take(requestEvents);
+        if (event.method === "authenticate" && event.status === "started") break;
+      }
+      yield* TestClock.adjust("90 seconds");
+      const error = yield* Fiber.join(starting).pipe(Effect.flip);
+      assert.equal(error._tag, "AcpTransportError");
+      if (error._tag === "AcpTransportError") {
+        assert.equal(error.method, "authenticate");
+        assert.equal(error.detail, "authenticate timed out waiting for RPC response");
+      }
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

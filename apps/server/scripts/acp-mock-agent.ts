@@ -58,6 +58,8 @@ const omitInitializeModelState = process.env.T3_ACP_OMIT_INITIALIZE_MODEL_STATE 
 const completeFirstPromptOnCancel = process.env.T3_ACP_COMPLETE_FIRST_PROMPT_ON_CANCEL === "1";
 const floodStderr = process.env.T3_ACP_FLOOD_STDERR === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
+const hangAuthenticateForever = process.env.T3_ACP_HANG_AUTH === "1";
+const failAuthenticateTimes = Number(process.env.T3_ACP_FAIL_AUTH_TIMES ?? "0");
 const agentVersion = process.env.T3_ACP_AGENT_VERSION ?? "0.0.0";
 const geminiApiKey = process.env.GEMINI_API_KEY;
 const idleError = process.env.T3_ACP_IDLE_ERROR;
@@ -590,8 +592,18 @@ const program = Effect.gen(function* () {
   );
 
   // Antigravity requires GEMINI_API_KEY for API key authentication.
+  let authenticateAttempts = 0;
   yield* agent.handleAuthenticate((request) =>
     Effect.gen(function* () {
+      authenticateAttempts += 1;
+      if (hangAuthenticateForever) {
+        return yield* Effect.never;
+      }
+      if (authenticateAttempts <= failAuthenticateTimes) {
+        return yield* AcpError.AcpRequestError.internalError(
+          `Transient mock authentication failure #${authenticateAttempts}`,
+        );
+      }
       if (antigravityProfile) {
         if (
           request.methodId !== "oauth-personal" &&

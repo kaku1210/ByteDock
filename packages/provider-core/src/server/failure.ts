@@ -94,6 +94,26 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
   attachment_unreadable: "an attachment could not be read",
 };
 
+const ACP_METHOD_STAGES: Record<string, string> = {
+  initialize: "initialization",
+  authenticate: "authentication",
+  "session/new": "session creation",
+  "session/load": "session loading",
+  "session/resume": "session resume",
+  "session/prompt": "prompt dispatch",
+  "session/set_model": "model selection",
+  "session/set_mode": "mode selection",
+  "session/set_config_option": "session configuration",
+};
+
+function acpMethodStage(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const method = (value as Record<string, unknown>).method;
+  return typeof method === "string" && Object.hasOwn(ACP_METHOD_STAGES, method)
+    ? ACP_METHOD_STAGES[method]
+    : undefined;
+}
+
 /**
  * Walks a cause chain for curated text without reading arbitrary provider
  * defect text. `known` is the message of a domain error T3 raised itself;
@@ -178,13 +198,53 @@ function curatedCauseMessages(cause: unknown): {
           };
         }
         // ACP reserves -32000 for auth_required; the agent's own text is not shown.
-        case "AcpRequestError":
-          if ((cause as Record<string, unknown>).code !== -32000) break;
-          return {
-            known:
-              "The provider needs you to sign in. Sign in from its provider settings or with its own CLI or app, then retry the turn.",
-            category: categoryMessage(),
-          };
+        case "AcpRequestError": {
+          const code = (cause as Record<string, unknown>).code;
+          if (code === -32000) {
+            return {
+              known:
+                "The provider needs you to sign in. Sign in from its provider settings or with its own CLI or app, then retry the turn.",
+              category: categoryMessage(),
+            };
+          }
+          if (category !== undefined) {
+            const stage = acpMethodStage(cause);
+            const safeCode =
+              typeof code === "number" && Number.isSafeInteger(code) ? ` (code ${code})` : "";
+            if (stage !== undefined) {
+              reason ??= `${stage} failed${safeCode}`;
+            } else if (safeCode.length > 0) {
+              reason ??= `provider request failed${safeCode}`;
+            }
+          }
+          break;
+        }
+        case "AcpTransportError": {
+          if (category !== undefined) {
+            const stage = acpMethodStage(cause);
+            const detail = (cause as Record<string, unknown>).detail;
+            const timedOut =
+              typeof detail === "string" &&
+              (detail.includes(" timed out waiting for RPC response") ||
+                detail.endsWith(" timed out after replay idle"));
+            if (timedOut) {
+              reason ??=
+                stage !== undefined ? `${stage} timed out` : "the provider request timed out";
+            } else {
+              reason ??=
+                stage !== undefined
+                  ? `the provider connection closed during ${stage}`
+                  : "the provider connection closed unexpectedly";
+            }
+          }
+          break;
+        }
+        case "AcpInputStreamEndedError": {
+          if (category !== undefined) {
+            reason ??= "the provider connection closed unexpectedly";
+          }
+          break;
+        }
         case "ContextHandoffDeliveryUncertainError":
           return {
             known:

@@ -11,12 +11,21 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
+import { decodeAntigravityStepToolCall } from "./AntigravityChildWork.ts";
 import { antigravityManagedPath, antigravityProfileRoot } from "./AntigravityProfilePaths.ts";
 
 // CORTEX_STEP_TYPE_ERROR_MESSAGE in the native trajectory.
 const ERROR_STEP_TYPE = 17;
 // CORTEX_STEP_TYPE_PLANNER_RESPONSE: the model answered within this turn.
 const PLANNER_RESPONSE_STEP_TYPE = 15;
+// CORTEX_STEP_TYPE_RUN_COMMAND: shell commands that can outlive the ACP wire update.
+const RUN_COMMAND_STEP_TYPE = 21;
+// CORTEX_STEP_TYPE_GENERIC: includes native `schedule` waits (status = 2 while waiting).
+const GENERIC_STEP_TYPE = 132;
+const STEP_STATUS_PENDING = 1;
+const STEP_STATUS_RUNNING = 2;
+const MAX_ACTIVE_WAIT_ROWS = 32;
+const MAX_ACTIVE_WAIT_BLOB_BYTES = 256 * 1024;
 // The harness error text leads the payload; a Go stack trace follows it.
 const MAX_ERROR_PAYLOAD_BYTES = 16_384;
 // The Go harness's rendering of a Google API error, as the agent's api_errors.py reads it.
@@ -49,6 +58,10 @@ const GO_DURATION_UNIT_MS: Record<string, number> = {
   h: 3_600_000,
 };
 const NATIVE_SESSION_ID = /^[\w-]+$/;
+const TRANSIENT_GATEWAY_STATUSES = new Set(["502", "503", "504"]);
+const decodeDaemonArg = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ IsDaemon: Schema.optional(Schema.Boolean) })),
+);
 
 interface LastStep {
   readonly type: number;
@@ -111,6 +124,76 @@ const lastStepAfter =
     };
   };
 
+const hasActiveWaitAfter =
+  (index: number) =>
+  (database: NodeSqlite.DatabaseSync): boolean => {
+    const columns = new Set(
+      database
+        .prepare("PRAGMA table_info(steps)")
+        .all()
+        .flatMap((row) =>
+          row !== null && typeof row === "object" && "name" in row && typeof row.name === "string"
+            ? [row.name]
+            : [],
+        ),
+    );
+    if (!columns.has("status") || !columns.has("step_type")) return false;
+    const hasMetadata = columns.has("metadata");
+    const hasPayload = columns.has("step_payload");
+    const selectColumns = [
+      "step_type AS type",
+      hasMetadata
+        ? "CASE WHEN length(metadata) <= ? THEN metadata END AS metadata"
+        : "NULL AS metadata",
+      hasPayload
+        ? "CASE WHEN length(step_payload) <= ? THEN step_payload END AS step_payload"
+        : "NULL AS step_payload",
+    ].join(", ");
+    const bindArgs: Array<number> = [];
+    if (hasMetadata) bindArgs.push(MAX_ACTIVE_WAIT_BLOB_BYTES);
+    if (hasPayload) bindArgs.push(MAX_ACTIVE_WAIT_BLOB_BYTES);
+    bindArgs.push(
+      index,
+      STEP_STATUS_PENDING,
+      STEP_STATUS_RUNNING,
+      RUN_COMMAND_STEP_TYPE,
+      GENERIC_STEP_TYPE,
+      MAX_ACTIVE_WAIT_ROWS,
+    );
+    const rows = database
+      .prepare(
+        `SELECT ${selectColumns}
+         FROM steps
+         WHERE idx > ? AND status IN (?, ?) AND step_type IN (?, ?)
+         ORDER BY idx DESC
+         LIMIT ?`,
+      )
+      .iterate(...bindArgs);
+    for (const row of rows) {
+      if (row === null || typeof row !== "object") continue;
+      const type = "type" in row ? Number(row.type) : 0;
+      const metadata =
+        "metadata" in row && row.metadata instanceof Uint8Array ? row.metadata : undefined;
+      const payload =
+        "step_payload" in row && row.step_payload instanceof Uint8Array
+          ? row.step_payload
+          : undefined;
+      const toolCall = decodeAntigravityStepToolCall({ metadata, payload });
+      const isDaemon =
+        toolCall?.argumentsJson !== undefined &&
+        Option.getOrUndefined(decodeDaemonArg(toolCall.argumentsJson))?.IsDaemon === true;
+      if (isDaemon) continue;
+      if (type === GENERIC_STEP_TYPE) {
+        if (toolCall?.name === "schedule") return true;
+        continue;
+      }
+      if (type === RUN_COMMAND_STEP_TYPE) {
+        return true;
+      }
+    }
+    return false;
+  };
+
 function resetAtFrom(text: string, now: DateTime.Utc | undefined): string | undefined {
   // makeProviderFailure drops a timestamp that does not parse, so fall back to the delay.
   const timestamp = RESET_TIMESTAMP.exec(text)?.[1];
@@ -135,17 +218,36 @@ function turnFailure(
   stopReason: EffectAcpSchema.StopReason,
   step: LastStep | undefined,
   now: DateTime.Utc | undefined,
+  options?: { readonly retired?: boolean; readonly earlyCheck?: boolean },
 ):
   | {
       readonly failure: OrchestrationV2ProviderFailure;
       readonly threadDisposition: "reusable" | "broken";
       readonly resumeWith?: string;
+      readonly maxResumes?: number;
+      readonly resumeDelay?: "2 seconds";
     }
   | undefined {
   const errorText =
     step?.type === ERROR_STEP_TYPE
       ? new TextDecoder().decode(step.payload ?? new Uint8Array())
       : undefined;
+  if (options?.earlyCheck === true) {
+    if (errorText === undefined) return undefined;
+    const apiError = API_ERROR.exec(errorText) ?? statusError(errorText);
+    if (apiError === null) return undefined;
+    const [, httpStatus, message, status] = apiError;
+    if (Number(httpStatus) < 500) return undefined;
+    return {
+      failure: makeProviderFailure({
+        class: "provider_error",
+        message: message!.trim(),
+        code: status ?? null,
+        retryable: true,
+      }),
+      threadDisposition: "reusable",
+    };
+  }
   // The agent maps only the SDK's QUOTA_EXHAUSTED stop reason to `refusal`.
   if (errorText === undefined && stopReason !== "refusal") return undefined;
   const text = errorText ?? "";
@@ -187,6 +289,8 @@ function turnFailure(
   const rateLimited = httpStatus === "429" || status === "RESOURCE_EXHAUSTED";
   // A 404 before the model answered is an unknown or unentitled model; after, a transient edge error.
   const transientNotFound = httpStatus === "404" && step?.reachedModel === true;
+  const transientGatewayError =
+    httpStatus !== undefined && TRANSIENT_GATEWAY_STATUSES.has(httpStatus);
   const failure = makeProviderFailure({
     class: rateLimited ? "usage_limit" : "provider_error",
     message: message!.trim(),
@@ -194,26 +298,42 @@ function turnFailure(
     retryable: rateLimited || transientNotFound || Number(httpStatus) >= 500,
     resetAt: resetAtFrom(text, now) ?? null,
   });
-  return transientNotFound
-    ? { failure, threadDisposition: "reusable", resumeWith: "continue" }
-    : reusable(failure);
+  if (options?.retired === true) {
+    return reusable(failure);
+  }
+  if (transientNotFound) {
+    return { failure, threadDisposition: "reusable", resumeWith: "continue" };
+  }
+  if (transientGatewayError) {
+    return {
+      failure,
+      threadDisposition: "reusable",
+      resumeWith: "continue",
+      maxResumes: 2,
+      resumeDelay: "2 seconds",
+    };
+  }
+  return reusable(failure);
 }
 
 const conversationSegments = ["antigravity-acp", "conversations"];
 
-/**
- * Antigravity reports an upstream API failure as a chat message and `end_turn`. Its
- * session log ends that turn with an error step, so the check reads only steps the
- * current prompt added, read-only, from this session's own unlinked database. Without
- * that evidence a typed `refusal` still fails the turn.
- */
-export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.watch")(function* (
+interface VerifiedSessionBaseline {
+  readonly root: string;
+  readonly segments: ReadonlyArray<string>;
+  readonly identity: Awaited<ReturnType<typeof antigravityManagedPath>> extends infer R
+    ? R extends { readonly info: infer I }
+      ? I | undefined
+      : never
+    : never;
+  readonly startIndex: number;
+}
+
+const snapshotSessionBaseline = Effect.fn("AntigravityTurnOutcome.snapshotBaseline")(function* (
   profileDirectory: string,
   sessionId: string,
-) {
-  const typedOnly = (result: EffectAcpSchema.PromptResponse) =>
-    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now)));
-  if (!NATIVE_SESSION_ID.test(sessionId)) return typedOnly;
+): Effect.fn.Return<VerifiedSessionBaseline | undefined> {
+  if (!NATIVE_SESSION_ID.test(sessionId)) return undefined;
   const segments = [...conversationSegments, `${sessionId}.db`];
   const before = yield* Effect.tryPromise({
     try: async () => {
@@ -237,7 +357,7 @@ export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.w
   }).pipe(Effect.orElseSucceed(() => undefined));
   if (before === undefined) {
     yield* Effect.logWarning("The Antigravity session log is not this session's own file.");
-    return typedOnly;
+    return undefined;
   }
   const startIndex =
     before.startIndex ??
@@ -247,31 +367,85 @@ export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.w
     ));
   if (startIndex === undefined) {
     yield* Effect.logWarning("Could not read the Antigravity session log before the prompt.");
-    return typedOnly;
+    return undefined;
   }
+  return {
+    root: before.root,
+    segments,
+    identity: before.identity,
+    startIndex,
+  };
+});
+
+const verifyBaselineFile = (baseline: VerifiedSessionBaseline) =>
+  Effect.tryPromise({
+    try: () => antigravityManagedPath(baseline.root, baseline.segments, "file"),
+    catch: sessionLogError,
+  }).pipe(
+    Effect.orElseSucceed(() => undefined),
+    Effect.map((after) => {
+      const sameFile =
+        after !== undefined &&
+        (baseline.identity === undefined ||
+          (after.info.dev === baseline.identity.dev && after.info.ino === baseline.identity.ino));
+      return sameFile ? after.path : undefined;
+    }),
+  );
+
+/**
+ * Antigravity reports an upstream API failure as a chat message and `end_turn`. Its
+ * session log ends that turn with an error step, so the check reads only steps the
+ * current prompt added, read-only, from this session's own unlinked database. Without
+ * that evidence a typed `refusal` still fails the turn.
+ */
+export const watchAntigravityPromptOutcome = Effect.fn("AntigravityTurnOutcome.watch")(function* (
+  profileDirectory: string,
+  sessionId: string,
+) {
+  const typedOnly = (
+    result: EffectAcpSchema.PromptResponse,
+    options?: { readonly retired?: boolean; readonly earlyCheck?: boolean },
+  ) =>
+    DateTime.now.pipe(Effect.map((now) => turnFailure(result.stopReason, undefined, now, options)));
+  const baseline = yield* snapshotSessionBaseline(profileDirectory, sessionId);
+  if (baseline === undefined) return typedOnly;
   return Effect.fn("AntigravityTurnOutcome.check")(function* (
     result: EffectAcpSchema.PromptResponse,
-    options?: { readonly retired?: boolean },
+    options?: { readonly retired?: boolean; readonly earlyCheck?: boolean },
   ) {
-    // The same file as before the prompt, or one this prompt created, still unlinked.
-    const after = yield* Effect.tryPromise({
-      try: () => antigravityManagedPath(before.root, segments, "file"),
-      catch: sessionLogError,
-    }).pipe(Effect.orElseSucceed(() => undefined));
-    const sameFile =
-      after !== undefined &&
-      (before.identity === undefined ||
-        (after.info.dev === before.identity.dev && after.info.ino === before.identity.ino));
-    const step = sameFile
-      ? yield* readSteps(after.path, lastStepAfter(startIndex)).pipe(
-          Effect.tapError(() =>
-            Effect.logWarning("Could not read the Antigravity session log after the prompt."),
-          ),
-          Effect.orElseSucceed(() => undefined),
-        )
-      : undefined;
+    const filePath = yield* verifyBaselineFile(baseline);
+    const step =
+      filePath !== undefined
+        ? yield* readSteps(filePath, lastStepAfter(baseline.startIndex)).pipe(
+            Effect.tapError(() =>
+              Effect.logWarning("Could not read the Antigravity session log after the prompt."),
+            ),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
     // A retired prompt's check runs long after the error, so a relative delay has no anchor.
-    const now = options?.retired === true ? undefined : yield* DateTime.now;
-    return turnFailure(result.stopReason, step, now);
+    const now =
+      options?.retired === true || options?.earlyCheck === true ? undefined : yield* DateTime.now;
+    return turnFailure(result.stopReason, step, now, options);
   });
 });
+
+/**
+ * Watches whether the current prompt opened a native non-daemon wait step (`schedule` or
+ * `run_command` with `status` pending/running) after the baseline step index. Used to pause
+ * the prompt inactivity watchdog when `agy` holds `session/prompt` open during long timers.
+ */
+export const watchAntigravityActiveWait = Effect.fn("AntigravityTurnOutcome.watchActiveWait")(
+  function* (profileDirectory: string, sessionId: string) {
+    const baseline = yield* snapshotSessionBaseline(profileDirectory, sessionId);
+    if (baseline === undefined) return () => Effect.succeed(false);
+    return Effect.fn("AntigravityTurnOutcome.checkActiveWait")(function* () {
+      const filePath = yield* verifyBaselineFile(baseline);
+      if (filePath === undefined) return false;
+      return yield* readSteps(filePath, hasActiveWaitAfter(baseline.startIndex)).pipe(
+        Effect.map((active) => active === true),
+        Effect.orElseSucceed(() => false),
+      );
+    });
+  },
+);

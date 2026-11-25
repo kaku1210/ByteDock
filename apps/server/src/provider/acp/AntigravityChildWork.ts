@@ -820,3 +820,171 @@ export const readAntigravityChildrenAtWork = Effect.fn("readAntigravityChildrenA
     }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
   },
 );
+
+const RUN_COMMAND_STEP_TYPE = 21;
+const STEP_STATUS_DONE = 3;
+const STEP_STATUS_CLEARED = 5;
+const STEP_STATUS_CANCELLED = 6;
+const STEP_STATUS_ERROR = 7;
+const MAX_RECONCILE_COMMAND_ROWS = 200;
+
+export interface AntigravityStepToolCall {
+  readonly id: string | undefined;
+  readonly name: string | undefined;
+  readonly argumentsJson: string | undefined;
+}
+
+const decodeToolCallMessage = safely((toolCall: Uint8Array): AntigravityStepToolCall => ({
+  id: text(toolCall, 1),
+  name: text(toolCall, 2),
+  argumentsJson: text(toolCall, 3),
+}));
+
+/** Extracts the tool call metadata stored either in `steps.metadata` or inside `steps.step_payload`. */
+export function decodeAntigravityStepToolCall(input: {
+  readonly metadata?: Uint8Array | null | undefined;
+  readonly payload?: Uint8Array | null | undefined;
+}): AntigravityStepToolCall | undefined {
+  const fromMetadata =
+    input.metadata instanceof Uint8Array
+      ? safely((bytes) => message(bytes, METADATA_TOOL_CALL))(input.metadata)
+      : undefined;
+  if (fromMetadata !== undefined) {
+    const decoded = decodeToolCallMessage(fromMetadata);
+    if (decoded !== undefined && (decoded.id !== undefined || decoded.name !== undefined)) {
+      return decoded;
+    }
+  }
+  const fromPayload =
+    input.payload instanceof Uint8Array
+      ? safely((bytes) => message(message(bytes, STEP_METADATA), METADATA_TOOL_CALL))(input.payload)
+      : undefined;
+  return fromPayload === undefined ? undefined : decodeToolCallMessage(fromPayload);
+}
+
+/**
+ * Checks native `steps` records for running command tool calls whose terminal ACP update or wake
+ * was dropped. Returns only tool calls proven terminal in this session's unlinked SQLite log;
+ * missing, linked, unreadable, or still-running commands are omitted so callers fail closed.
+ */
+export const readAntigravityFinishedCommands = Effect.fn("readAntigravityFinishedCommands")(
+  function* (input: {
+    readonly profileDirectory: string;
+    readonly sessionId: string;
+    readonly toolCallIds: ReadonlyArray<string>;
+  }) {
+    if (!NATIVE_ID.test(input.sessionId) || input.toolCallIds.length === 0) {
+      return [] as ReadonlyArray<{
+        readonly toolCallId: string;
+        readonly status: "completed" | "failed";
+      }>;
+    }
+    const read = async (): Promise<
+      ReadonlyArray<{
+        readonly toolCallId: string;
+        readonly status: "completed" | "failed";
+      }>
+    > => {
+      const profileRoot = await antigravityProfileRoot(input.profileDirectory);
+      if (profileRoot === undefined) return [];
+      const databasePath = (
+        await antigravityManagedPath(
+          profileRoot,
+          ["antigravity-acp", "conversations", `${input.sessionId}.db`],
+          "file",
+        )
+      )?.path;
+      if (databasePath === undefined) return [];
+      const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+      try {
+        database.exec("PRAGMA busy_timeout = 100");
+        const hasSteps =
+          database
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'steps'")
+            .get() !== undefined;
+        if (!hasSteps) return [];
+        const columns = new Set(
+          database
+            .prepare("PRAGMA table_info(steps)")
+            .all()
+            .flatMap((row) =>
+              row !== null &&
+              typeof row === "object" &&
+              "name" in row &&
+              typeof row.name === "string"
+                ? [row.name]
+                : [],
+            ),
+        );
+        if (!columns.has("status") || !columns.has("step_type")) return [];
+        const hasMetadata = columns.has("metadata");
+        const hasPayload = columns.has("step_payload");
+        if (!hasMetadata && !hasPayload) return [];
+        const selectColumns = [
+          "status",
+          hasMetadata
+            ? "CASE WHEN length(metadata) <= ? THEN metadata END AS metadata"
+            : "NULL AS metadata",
+          hasPayload
+            ? "CASE WHEN length(step_payload) <= ? THEN step_payload END AS step_payload"
+            : "NULL AS step_payload",
+        ].join(", ");
+        const bindArgs: Array<number> = [];
+        if (hasMetadata) bindArgs.push(MAX_STEP_BYTES);
+        if (hasPayload) bindArgs.push(MAX_STEP_BYTES);
+        bindArgs.push(
+          RUN_COMMAND_STEP_TYPE,
+          STEP_STATUS_DONE,
+          STEP_STATUS_CLEARED,
+          STEP_STATUS_CANCELLED,
+          STEP_STATUS_ERROR,
+          MAX_RECONCILE_COMMAND_ROWS,
+        );
+        const wanted = new Set(input.toolCallIds);
+        const resolved = new Map<string, "completed" | "failed">();
+        const rows = database
+          .prepare(
+            `SELECT ${selectColumns}
+             FROM steps
+             WHERE step_type = ? AND status IN (?, ?, ?, ?)
+             ORDER BY idx DESC
+             LIMIT ?`,
+          )
+          .iterate(...bindArgs);
+        for (const row of rows) {
+          if (row === null || typeof row !== "object") continue;
+          const status = "status" in row ? Number(row.status) : 0;
+          const metadata =
+            "metadata" in row && row.metadata instanceof Uint8Array ? row.metadata : undefined;
+          const payload =
+            "step_payload" in row && row.step_payload instanceof Uint8Array
+              ? row.step_payload
+              : undefined;
+          const toolCall = decodeAntigravityStepToolCall({ metadata, payload });
+          if (toolCall?.id === undefined || !wanted.has(toolCall.id) || resolved.has(toolCall.id)) {
+            continue;
+          }
+          resolved.set(
+            toolCall.id,
+            status === STEP_STATUS_DONE || status === STEP_STATUS_CLEARED ? "completed" : "failed",
+          );
+          if (resolved.size === wanted.size) break;
+        }
+        return [...resolved.entries()].map(([toolCallId, status]) => ({ toolCallId, status }));
+      } finally {
+        database.close();
+      }
+    };
+    return yield* Effect.tryPromise({
+      try: read,
+      catch: (cause) => new AntigravityChildWorkReadError({ cause }),
+    }).pipe(
+      Effect.orElseSucceed(
+        (): ReadonlyArray<{
+          readonly toolCallId: string;
+          readonly status: "completed" | "failed";
+        }> => [],
+      ),
+    );
+  },
+);

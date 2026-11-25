@@ -422,8 +422,12 @@ export function acpPerTurnPromptUsage(
 interface AcpPromptOutcomeFailure {
   readonly failure: OrchestrationV2ProviderFailure;
   readonly threadDisposition: "reusable" | "broken";
-  /** The native session can carry on: the turn resends this prompt once before failing. */
+  /** The native session can carry on: the turn resends this prompt before failing. */
   readonly resumeWith?: string;
+  /** Maximum automatic resume attempts for this turn (defaults to 1). */
+  readonly maxResumes?: number;
+  /** Optional base backoff delay before resending `resumeWith`. */
+  readonly resumeDelay?: Duration.Input;
 }
 
 export interface AcpAdapterV2Flavor {
@@ -438,17 +442,25 @@ export interface AcpAdapterV2Flavor {
   readonly checksVersionAtHandshake?: boolean;
   /**
    * Runs before `session/prompt`. The check reports a failure hidden by a clean stop, or
-   * by silence when the inactivity watchdog retires the prompt (`retired`). A failure
-   * restarts the runtime; a `broken` thread's next turn starts a fresh session.
+   * by silence when the inactivity watchdog probes (`earlyCheck`) or retires the prompt (`retired`).
+   * A failure restarts the runtime; a `broken` thread's next turn starts a fresh session.
    */
   readonly watchPromptOutcome?: (
     sessionId: string,
   ) => Effect.Effect<
     (
       result: EffectAcpSchema.PromptResponse,
-      options?: { readonly retired?: boolean },
+      options?: { readonly retired?: boolean; readonly earlyCheck?: boolean },
     ) => Effect.Effect<AcpPromptOutcomeFailure | undefined>
   >;
+  /**
+   * Runs before `session/prompt`. Returns a probe indicating whether the native session still has
+   * an active non-daemon background wait (such as a `schedule` timer) so the inactivity watchdog
+   * extends instead of killing the turn.
+   */
+  readonly watchPromptActiveWait?: (
+    sessionId: string,
+  ) => Effect.Effect<() => Effect.Effect<boolean>>;
   readonly requiresSignIn?: (cause: unknown) => boolean;
   /**
    * Runs before attachment paths, T3 instructions and native slash-command detection,
@@ -689,13 +701,22 @@ export interface AcpAdapterV2Flavor {
    */
   readonly toolOutlivesPrompt?: (toolCall: AcpToolCallState) => boolean;
   /**
-   * Finalize a settled turn held only by running commands once the session has been silent for
-   * `timeout`, so a command that never reports back cannot leave the thread in Working forever.
-   * Other holds (questions, schedules, subagents) keep the turn open as before.
+   * Finalize a settled turn held only by running commands after `timeout` of silence, and
+   * optionally reconcile finished commands via `reconcileFinishedCommands` every `reconcileInterval`.
    */
   readonly postSettleCommandHold?: {
     readonly timeout: Duration.Input;
     readonly isCommand: (toolCall: AcpToolCallState) => boolean;
+    readonly reconcileInterval?: Duration.Input;
+    readonly reconcileFinishedCommands?: (input: {
+      readonly sessionId: string;
+      readonly toolCallIds: ReadonlyArray<string>;
+    }) => Effect.Effect<
+      ReadonlyArray<{
+        readonly toolCallId: string;
+        readonly status: "completed" | "failed";
+      }>
+    >;
   };
   readonly isProviderWakeNotification?: (
     notification: EffectAcpSchema.SessionNotification,
@@ -737,6 +758,11 @@ export interface AcpAdapterV2Flavor {
    * agent request, tool or subagent is open, and replaces the agent before the next turn.
    */
   readonly promptInactivityTimeout?: Duration.Input;
+  /**
+   * When set alongside `watchPromptOutcome`, probes `checkPromptOutcome(..., { earlyCheck: true })`
+   * after this much silence so upstream 5xx hangs retire without waiting for the full timeout.
+   */
+  readonly promptInactivityEarlyCheckAfter?: Duration.Input;
   /** Grok can retain task_already_running until process exit. */
   readonly restartRuntimeAfterInterrupt?: boolean;
   /** Prompt failures after which the agent process keeps failing until replaced. */
@@ -1791,8 +1817,8 @@ interface ActiveAcpTurn {
   foregroundIdle: Deferred.Deferred<void>;
   /** Counts the turn's prompts; only the latest one settles the turn. */
   promptSequence: number;
-  /** The turn already resent a prompt after a resumable outcome failure. */
-  outcomeResumed: boolean;
+  /** Number of automatic resume prompts already sent after a resumable outcome failure. */
+  outcomeResumeAttempts: number;
   /** Clock millis just before `session/prompt` was handed to the runtime. */
   promptSentAt: number | null;
   /** Completed when an update after dispatch matches `cancelAfterPromptStarts.isStart`. */
@@ -1806,6 +1832,8 @@ interface ActiveAcpTurn {
   /** Clock millis of the prompt's last progress, for `promptInactivityTimeout`. */
   lastProgressAt: number;
   inactivityWatchdog: Fiber.Fiber<void> | undefined;
+  /** Optional native active-wait probe (e.g. active `schedule` timer) to pause inactivity timeout. */
+  checkNativeActiveWait: (() => Effect.Effect<boolean>) | undefined;
 }
 
 const PROMPT_OUTCOME_CHECK_TIMEOUT = Duration.seconds(5);
@@ -2860,6 +2888,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           flavor.promptInactivityTimeout === undefined
             ? undefined
             : Duration.toMillis(flavor.promptInactivityTimeout);
+        const promptInactivityEarlyCheckAfterMillis =
+          flavor.promptInactivityEarlyCheckAfter === undefined
+            ? undefined
+            : Duration.toMillis(flavor.promptInactivityEarlyCheckAfter);
         // Each runtime owns its unanswered agent requests, so a dead process's leftovers
         // and late callbacks never reach its replacement.
         let openAgentRequests = new Set<string>();
@@ -3120,6 +3152,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const reportProviderRetry = Effect.fnUntraced(function* (notice: {
           readonly sessionId: string;
           readonly failure: OrchestrationV2ProviderFailure;
+          readonly attempt?: number;
+          readonly maxAttempts?: number | null;
+          readonly retryDelayMs?: number | null;
         }) {
           const context = yield* Ref.get(activeTurn);
           if (
@@ -3134,9 +3169,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context.providerRetry = {
             failure: notice.failure,
             retry: {
-              attempt: (previous?.retry.attempt ?? 0) + 1,
-              maxAttempts: null,
-              retryDelayMs: null,
+              attempt: notice.attempt ?? (previous?.retry.attempt ?? 0) + 1,
+              maxAttempts: notice.maxAttempts ?? null,
+              retryDelayMs: notice.retryDelayMs ?? null,
             },
             startedAt: previous?.startedAt ?? (yield* DateTime.now),
             itemOrdinal:
@@ -9077,9 +9112,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             if (hold === undefined) return;
             if (!context.promptSettled || context.finalized) return;
             const timeoutMillis = Duration.toMillis(hold.timeout);
+            const reconcileIntervalMillis =
+              hold.reconcileFinishedCommands === undefined
+                ? undefined
+                : Math.max(1_000, Duration.toMillis(hold.reconcileInterval ?? "20 seconds"));
             const isRunningCommand = (tool: AcpToolCallState) =>
               toolStatus(tool.status) === "running" && hold.isCommand(tool);
             let quietSince = yield* Clock.currentTimeMillis;
+            let lastReconcileAt = quietSince;
             // Armed even without a command yet: a pending reply can still start one.
             yield* Effect.gen(function* () {
               while (!context.finalized) {
@@ -9087,6 +9127,64 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 const now = yield* Clock.currentTimeMillis;
                 const remaining = quietSince + timeoutMillis - now;
                 if (remaining > 0) {
+                  if (
+                    reconcileIntervalMillis !== undefined &&
+                    hold.reconcileFinishedCommands !== undefined
+                  ) {
+                    const runningToolIds = [...context.tools.values()]
+                      .filter(isRunningCommand)
+                      .map((tool) => tool.toolCallId);
+                    if (runningToolIds.length === 0) {
+                      lastReconcileAt = now;
+                      yield* Effect.sleep(
+                        Duration.millis(Math.min(remaining, reconcileIntervalMillis)),
+                      );
+                      continue;
+                    }
+                    const nextReconcileAt =
+                      Math.max(quietSince, lastReconcileAt) + reconcileIntervalMillis;
+                    const untilReconcile = nextReconcileAt - now;
+                    if (untilReconcile > 0) {
+                      yield* Effect.sleep(Duration.millis(Math.min(remaining, untilReconcile)));
+                      continue;
+                    }
+                    lastReconcileAt = now;
+                    const finished = yield* hold
+                      .reconcileFinishedCommands({
+                        sessionId: context.nativeThreadId,
+                        toolCallIds: runningToolIds,
+                      })
+                      .pipe(
+                        Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
+                        Effect.map((result) => Option.getOrElse(result, () => [])),
+                        Effect.orElseSucceed(() => []),
+                      );
+                    if (
+                      finished.length > 0 &&
+                      !context.finalized &&
+                      !context.interrupted &&
+                      context.promptSettled
+                    ) {
+                      yield* runtimeCallbackPermit.withPermit(
+                        Effect.gen(function* () {
+                          if (context.finalized || context.interrupted || !context.promptSettled) {
+                            return;
+                          }
+                          let reconciledAny = false;
+                          for (const entry of finished) {
+                            const tool = context.tools.get(entry.toolCallId);
+                            if (tool === undefined || !isRunningCommand(tool)) continue;
+                            yield* emitTool(context, { ...tool, status: entry.status });
+                            reconciledAny = true;
+                          }
+                          if (reconciledAny && !hasDeferredBackgroundWork(context)) {
+                            yield* scheduleDeferredFinalize(context);
+                          }
+                        }),
+                      );
+                    }
+                    continue;
+                  }
                   yield* Effect.sleep(Duration.millis(remaining));
                   continue;
                 }
@@ -9094,7 +9192,19 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   context.tools.values().some(isRunningCommand) &&
                   !hasDeferredBackgroundWork(context, isRunningCommand)
                 ) {
-                  yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
+                  yield* runtimeCallbackPermit.withPermit(
+                    Effect.gen(function* () {
+                      if (context.finalized || context.interrupted || !context.promptSettled) {
+                        return;
+                      }
+                      if (
+                        context.tools.values().some(isRunningCommand) &&
+                        !hasDeferredBackgroundWork(context, isRunningCommand)
+                      ) {
+                        yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
+                      }
+                    }),
+                  );
                   return;
                 }
                 // Something else still holds the turn; count silence again once it clears.
@@ -9116,6 +9226,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           for (const subagent of context.subagents.values()) {
             if (acpSubagentStatusBlocksTurnSettlement(subagent.task.status)) return true;
           }
+          if (context.checkNativeActiveWait !== undefined) {
+            const nativeActive = yield* context.checkNativeActiveWait().pipe(
+              Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
+              Effect.map((result) => Option.getOrElse(result, () => false)),
+              Effect.orElseSucceed(() => false),
+            );
+            if (nativeActive) return true;
+          }
           return false;
         });
 
@@ -9128,7 +9246,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           generation: number,
           timeoutMillis: number,
           checkPromptOutcome: PromptOutcomeCheck | undefined,
+          options?: { readonly earlyCheck?: boolean },
         ) {
+          const earlyCheck = options?.earlyCheck === true;
+          const thresholdMillis =
+            earlyCheck && promptInactivityEarlyCheckAfterMillis !== undefined
+              ? promptInactivityEarlyCheckAfterMillis
+              : timeoutMillis;
           const retired = yield* runRuntimeCallbackAtGeneration(
             generation,
             Effect.gen(function* () {
@@ -9136,10 +9260,32 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               if ((yield* Ref.get(activeTurn)) !== context) return "done" as const;
               if (yield* Deferred.isDone(context.promptWireSettled)) return "done" as const;
               const now = yield* Clock.currentTimeMillis;
-              if (context.lastProgressAt + timeoutMillis > now) return "rearm" as const;
+              if (context.lastProgressAt + thresholdMillis > now) return "rearm" as const;
               if (yield* promptInactivityPaused(context)) {
                 context.lastProgressAt = now;
                 return "rearm" as const;
+              }
+              if (earlyCheck) {
+                if (checkPromptOutcome === undefined) return "continue" as const;
+                const earlyFailure = yield* checkPromptOutcome(
+                  { stopReason: "end_turn" },
+                  { earlyCheck: true },
+                ).pipe(
+                  Effect.timeout(PROMPT_OUTCOME_CHECK_TIMEOUT),
+                  Effect.catchCause(() => Effect.undefined),
+                );
+                if (earlyFailure === undefined) return "continue" as const;
+                context.inactivityWatchdog = undefined;
+                openAgentRequests.clear();
+                yield* quarantineNativeTransportAtGeneration(generation);
+                yield* advanceRuntimeCallbackGeneration;
+                yield* Ref.set(runtimeRestartRequired, true);
+                yield* cancelPendingRuntimeRequests();
+                yield* terminalizeOpenForegroundTools(context, "failed");
+                yield* finalizeTurn(context, "failed", earlyFailure.failure, {
+                  threadDisposition: earlyFailure.threadDisposition,
+                });
+                return "retired" as const;
               }
               context.inactivityWatchdog = undefined;
               openAgentRequests.clear();
@@ -9184,7 +9330,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             providerSessionId: input.providerSessionId,
             providerTurnId: context.providerTurnId,
-            timeoutMillis,
+            timeoutMillis: thresholdMillis,
+            ...(earlyCheck ? { earlyCheck: true } : {}),
           });
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore);
@@ -9200,6 +9347,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         ) {
           yield* Deferred.await(context.promptDispatched);
           context.lastProgressAt = yield* Clock.currentTimeMillis;
+          let lastEarlyCheckAt = context.lastProgressAt;
           while (true) {
             const sliceStartedAt = yield* Clock.currentTimeMillis;
             const remaining = context.lastProgressAt + timeoutMillis - sliceStartedAt;
@@ -9211,6 +9359,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               const now = yield* Clock.currentTimeMillis;
               if (now - sliceStartedAt > slice + ACP_HOST_SLEEP_TOLERANCE_MILLIS) {
                 context.lastProgressAt = now;
+                lastEarlyCheckAt = now;
+                continue;
+              }
+              if (
+                promptInactivityEarlyCheckAfterMillis !== undefined &&
+                checkPromptOutcome !== undefined &&
+                now - context.lastProgressAt >= promptInactivityEarlyCheckAfterMillis &&
+                now - lastEarlyCheckAt >= ACP_PROMPT_INACTIVITY_SLICE_MILLIS
+              ) {
+                lastEarlyCheckAt = now;
+                const earlyOutcome = yield* runtimeTransitionPermit.withPermit(
+                  retireInactivePrompt(context, generation, timeoutMillis, checkPromptOutcome, {
+                    earlyCheck: true,
+                  }),
+                );
+                if (earlyOutcome === "done" || earlyOutcome === "retired") return;
               }
               continue;
             }
@@ -9545,23 +9709,41 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       ? undefined
                       : yield* settle.checkPromptOutcome(result);
                   const resumeWith = hiddenFailure?.resumeWith;
+                  const maxResumes = Math.max(1, hiddenFailure?.maxResumes ?? 1);
                   if (
                     hiddenFailure !== undefined &&
                     resumeWith !== undefined &&
                     steersWithPrompt &&
-                    !context.outcomeResumed
+                    context.outcomeResumeAttempts < maxResumes
                   ) {
-                    context.outcomeResumed = true;
+                    const attempt = ++context.outcomeResumeAttempts;
+                    const baseDelayMs =
+                      hiddenFailure.resumeDelay === undefined
+                        ? 0
+                        : Math.max(
+                            0,
+                            Duration.toMillis(Duration.fromInputUnsafe(hiddenFailure.resumeDelay)),
+                          );
+                    const retryDelayMs = baseDelayMs > 0 ? baseDelayMs * 2 ** (attempt - 1) : 0;
                     yield* reportProviderRetry({
                       sessionId: context.nativeThreadId,
                       failure: hiddenFailure.failure,
+                      attempt,
+                      maxAttempts: hiddenFailure.maxResumes ?? null,
+                      retryDelayMs: retryDelayMs > 0 ? retryDelayMs : null,
                     });
-                    yield* steerWithPrompt({
-                      threadId: context.input.threadId,
-                      runId: context.input.runId,
-                      providerThread: context.input.providerThread,
-                      providerTurnId: context.providerTurnId,
-                      message: { ...context.input.message, text: resumeWith, attachments: [] },
+                    yield* Effect.gen(function* () {
+                      if (retryDelayMs > 0) {
+                        yield* Effect.sleep(Duration.millis(retryDelayMs));
+                      }
+                      if (context.finalized || context.interrupted) return;
+                      yield* steerWithPrompt({
+                        threadId: context.input.threadId,
+                        runId: context.input.runId,
+                        providerThread: context.input.providerThread,
+                        providerTurnId: context.providerTurnId,
+                        message: { ...context.input.message, text: resumeWith, attachments: [] },
+                      });
                     }).pipe(
                       Effect.catchCause(() =>
                         runRuntimeCallbackAtGeneration(
@@ -9669,7 +9851,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   // A resumed prompt stands in for an outcome failure, which always restarts.
                   if (
                     !interrupted &&
-                    (context.outcomeResumed ||
+                    (context.outcomeResumeAttempts > 0 ||
                       flavor.restartRuntimeAfterPromptError?.(failure) === true)
                   ) {
                     yield* Ref.set(runtimeRestartRequired, true);
@@ -9904,7 +10086,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               promptDispatched,
               foregroundIdle: yield* Deferred.make<void>(),
               promptSequence: 0,
-              outcomeResumed: false,
+              outcomeResumeAttempts: 0,
               promptSentAt: null,
               promptStarted,
               promptUsage: undefined,
@@ -9913,6 +10095,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               nativePromptId: undefined,
               lastProgressAt: 0,
               inactivityWatchdog: undefined,
+              checkNativeActiveWait: undefined,
             };
             const carryover = yield* Ref.getAndSet(carryoverSubagents, null);
             let rehydratedCarryoverSubagents: ReadonlyArray<ActiveAcpSubagent> = [];
@@ -10060,6 +10243,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               flavor.watchPromptOutcome === undefined
                 ? undefined
                 : yield* flavor.watchPromptOutcome(requestedSessionId);
+            context.checkNativeActiveWait =
+              flavor.watchPromptActiveWait === undefined
+                ? undefined
+                : yield* flavor.watchPromptActiveWait(requestedSessionId);
             const promptGeneration = yield* Ref.get(runtimeCallbackGeneration);
             const promptOptions = {
               dispatched: context.promptDispatched,
@@ -10168,6 +10355,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 flavor.watchPromptOutcome === undefined
                   ? undefined
                   : yield* flavor.watchPromptOutcome(context.nativeThreadId);
+              if (
+                context.checkNativeActiveWait === undefined &&
+                flavor.watchPromptActiveWait !== undefined
+              ) {
+                context.checkNativeActiveWait = yield* flavor.watchPromptActiveWait(
+                  context.nativeThreadId,
+                );
+              }
               const dispatched = yield* Deferred.make<void, never>();
               const steered = yield* runRuntimeCallbackAtGeneration(
                 generation,

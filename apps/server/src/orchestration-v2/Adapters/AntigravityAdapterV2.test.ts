@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - FileSystem.symlink cannot select Windows directory junctions.
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -1827,6 +1828,73 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
         "the silent command is no longer left as live activity on a settled run",
       );
     }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "reconciles a silent finished background command from native DB within 20 seconds",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-agy-reconcile-cmd-",
+        });
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, "mock-session-1.db");
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const metadataFor = (id: string) =>
+          proto(field(4, proto(field(1, id), field(2, "run_command"))));
+
+        const { command, offers, scheduledFinalizes, startTurn, until, throughPromptSettled } =
+          yield* openSessionWithRunningCommand({ WaitMsBeforeAsync: 10000 }, undefined, undefined, {
+            profileDirectory,
+          });
+        yield* startTurn(1, false);
+        const prompt = yield* throughPromptSettled;
+
+        // Native DB records the command as DONE while ACP drops the terminal tool update.
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        try {
+          db.exec(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+          );
+          db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          ).run(1, 21, 3, metadataFor(command.toolCallId), null);
+        } finally {
+          db.close();
+        }
+
+        // One 20s reconciliation interval + 3s deferred finalize closes the run well before 30m.
+        yield* TestClock.adjust("20 seconds");
+        assert.equal(yield* Queue.take(scheduledFinalizes), "3000 millis");
+        yield* TestClock.adjust("3 seconds");
+        const run = yield* until((event) => event.type === "turn.terminal");
+        const terminal = run.at(-1);
+        assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");
+        assert.lengthOf(offers, 0);
+        const commandItem = [...prompt, ...run].findLast(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === command.toolCallId,
+        );
+        assert.isTrue(
+          commandItem?.type === "turn_item.updated" && commandItem.turnItem.status === "completed",
+        );
+      }).pipe(Effect.provide(layerSession)),
   );
 
   it.effect("keeps a silent scheduled wake in its run past the command hold bound", () =>

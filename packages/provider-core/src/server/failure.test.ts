@@ -203,6 +203,86 @@ it("tells the user to sign in only when an ACP agent answers auth_required", () 
   assert.isUndefined(knownProviderFailureMessage(sessionOpenFailure(-32603)));
 });
 
+it("surfaces curated ACP stage reasons without leaking private provider text", () => {
+  const wrapOpen = (inner: unknown) => ({
+    _tag: "ProviderSessionOpenError",
+    cause: {
+      _tag: "ProviderAdapterOpenSessionError",
+      cause: inner,
+    },
+  });
+  const wrapTurnStart = (inner: unknown) => ({
+    _tag: "ProviderAdapterTurnStartError",
+    cause: inner,
+  });
+
+  const authFailed = wrapOpen({
+    _tag: "AcpRequestError",
+    method: "authenticate",
+    code: -32603,
+    errorMessage: "Bearer secret-auth-token internal error",
+  });
+  assert.isUndefined(knownProviderFailureMessage(authFailed));
+  const authFailedMsg = makeProviderFailure({ cause: Cause.fail(authFailed) }).message;
+  assert.equal(
+    authFailedMsg,
+    "The provider session could not be opened: authentication failed (code -32603). Check that the provider is installed and signed in, then retry the turn.",
+  );
+  assert.notInclude(authFailedMsg, "secret-auth-token");
+
+  const unknownMethodFailed = wrapTurnStart({
+    _tag: "AcpRequestError",
+    method: "private/secret_method",
+    code: -32603,
+    errorMessage: "private stack trace",
+  });
+  const unknownMethodMsg = makeProviderFailure({ cause: unknownMethodFailed }).message;
+  assert.equal(
+    unknownMethodMsg,
+    "The provider could not start this turn: provider request failed (code -32603). Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+  assert.notInclude(unknownMethodMsg, "secret_method");
+  assert.notInclude(unknownMethodMsg, "private stack");
+
+  const authTimedOut = wrapOpen({
+    _tag: "AcpTransportError",
+    method: "authenticate",
+    detail: "authenticate timed out waiting for RPC response",
+  });
+  assert.equal(
+    makeProviderFailure({ cause: authTimedOut }).message,
+    "The provider session could not be opened: authentication timed out. Check that the provider is installed and signed in, then retry the turn.",
+  );
+
+  const loadTimedOut = wrapTurnStart({
+    _tag: "AcpTransportError",
+    method: "session/load",
+    detail: "session/load timed out waiting for RPC response or replay idle gap",
+  });
+  assert.equal(
+    makeProviderFailure({ cause: loadTimedOut }).message,
+    "The provider could not start this turn: session loading timed out. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+
+  const transportClosed = wrapTurnStart({
+    _tag: "AcpTransportError",
+    method: "session/resume",
+    detail: "Broken pipe Bearer secret-pipe-detail",
+  });
+  const transportClosedMsg = makeProviderFailure({ cause: transportClosed }).message;
+  assert.equal(
+    transportClosedMsg,
+    "The provider could not start this turn: the provider connection closed during session resume. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+  assert.notInclude(transportClosedMsg, "secret-pipe-detail");
+
+  const streamEnded = wrapTurnStart({ _tag: "AcpInputStreamEndedError" });
+  assert.equal(
+    makeProviderFailure({ cause: streamEnded }).message,
+    "The provider could not start this turn: the provider connection closed unexpectedly. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+});
+
 it("keeps unrecognized reasons and provider text out of category messages", () => {
   for (const cause of [
     "Private launch command",

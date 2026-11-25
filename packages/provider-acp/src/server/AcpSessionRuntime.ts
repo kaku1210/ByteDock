@@ -2406,6 +2406,46 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     };
   };
 
+  const STARTUP_AUTHENTICATE_RETRY_DELAYS: ReadonlyArray<Duration.Duration> = [
+    Duration.seconds(2),
+    Duration.seconds(5),
+  ];
+  const isRetryableStartupAuthenticateError = (error: EffectAcpErrors.AcpError): boolean =>
+    error._tag === "AcpRequestError" &&
+    error.code !== -32000 &&
+    error.code !== -32600 &&
+    error.code !== -32601 &&
+    error.code !== -32602;
+
+  const runStartupAuthenticate = (
+    authenticatePayload: EffectAcpSchema.AuthenticateRequest,
+  ): Effect.Effect<EffectAcpSchema.AuthenticateResponse, EffectAcpErrors.AcpError> => {
+    const attempt = (
+      retryIndex: number,
+    ): Effect.Effect<EffectAcpSchema.AuthenticateResponse, EffectAcpErrors.AcpError> =>
+      runLoggedRequest(
+        "authenticate",
+        authenticatePayload,
+        withStartupTimeout("authenticate", acp.agent.authenticate(authenticatePayload)),
+      ).pipe(
+        Effect.catchIf(
+          (error) =>
+            retryIndex < STARTUP_AUTHENTICATE_RETRY_DELAYS.length &&
+            isRetryableStartupAuthenticateError(error),
+          (error) => {
+            const delay = STARTUP_AUTHENTICATE_RETRY_DELAYS[retryIndex]!;
+            return Effect.logWarning("AcpSessionRuntime.authenticate.retry", {
+              attempt: retryIndex + 1,
+              maxRetries: STARTUP_AUTHENTICATE_RETRY_DELAYS.length,
+              delay: Duration.toMillis(delay),
+              code: error._tag === "AcpRequestError" ? error.code : undefined,
+            }).pipe(Effect.andThen(Effect.sleep(delay)), Effect.andThen(attempt(retryIndex + 1)));
+          },
+        ),
+      );
+    return attempt(0);
+  };
+
   const startOnce = Effect.gen(function* () {
     const initializeResult = yield* initialize;
 
@@ -2447,11 +2487,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         const authenticatePayload = {
           methodId: authMethodId,
         } satisfies EffectAcpSchema.AuthenticateRequest;
-        yield* runLoggedRequest(
-          "authenticate",
-          authenticatePayload,
-          acp.agent.authenticate(authenticatePayload),
-        );
+        yield* runStartupAuthenticate(authenticatePayload);
       },
     );
 
@@ -2517,11 +2553,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       const authenticatePayload = {
         methodId: options.authMethodId ?? "",
       } satisfies EffectAcpSchema.AuthenticateRequest;
-      yield* runLoggedRequest(
-        "authenticate",
-        authenticatePayload,
-        acp.agent.authenticate(authenticatePayload),
-      );
+      yield* runStartupAuthenticate(authenticatePayload);
     }
     const { sessionId, sessionSetupResult } = yield* setupSession.pipe(
       Effect.catchIf(
@@ -2703,7 +2735,11 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     authenticate: (methodId) =>
       initialize.pipe(
         Effect.andThen(
-          runLoggedRequest("authenticate", { methodId }, acp.agent.authenticate({ methodId })),
+          runLoggedRequest(
+            "authenticate",
+            { methodId },
+            withStartupTimeout("authenticate", acp.agent.authenticate({ methodId })),
+          ),
         ),
         Effect.asVoid,
       ),

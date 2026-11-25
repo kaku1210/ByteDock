@@ -8,7 +8,10 @@ import * as Path from "effect/Path";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 
-import { watchAntigravityPromptOutcome } from "./AntigravityTurnOutcome.ts";
+import {
+  watchAntigravityActiveWait,
+  watchAntigravityPromptOutcome,
+} from "./AntigravityTurnOutcome.ts";
 
 const USER_INPUT = 14;
 const PLANNER_RESPONSE = 15;
@@ -329,5 +332,179 @@ describe("watchAntigravityPromptOutcome", () => {
         }),
       );
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "returns bounded auto-resume for transient 502/503/504 and flags 5xx during early inactivity checks",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped();
+        const sessionId = "e6aba774-5472-4277-b6ee-27b2e05570a8";
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        let nextIndex = 0;
+        const appendSteps = (steps: ReadonlyArray<readonly [number, Uint8Array]>) => {
+          const database = new NodeSqlite.DatabaseSync(path.join(conversations, `${sessionId}.db`));
+          try {
+            database.exec(
+              "CREATE TABLE IF NOT EXISTS steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+            );
+            const insert = database.prepare("INSERT INTO steps VALUES (?, ?, ?)");
+            for (const [type, payload] of steps) insert.run(nextIndex++, type, payload);
+          } finally {
+            database.close();
+          }
+        };
+        const SERVICE_UNAVAILABLE = errorPayload(
+          "Error 503, Message: Service temporarily unavailable, Status: UNAVAILABLE, Details: []",
+        );
+        const GATEWAY_TIMEOUT = errorPayload(
+          "Error 504, Message: Gateway Timeout, Status: DEADLINE_EXCEEDED, Details: []",
+        );
+        const INTERNAL_SERVER_ERROR = errorPayload(
+          "Error 500, Message: Internal server error, Status: INTERNAL, Details: []",
+        );
+        const input = Buffer.from("Continue work.");
+        const reply = Buffer.from("Working...");
+
+        for (const transient of [BAD_GATEWAY_ERROR, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT]) {
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          appendSteps([
+            [USER_INPUT, input],
+            [PLANNER_RESPONSE, reply],
+            [ERROR_MESSAGE, transient],
+          ]);
+          const outcome = yield* check({ stopReason: "end_turn" });
+          assert.equal(outcome?.threadDisposition, "reusable");
+          assert.equal(outcome?.resumeWith, "continue");
+          assert.equal(outcome?.maxResumes, 2);
+          assert.equal(outcome?.resumeDelay, "2 seconds");
+
+          // A retired prompt does not request auto-resume.
+          const retired = yield* check({ stopReason: "end_turn" }, { retired: true });
+          assert.equal(retired?.threadDisposition, "reusable");
+          assert.isUndefined(retired?.resumeWith);
+          assert.isUndefined(retired?.maxResumes);
+
+          // Early inactivity check catches 5xx without returning resume fields.
+          const early = yield* check({ stopReason: "end_turn" }, { earlyCheck: true });
+          assert.equal(early?.threadDisposition, "reusable");
+          assert.isUndefined(early?.resumeWith);
+        }
+
+        // 500 triggers earlyCheck but does not auto-resume on clean end_turn.
+        const check500 = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+        appendSteps([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, INTERNAL_SERVER_ERROR],
+        ]);
+        assert.isDefined(yield* check500({ stopReason: "end_turn" }, { earlyCheck: true }));
+        assert.isUndefined((yield* check500({ stopReason: "end_turn" }))?.resumeWith);
+
+        // Non-5xx errors (429/400/404) and normal planner steps do not trigger earlyCheck.
+        for (const non5xx of [
+          [ERROR_MESSAGE, QUOTA_ERROR] as const,
+          [ERROR_MESSAGE, INVALID_ARGUMENT_ERROR] as const,
+          [ERROR_MESSAGE, NOT_FOUND_ERROR] as const,
+          [PLANNER_RESPONSE, reply] as const,
+        ]) {
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          appendSteps([[USER_INPUT, input], non5xx]);
+          assert.isUndefined(yield* check({ stopReason: "end_turn" }, { earlyCheck: true }));
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("watchAntigravityActiveWait", () => {
+  it.effect(
+    "detects active non-daemon schedule and run_command steps after the turn baseline",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped();
+        const sessionId = "e6aba774-5472-4277-b6ee-27b2e05570a9";
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, `${sessionId}.db`);
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const metadataFor = (id: string, name: string, args: Record<string, unknown> = {}) =>
+          proto(field(4, proto(field(1, id), field(2, name), field(3, JSON.stringify(args)))));
+
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec(
+          "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+        );
+        const insert = db.prepare(
+          "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+        );
+        const updateStatus = db.prepare("UPDATE steps SET status = ? WHERE idx = ?");
+        try {
+          // Stale pre-turn running step must not keep the next turn alive.
+          insert.run(1, 21, 2, metadataFor("call_stale", "run_command"), null);
+          const checkWait = yield* watchAntigravityActiveWait(profileDirectory, sessionId);
+          assert.isFalse(yield* checkWait());
+
+          // Daemon schedule does not count as an active turn wait.
+          insert.run(
+            2,
+            132,
+            2,
+            metadataFor("call_daemon_cron", "schedule", {
+              CronExpression: "*/5 * * * *",
+              IsDaemon: true,
+            }),
+            null,
+          );
+          assert.isFalse(yield* checkWait());
+
+          // Non-schedule generic tool does not count.
+          insert.run(3, 132, 2, metadataFor("call_other", "view_file"), null);
+          assert.isFalse(yield* checkWait());
+
+          // Non-daemon schedule wait after baseline pauses the watchdog.
+          insert.run(
+            4,
+            132,
+            2,
+            metadataFor("call_timer", "schedule", { DurationSeconds: 1800, IsDaemon: false }),
+            null,
+          );
+          assert.isTrue(yield* checkWait());
+
+          // Once the timer finishes, wait becomes false.
+          updateStatus.run(3, 4);
+          assert.isFalse(yield* checkWait());
+
+          // Active run_command after baseline pauses the watchdog until done.
+          insert.run(
+            5,
+            21,
+            2,
+            metadataFor("call_build", "run_command", { CommandLine: "dotnet test" }),
+            null,
+          );
+          assert.isTrue(yield* checkWait());
+          updateStatus.run(3, 5);
+          assert.isFalse(yield* checkWait());
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
