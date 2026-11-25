@@ -18,12 +18,14 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
+import { msg } from "gt-react";
 import { useRef } from "react";
 
 import { newThreadId, randomUUID } from "~/lib/utils";
 import { formatAssistantCitationForComposer } from "../../composer-logic";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
+import { m } from "../../i18n/messages";
 import { readThreadShell, useQuietThreadShell, waitForThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -211,7 +213,7 @@ export function useSubtask(input: {
         },
       });
       if (created._tag === "Failure") {
-        reportFailure(created, "Could not create subtask.");
+        reportFailure(created, m(msg("Could not create subtask.")));
         return false;
       }
       if (modelSelection !== undefined) {
@@ -223,7 +225,11 @@ export function useSubtask(input: {
       // Persistent draft: never delete on client timeout; user can reconnect and open it.
       if (!(await waitForThreadShell(targetRef))) {
         input.onError(
-          "The subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+          m(
+            msg(
+              "The subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+            ),
+          ),
         );
         return false;
       }
@@ -287,7 +293,7 @@ export function useSubtask(input: {
         },
       });
       if (created._tag === "Failure") {
-        reportFailure(created, "Could not escalate subtask to root.");
+        reportFailure(created, m(msg("Could not escalate subtask to root.")));
         return false;
       }
       const targetThreadId = created.value.childThreadId;
@@ -300,7 +306,11 @@ export function useSubtask(input: {
       }
       if (!(await waitForThreadShell(targetRef))) {
         input.onError(
-          "The escalated L1 subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+          m(
+            msg(
+              "The escalated L1 subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+            ),
+          ),
         );
         return false;
       }

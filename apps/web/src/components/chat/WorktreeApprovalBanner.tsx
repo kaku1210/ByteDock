@@ -8,9 +8,11 @@ import type {
   WorktreeApprovalRequest,
   WorktreeApprovalRequestId,
 } from "@t3tools/contracts";
+import { msg, useMessages } from "gt-react";
 import { CheckIcon, ClockIcon, GitBranchIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 import { useRef, useState } from "react";
 
+import { m } from "../../i18n/messages";
 import { useUiLanguage } from "../../i18n/useUiLanguage";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -27,27 +29,27 @@ function statusBadge(status: WorktreeApprovalRequest["status"]) {
   switch (status) {
     case "pending":
       return {
-        label: "Pending approval",
+        label: msg("Pending approval"),
         className: "bg-warning/15 text-warning-foreground border-warning/30",
       };
     case "approved":
       return {
-        label: "Approved",
+        label: msg("Approved"),
         className: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
       };
     case "denied":
       return {
-        label: "Denied",
+        label: msg("Denied"),
         className: "bg-destructive/15 text-destructive border-destructive/30",
       };
     case "expired":
       return {
-        label: "Expired",
+        label: msg("Expired"),
         className: "bg-muted text-muted-foreground border-border",
       };
     case "cancelled":
       return {
-        label: "Cancelled",
+        label: msg("Cancelled"),
         className: "bg-muted text-muted-foreground border-border",
       };
   }
@@ -57,7 +59,7 @@ function formatFailureMessage(cause: unknown): string {
   if (cause instanceof Error && cause.message.trim().length > 0) {
     return cause.message;
   }
-  return "Failed to update worktree approval request.";
+  return m(msg("Failed to update worktree approval request."));
 }
 
 export interface WorktreeApprovalBannerViewProps {
@@ -72,6 +74,7 @@ export function WorktreeApprovalBannerView({
   requests,
   onResolve,
 }: WorktreeApprovalBannerViewProps) {
+  const resolveMessage = useMessages();
   const { text: uiText } = useUiLanguage();
   const [submittingId, setSubmittingId] = useState<WorktreeApprovalRequestId | null>(null);
   const [errorsById, setErrorsById] = useState<Readonly<Record<string, string>>>({});
@@ -134,7 +137,7 @@ export function WorktreeApprovalBannerView({
                 data-testid="worktree-approval-status-badge"
                 className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badge.className}`}
               >
-                {uiText(badge.label)}
+                {resolveMessage(badge.label)}
               </span>
             </div>
 

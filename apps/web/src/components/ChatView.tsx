@@ -2867,20 +2867,23 @@ export default function ChatView(props: ChatViewProps) {
     const pendingMergeBackItems =
       pendingMergeBackTransfers.length > 0 && activePendingApproval === null
         ? [
-            pendingMergeBacksBannerItem({
-              environmentId,
-              transfers: pendingMergeBackTransfers,
-              disabled: !canOperateThread,
-              onRevoke: (transferId) => {
-                void revokeMergeBack({
-                  environmentId,
-                  input: {
-                    threadId,
-                    transferId,
-                  },
-                });
+            pendingMergeBacksBannerItem(
+              {
+                environmentId,
+                transfers: pendingMergeBackTransfers,
+                disabled: !canOperateThread,
+                onRevoke: (transferId) => {
+                  void revokeMergeBack({
+                    environmentId,
+                    input: {
+                      threadId,
+                      transferId,
+                    },
+                  });
+                },
               },
-            }),
+              messages,
+            ),
           ]
         : [];
     const heldSendItems = composerSendHeld

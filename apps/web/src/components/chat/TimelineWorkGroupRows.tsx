@@ -224,8 +224,8 @@ function ExpandedWorkGroupEntries({
     resolveWorkGroupScrollIndex(entries, viewState.scrollPositions.get(anchorKey)),
   );
   const [restoringPosition, setRestoringPosition] = useState(initialScrollIndex !== undefined);
-  const [heightExpanded, setHeightExpanded] = useState(
-    () => viewState.expandedHeights?.has(anchorKey) ?? false,
+  const [heightExpanded, setHeightExpanded] = useState(() =>
+    viewState.expandedHeights.has(anchorKey),
   );
   const listRef = useRef<LegendListRef>(null);
   const [expandedContentHeight, setExpandedContentHeight] = useState(0);
@@ -337,9 +337,8 @@ function ExpandedWorkGroupEntries({
       heightExpanded);
   const toggleHeightExpanded = () => {
     const next = !heightExpanded;
-    const heights = (viewState.expandedHeights ??= new Set());
-    if (next) heights.add(anchorKey);
-    else heights.delete(anchorKey);
+    if (next) viewState.expandedHeights.add(anchorKey);
+    else viewState.expandedHeights.delete(anchorKey);
     setHeightExpanded(next);
   };
   const baseMaxHeight =

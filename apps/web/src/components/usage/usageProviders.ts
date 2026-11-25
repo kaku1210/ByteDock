@@ -11,6 +11,7 @@ type UsageProviderPresentation = {
 };
 
 export const PROVIDER_PRESENTATION = {
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- provider brand name
   devin: { label: "Devin", color: "#808080", driverKind: ProviderDriverKind.make("acpRegistry") },
   codex: {
     label: "Codex",

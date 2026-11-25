@@ -3209,10 +3209,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "på datorn som öppnade den här sidan"
-      ]
+      "c": [" ", "på datorn som öppnade den här sidan"]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3224,10 +3221,7 @@
     {
       "t": "span",
       "i": 2,
-      "c": [
-        " ",
-        "· den som kör den får den här åtkomsten"
-      ]
+      "c": [" ", "· den som kör den får den här åtkomsten"]
     }
   ],
   "c54cc9c75db9dc58": "Godkänn bara en inloggning som du själv precis har startat.",
@@ -13026,5 +13020,17 @@
   "dcdd052a4b37a041": "Output",
   "9e43f1aa8254b880": "Cache read",
   "c798642f5b113171": "Cache write",
-  "3e9ac26310c6dfdc": "Rule"
+  "3e9ac26310c6dfdc": "Rule",
+  "22d2acbccd9e2477": "{count, plural, one {{count} thread conclusion will attach to your next message} other {{count} thread conclusions will attach to your next message}}",
+  "cd4e4a25a98046b9": "Waiting for your next normal message.",
+  "1ff0280338d6d264": "Attached thread",
+  "11970939cb4ad743": "Remove {title} from next message",
+  "5d8d3871e49f507c": "Could not create subtask.",
+  "1f9133a39aaff535": "The subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+  "0172d9d1f8a1c3ff": "Could not escalate subtask to root.",
+  "ccab22b18c9a1bbc": "The escalated L1 subtask was created, but its thread data did not reach this client yet. Reconnect or retry to open it.",
+  "c8f10d28dead0ebb": "Pending approval",
+  "901e31add5842c65": "Approved",
+  "6c0a826340f2156c": "Denied",
+  "a460effb1f30dedf": "Failed to update worktree approval request."
 }

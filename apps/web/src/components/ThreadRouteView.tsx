@@ -21,7 +21,6 @@ import {
 } from "../state/entities";
 import { useOpenThreadFamily } from "../hooks/useOpenThreadFamily";
 import { environmentUnreachableAtom } from "../state/presentation";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { environmentThreadShells, useEnvironmentThread } from "../state/threads";
 import {

@@ -90,6 +90,7 @@ function EstimateCard({
         />
         {visiblePoints.length > 0 ? (
           <>
+            {/* oxlint-disable-next-line t3code/no-untranslated-copy -- ISO currency code */}
             <Text className="text-xs text-foreground-muted">USD · {formatUsd(chart.maxUsd)}</Text>
             <Svg viewBox="0 0 320 150" width="100%" height={150}>
               {[10, 75, 140].map((y) => (
