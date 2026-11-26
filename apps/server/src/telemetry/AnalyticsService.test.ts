@@ -324,6 +324,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
       }),
   );
 
+  it.effect("sends nothing by default unless T3CODE_TELEMETRY_ENABLED opts in", () =>
+    Effect.gen(function* () {
+      const byDefault = yield* sendFor(
+        1,
+        respondWithStatus(204),
+        recordTwentyEvents,
+        undefined,
+        {},
+      );
+      assert.deepEqual(byDefault, []);
+      const optedIn = yield* sendFor(1, respondWithStatus(204), recordTwentyEvents, undefined, {
+        T3CODE_TELEMETRY_ENABLED: true,
+      });
+      assert.equal(optedIn.length, 1);
+    }),
+  );
+
   it.effect("sends nothing on a CI runner unless the environment opts in", () =>
     Effect.gen(function* () {
       const onCi = (telemetryEnv: Parameters<typeof analyticsLayerWith>[2]) =>

@@ -346,6 +346,11 @@ export const isCiEnvironment = (env: Readonly<Record<string, string | undefined>
 export const isDoNotTrackSet = (env: Readonly<Record<string, string | undefined>>) =>
   T3CODE_TRUE.includes(env.DO_NOT_TRACK?.trim().toLowerCase() ?? "");
 
+/**
+ * T3 Code Plus disables official telemetry and relay tracing by default.
+ * Users can opt in explicitly via `T3CODE_TELEMETRY_ENABLED=true` unless
+ * `DO_NOT_TRACK=1` or an OpenTelemetry SDK kill switch turns it off.
+ */
 export const isRelayTracingEnabled = (env: Readonly<Record<string, string | undefined>>) =>
   Config.all({
     ...sdkFlags,
@@ -353,9 +358,7 @@ export const isRelayTracingEnabled = (env: Readonly<Record<string, string | unde
   }).pipe(
     Effect.map(
       ({ telemetry, t3, spec }) =>
-        (telemetry.value ?? !isCiEnvironment(env)) &&
-        !isDoNotTrackSet(env) &&
-        !(t3.value ?? spec.value ?? false),
+        telemetry.value === true && !isDoNotTrackSet(env) && !(t3.value ?? spec.value ?? false),
     ),
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord(env))),
     Effect.orDie,
