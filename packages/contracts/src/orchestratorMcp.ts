@@ -199,36 +199,33 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out.",
+        "'shared' (default) or 'worktree' (new checkout from parent commit; uncommitted edits stay out).",
     }),
   ),
   mode: Schema.optional(
     Schema.Literals(["async", "wait"]).annotate({
-      description:
-        "Default 'async'. 'wait' only if this turn needs the result. A question or approval ends the wait.",
+      description: "Default 'async'. 'wait' only if needed now; questions/approvals end wait.",
     }),
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
-    description: "Mode 'wait' only. At most 45 s. A timeout does not cancel the child.",
+    description: "Mode 'wait' only (max 45s); timeout does not cancel child.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   escalationRequestId: Schema.optional(
     SubtaskEscalationRequestId.annotate({
-      description:
-        "When L0 fulfills a pending L1 horizontal escalation, pass its requestId to idempotently bind and return the same sibling L1 childThreadId.",
+      description: "L0 fulfilling an L1 escalation: pass its requestId to bind the sibling L1.",
     }),
   ),
   causationChain: Schema.optional(Schema.Array(ThreadId)),
   plannedPaths: Schema.optional(
     Schema.Array(TrimmedNonEmptyString).annotate({
-      description:
-        "Optional workspace-relative paths this delegated task plans to modify so sibling tasks sharing the checkout can detect overlaps upfront.",
+      description: "Workspace-relative paths this child plans to edit (overlap check).",
     }),
   ),
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit unless supervised child requested. Narrow modes ask approval; above yours rejected.",
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
@@ -811,14 +808,12 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
-      description:
-        "Post here, else new thread per run. Unset: true in own project, else false; updates keep it.",
+      description: "Post here vs new thread per run (default: true in own project; updates keep).",
     }),
   ),
   freshSession: Schema.optional(
     Schema.Boolean.annotate({
-      description:
-        "Runs share one thread but each starts a fresh session. Unbound: the first run makes the thread.",
+      description: "Share one thread with a fresh session each run.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),

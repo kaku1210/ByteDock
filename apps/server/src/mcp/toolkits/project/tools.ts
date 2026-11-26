@@ -164,14 +164,13 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create a top-level thread in its workspace before starting. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. On error or lost reply, reuse `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Create a top-level thread in its workspace. Task in `message` (omit with `attachments` for idle). Omit `projectId`, model, modes to inherit (outside a thread, pass `projectId` or `scratch`). Reuse `clientRequestId` on retry. Mention its `link`.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
     scratch: Schema.optional(
       Schema.Boolean.annotate({
-        description:
-          "No project: a new Scratch folder. Not with `projectId` or `workspaceStrategy`.",
+        description: "No project: new Scratch folder. Not with `projectId` or `workspaceStrategy`.",
       }),
     ),
     title: TrimmedNonEmptyString,
@@ -182,12 +181,12 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     workspaceStrategy: Schema.optional(
       OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
         description:
-          "'worktree': new checkout from `baseRef`. Honor a requested base. Otherwise, independent work uses the default branch as `remote/branch` (e.g. `origin/main`) with `startFromOrigin: true`; with no remote, use the local default branch. Required unpublished commits and dependent or stacked work use their local base with `startFromOrigin: false`. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Uncommitted edits are not copied.",
+          "'worktree' (new checkout from `baseRef`, `startFromOrigin`), 'existing_worktree' (`worktreePath`), or 'root' (default, project root). Uncommitted edits are not copied.",
       }),
     ),
     message: Schema.optional(
       Schema.String.check(Schema.isMaxLength(120000)).annotate({
-        description: "First prompt. Omit it and `attachments` for idle.",
+        description: "First prompt. Omit with `attachments` for idle.",
       }),
     ),
     attachments: Schema.optional(Schema.Array(McpAttachmentInput).check(Schema.isMaxLength(8))),
