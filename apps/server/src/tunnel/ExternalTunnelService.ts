@@ -1222,7 +1222,8 @@ const make = Effect.gen(function* () {
       } else {
         consecutiveHealthFailures += 1;
         healthErrorMessage = probe.errorMessage;
-        healthState = consecutiveHealthFailures >= 2 || !alive ? "unhealthy" : "degraded";
+        healthState =
+          consecutiveHealthFailures >= 2 || (wasRunning && !alive) ? "unhealthy" : "degraded";
       }
     } else if (healthUrl.length === 0) {
       healthState = alive ? "healthy" : configured ? "unknown" : "unknown";
@@ -1257,7 +1258,7 @@ const make = Effect.gen(function* () {
           logDiagnosis?.hint ??
           "Verify the tunnel is running, VPS hy2/frps/Caddy services are up, and your hy2 password or port has not changed.",
       });
-    } else if (healthState === "healthy" && (alive || entryPath.length === 0)) {
+    } else if (healthState === "healthy") {
       nextAlert = null;
     }
 
@@ -1452,8 +1453,8 @@ const make = Effect.gen(function* () {
 
   // Continuous background monitor fiber (survives individual WS reconnects, stops with server).
   yield* Effect.gen(function* () {
-    // Initial gentle delay so server startup completes first.
-    yield* Effect.sleep(Duration.seconds(2));
+    // Initial gentle delay so server startup & reverse-proxy upstream recovery complete first.
+    yield* Effect.sleep(Duration.seconds(6));
     while (true) {
       const settings = yield* readTunnelSettings;
       const shouldMonitor =

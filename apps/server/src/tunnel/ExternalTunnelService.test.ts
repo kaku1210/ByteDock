@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -206,6 +207,100 @@ describe("ExternalTunnelService runtime", () => {
           Effect.promise(() =>
             NodeFSP.rm(tmpRoot, { recursive: true, force: true }).catch(() => {}),
           ),
+      ),
+  );
+
+  effectIt.effect(
+    "debounces transient health failures and auto-clears alerts on recovery for externally managed tunnels",
+    () =>
+      Effect.acquireUseRelease(
+        Effect.promise(async () => {
+          const tmpRoot = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-ext-health-"));
+          let responseStatus = 502;
+          const server = NodeHttp.createServer((_req, res) => {
+            res.writeHead(responseStatus, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: responseStatus === 200 }));
+          });
+          await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+          const address = server.address();
+          const port = typeof address === "object" && address !== null ? address.port : 0;
+          return {
+            tmpRoot,
+            server,
+            healthUrl: `http://127.0.0.1:${port}/.well-known/t3/environment`,
+            setStatus: (status: number) => {
+              responseStatus = status;
+            },
+          };
+        }),
+        ({ tmpRoot, healthUrl, setStatus }) =>
+          Effect.gen(function* () {
+            const launcherPath = NodePath.join(tmpRoot, "t3-tunnel.ps1");
+            const logPath = NodePath.join(tmpRoot, "t3-tunnel.log");
+            yield* Effect.promise(async () => {
+              await NodeFSP.writeFile(launcherPath, "# external scheduled task launcher\n", "utf8");
+              await NodeFSP.writeFile(
+                logPath,
+                "2026-11-26 01:05:51 [info] tunnel healthy\n",
+                "utf8",
+              );
+            });
+
+            const currentSettings: ServerSettingsValue = {
+              ...DEFAULT_SERVER_SETTINGS,
+              externalTunnel: {
+                ...DEFAULT_SERVER_SETTINGS.externalTunnel,
+                enabled: true,
+                entryPath: launcherPath,
+                healthUrl,
+                logPath,
+                alertOnFailure: true,
+              },
+            };
+
+            const testLayer = externalTunnelLayer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  ServerConfig.layerTest(tmpRoot, { prefix: "ext-health-" }),
+                  Layer.mock(ServerSettings.ServerSettingsService)({
+                    getSettings: Effect.succeed(currentSettings),
+                    updateSettings: () => Effect.succeed(currentSettings),
+                  }),
+                ),
+              ),
+              Layer.provide(NodeServices.layer),
+            );
+
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const svc = yield* ExternalTunnelService;
+
+                // 1st transient failure (e.g. during server restart): degraded, no global alert yet.
+                setStatus(502);
+                const first = yield* svc.action({ action: "check" });
+                expect(first.running).toBe(false);
+                expect(first.healthState).toBe("degraded");
+                expect(first.alert).toBeNull();
+
+                // 2nd consecutive failure: unhealthy, raises health_check_failed alert.
+                const second = yield* svc.action({ action: "check" });
+                expect(second.healthState).toBe("unhealthy");
+                expect(second.alert?.code).toBe("health_check_failed");
+
+                // Recovery to HTTP 200: must clear alert even though entryPath is set and pid is null.
+                setStatus(200);
+                const recovered = yield* svc.action({ action: "check" });
+                expect(recovered.healthState).toBe("healthy");
+                expect(recovered.healthStatusCode).toBe(200);
+                expect(recovered.alert).toBeNull();
+              }).pipe(Effect.provide(testLayer)),
+            );
+          }),
+        ({ tmpRoot, server }) =>
+          Effect.promise(async () => {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+            await NodeFSP.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+          }),
       ),
   );
 });
