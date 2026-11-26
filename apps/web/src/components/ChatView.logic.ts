@@ -1,7 +1,11 @@
 import { toServerClock } from "@t3tools/client-runtime/clock";
 import { msg } from "gt-react";
 import { m, type MessageResolver } from "../i18n/messages";
-import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
+import {
+  type OrchestrationV2PendingBackgroundTask,
+  type OrchestrationV2ProviderTurn,
+  type RunAttemptId,
+} from "@t3tools/contracts";
 import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
@@ -1668,6 +1672,58 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
       pullRequests: projection.thread.pullRequests,
     }),
   ];
+}
+
+/**
+ * Earlier running commands in the active live run that are holding it open after the assistant
+ * already emitted a completed reply and is no longer actively thinking or streaming text.
+ * Surfacing them in `ThreadNow` makes silent/stuck background commands immediately visible and
+ * stoppable instead of leaving the chat looking stopped under a generic "Running" state.
+ */
+export function deriveLiveRunHoldingCommands(
+  projection: ThreadStructure | null,
+): ReadonlyArray<OrchestrationV2PendingBackgroundTask> {
+  if (projection === null) return [];
+  const liveRun = projection.runs.findLast((run) => run.status === "running");
+  if (liveRun === undefined) return [];
+  const runItems = projection.turnItems.filter((item) => item.runId === liveRun.id);
+  let latestCompletedAssistantOrdinal = -1;
+  for (const item of runItems) {
+    if (
+      (item.type === "reasoning" || item.type === "assistant_message") &&
+      item.status === "running"
+    ) {
+      return [];
+    }
+    if (item.type === "assistant_message" && item.status === "completed") {
+      latestCompletedAssistantOrdinal = Math.max(latestCompletedAssistantOrdinal, item.ordinal);
+    }
+  }
+  if (latestCompletedAssistantOrdinal < 0) return [];
+  const holdingCommands: Array<OrchestrationV2PendingBackgroundTask> = [];
+  for (const item of runItems) {
+    if (
+      item.type !== "command_execution" ||
+      item.status !== "running" ||
+      item.ordinal >= latestCompletedAssistantOrdinal
+    ) {
+      continue;
+    }
+    const nativeId = item.nativeItemRef?.nativeId ?? undefined;
+    const command = item.input.trim();
+    const title = item.title?.trim() ?? "";
+    const description = command.length > 0 ? command : title.length > 0 ? title : undefined;
+    holdingCommands.push({
+      taskId: nativeId ?? String(item.id),
+      itemId: item.id,
+      ...(nativeId === undefined ? {} : { nativeItemId: nativeId }),
+      kind: "command",
+      ...(description === undefined ? {} : { description }),
+      ...(command.length > 0 ? { command } : {}),
+      awaited: true,
+    });
+  }
+  return holdingCommands;
 }
 
 /**

@@ -16,6 +16,7 @@ import {
   snapshotComposerSend,
   withMessageContext,
   deriveAvailableRevertTurnCounts,
+  deriveLiveRunHoldingCommands,
   deriveThreadPendingBackgroundTasks,
   resolveProactiveTurnDiffAction,
 } from "./ChatView.logic";
@@ -1639,6 +1640,120 @@ describe("deriveThreadPendingBackgroundTasks", () => {
         }),
       ),
     ).toEqual([{ taskId: "task-1", kind: "background_task" }]);
+  });
+});
+
+describe("deriveLiveRunHoldingCommands", () => {
+  const base = makeThreadProjectionFixture();
+  const run = (ordinal: number, status: string) => ({
+    id: RunId.make(`run-${ordinal}`),
+    ordinal,
+    status,
+  });
+  const commandItem = (
+    ordinal: number,
+    runOrdinal: number,
+    nativeId: string,
+    input: string,
+    status: string = "running",
+  ) => ({
+    id: TurnItemId.make(`item-${nativeId}`),
+    type: "command_execution",
+    status,
+    title: "Ran command",
+    ordinal,
+    runId: RunId.make(`run-${runOrdinal}`),
+    nativeItemRef: { nativeId },
+    input,
+  });
+  const messageItem = (
+    ordinal: number,
+    runOrdinal: number,
+    type: "assistant_message" | "reasoning",
+    status: string,
+  ) => ({
+    id: TurnItemId.make(`item-${type}-${ordinal}`),
+    type,
+    status,
+    title: null,
+    ordinal,
+    runId: RunId.make(`run-${runOrdinal}`),
+  });
+  const projection = (overrides: object) =>
+    ({ ...base, ...overrides }) as unknown as ReturnType<typeof makeThreadProjectionFixture>;
+
+  it("surfaces earlier running commands once the assistant has finished replying and stopped thinking", () => {
+    expect(
+      deriveLiveRunHoldingCommands(
+        projection({
+          runs: [run(1, "running")],
+          turnItems: [
+            commandItem(10, 1, "call_86", 'git log -S "authenticateEagerly" -p -n 3'),
+            commandItem(11, 1, "call_98", 'git log -S "authenticateEagerly" --oneline -n 5'),
+            messageItem(20, 1, "reasoning", "completed"),
+            messageItem(21, 1, "assistant_message", "completed"),
+          ],
+        }),
+      ),
+    ).toEqual([
+      {
+        taskId: "call_86",
+        itemId: TurnItemId.make("item-call_86"),
+        nativeItemId: "call_86",
+        kind: "command",
+        description: 'git log -S "authenticateEagerly" -p -n 3',
+        command: 'git log -S "authenticateEagerly" -p -n 3',
+        awaited: true,
+      },
+      {
+        taskId: "call_98",
+        itemId: TurnItemId.make("item-call_98"),
+        nativeItemId: "call_98",
+        kind: "command",
+        description: 'git log -S "authenticateEagerly" --oneline -n 5',
+        command: 'git log -S "authenticateEagerly" --oneline -n 5',
+        awaited: true,
+      },
+    ]);
+  });
+
+  it("stays empty while the assistant is still reasoning or streaming, or for foreground commands after the reply", () => {
+    expect(
+      deriveLiveRunHoldingCommands(
+        projection({
+          runs: [run(1, "running")],
+          turnItems: [
+            commandItem(10, 1, "call_86", "git log -S foo"),
+            messageItem(20, 1, "assistant_message", "completed"),
+            messageItem(21, 1, "reasoning", "running"),
+          ],
+        }),
+      ),
+    ).toEqual([]);
+
+    expect(
+      deriveLiveRunHoldingCommands(
+        projection({
+          runs: [run(1, "running")],
+          turnItems: [
+            messageItem(10, 1, "assistant_message", "completed"),
+            commandItem(20, 1, "call_fg", "pnpm test"),
+          ],
+        }),
+      ),
+    ).toEqual([]);
+
+    expect(
+      deriveLiveRunHoldingCommands(
+        projection({
+          runs: [run(1, "completed")],
+          turnItems: [
+            commandItem(10, 1, "call_86", "git log -S foo"),
+            messageItem(20, 1, "assistant_message", "completed"),
+          ],
+        }),
+      ),
+    ).toEqual([]);
   });
 });
 

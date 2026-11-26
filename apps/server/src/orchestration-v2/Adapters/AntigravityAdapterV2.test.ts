@@ -1437,7 +1437,12 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
   /** The prompt launches one agy 1.5 subagent instead; its records live below this profile. */
   detachedChildProfile?: string,
   /** agy 1.5.11 answers a steered prompt once the next one arrives, which runs to `releaseSteer`. */
-  steering?: { readonly agentVersion: string; readonly holdsFirstPrompt: boolean },
+  steering?: {
+    readonly agentVersion: string;
+    readonly holdsFirstPrompt: boolean;
+    readonly manualReleaseFirstPrompt?: boolean;
+    readonly failSteerAttempts?: number;
+  },
   options?: {
     readonly profileDirectory?: string;
     readonly initialToolCalls?: ReadonlyArray<EffectAcpSchema.SessionUpdate>;
@@ -1463,11 +1468,13 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
     rawInput: { CommandLine: "node fetch_throughput.mjs", ...commandInput },
   } as const;
   let cancels = 0;
+  let runtimeCount = 0;
   const prompts: Array<{
     readonly prompt: ReadonlyArray<EffectAcpSchema.ContentBlock>;
     readonly released: Deferred.Deferred<void> | undefined;
   }> = [];
   const steered = yield* Deferred.make<void>();
+  const releaseFirstPrompt = yield* Deferred.make<void>();
   const releaseSteer = yield* Deferred.make<void>();
   let terminate: AntigravityAdapterV2RuntimeInput["onTermination"];
   const usage = { sessionUpdate: "usage_update", used: 9000, size: 1048576 } as const;
@@ -1482,6 +1489,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
     selfInvocation,
     continuationRequests: { offer: (request) => Effect.sync(() => void offers.push(request)) },
     makeRuntime: (input) => {
+      runtimeCount += 1;
       terminate = input.onTermination;
       return makeAntigravityAcpRuntime({
         ...input,
@@ -1517,6 +1525,18 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
                 yield* Deferred.succeed(promptOptions.dispatched, undefined);
               }
               if (prompts.length > 1) {
+                const steerAttempt = prompts.length - 1;
+                if (
+                  steering?.failSteerAttempts !== undefined &&
+                  steerAttempt <= steering.failSteerAttempts
+                ) {
+                  return yield* new EffectAcpErrors.AcpRequestError({
+                    code: -32603,
+                    method: "session/prompt",
+                    errorMessage:
+                      "Can't add this prompt to session mock-session-1: the running prompt is waiting for a permission or question answer; answer it or send session/cancel, then send this prompt again",
+                  });
+                }
                 yield* Deferred.succeed(steered, undefined);
                 yield* Deferred.await(releaseSteer);
                 return { stopReason: "end_turn" as const };
@@ -1544,7 +1564,11 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
                 content: { type: "text", text: "I'll render once the fetch finishes." },
               });
               yield* send(usage);
-              if (steering?.holdsFirstPrompt === true) yield* Deferred.await(steered);
+              if (steering?.manualReleaseFirstPrompt === true) {
+                yield* Deferred.await(releaseFirstPrompt);
+              } else if (steering?.holdsFirstPrompt === true) {
+                yield* Deferred.await(steered);
+              }
               return { stopReason: "end_turn" as const };
             }),
         })),
@@ -1673,7 +1697,9 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
         ? Effect.die("the adapter must handle permission requests")
         : requestPermission(...args),
     cancels: () => cancels,
+    runtimeCount: () => runtimeCount,
     prompts,
+    releaseFirstPrompt: Deferred.succeed(releaseFirstPrompt, undefined),
     releaseSteer: Deferred.succeed(releaseSteer, undefined),
     runtimeDies: Effect.suspend(
       () =>
@@ -1765,8 +1791,8 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
       yield* startTurn(1, false);
       yield* throughPromptSettled;
       // Progress keeps a command past the post-settle hold bound, which counts silence only.
-      for (const minute of [10, 20, 30]) {
-        yield* TestClock.adjust("10 minutes");
+      for (const minute of [4, 8, 12]) {
+        yield* TestClock.adjust("4 minutes");
         yield* send({
           sessionUpdate: "tool_call_update",
           ...command,
@@ -1774,7 +1800,7 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
           rawOutput: { output: `fetched ${minute} pages` },
         });
       }
-      yield* TestClock.adjust("10 minutes");
+      yield* TestClock.adjust("4 minutes");
       yield* send({
         sessionUpdate: "tool_call_update",
         ...command,
@@ -1805,10 +1831,10 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
       yield* startTurn(1, false);
       const prompt = yield* throughPromptSettled;
 
-      // A running tool keeps the inactivity watchdog re-armed, so 20 silent minutes do not
-      // settle this run on their own.
-      yield* TestClock.adjust("20 minutes");
-      yield* TestClock.adjust("11 minutes");
+      // Silent commands remain held up to the 5-minute post-settle hold bound, then settle
+      // cleanly instead of blocking the run in Working for 30 minutes.
+      yield* TestClock.adjust("4 minutes");
+      yield* TestClock.adjust("2 minutes");
       const run = yield* until((event) => event.type === "turn.terminal");
       const terminal = run.at(-1);
       assert.equal(
@@ -1828,6 +1854,67 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
         "the silent command is no longer left as live activity on a settled run",
       );
     }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "closes the completed reply and settles an open prompt held only by a silent background command",
+    () =>
+      Effect.gen(function* () {
+        const { command, offers, runtimeCount, startTurn, until, releaseSteer } =
+          yield* openSessionWithRunningCommand({ WaitMsBeforeAsync: 10000 }, undefined, {
+            agentVersion: "2.0.0",
+            holdsFirstPrompt: true,
+            manualReleaseFirstPrompt: true,
+          });
+        yield* startTurn(1, false);
+        yield* until(
+          (event) =>
+            event.type === "provider_thread.updated" && event.providerThread.contextUsage !== null,
+        );
+        yield* TestClock.adjust("3 seconds");
+        const replyClosed = yield* until(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            event.turnItem.status === "completed",
+        );
+        const assistantItem = replyClosed.findLast(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "assistant_message",
+        );
+        assert.isTrue(
+          assistantItem?.type === "turn_item.updated" &&
+            assistantItem.turnItem.type === "assistant_message" &&
+            assistantItem.turnItem.phase === "final_answer",
+          "usage_update closes the assistant reply even while a silent background command holds session/prompt open",
+        );
+
+        // Silent open-prompt background command expires at the 5-minute hold bound and restarts
+        // the wedged runtime before Turn 2 instead of staying Running forever.
+        yield* TestClock.adjust("4 minutes");
+        yield* TestClock.adjust("2 minutes");
+        const run1 = yield* until((event) => event.type === "turn.terminal");
+        const terminal1 = run1.at(-1);
+        assert.equal(terminal1?.type === "turn.terminal" && terminal1.status, "completed");
+        assert.equal(terminal1?.type === "turn.terminal" && terminal1.failure, null);
+        assert.lengthOf(offers, 0);
+        const commandItem = [...replyClosed, ...run1].findLast(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === command.toolCallId,
+        );
+        assert.isTrue(
+          commandItem?.type === "turn_item.updated" && commandItem.turnItem.status === "completed",
+        );
+
+        // Turn 2 gets a clean restarted runtime instead of steering into Turn 1's still-open prompt.
+        yield* releaseSteer;
+        yield* startTurn(2, false);
+        const run2 = yield* until((event) => event.type === "turn.terminal");
+        const terminal2 = run2.at(-1);
+        assert.equal(runtimeCount(), 2, "a wedged open prompt retires its runtime before Turn 2");
+        assert.equal(terminal2?.type === "turn.terminal" && terminal2.status, "completed");
+      }).pipe(Effect.provide(layerSession)),
   );
 
   it.effect(
@@ -2509,6 +2596,197 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
       );
       assert.notInclude(subagentStatuses, "interrupted");
       assert.equal(subagentStatuses.at(-1), "idle");
+    }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "waits for a pending question answer and retries a steer rejected while waiting for permission",
+    () =>
+      Effect.gen(function* () {
+        const opened = yield* openSessionWithRunningCommand({}, undefined, {
+          agentVersion: "1.5.11",
+          holdsFirstPrompt: true,
+          failSteerAttempts: 1,
+        });
+        const {
+          session,
+          providerThread,
+          command,
+          usage,
+          send,
+          startTurn,
+          until,
+          requestPermission,
+        } = opened;
+        yield* startTurn(1, false);
+        const started = yield* until(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === command.toolCallId,
+        );
+        const providerTurnId = started.flatMap((event) =>
+          event.type === "provider_turn.updated" ? [event.providerTurn.id] : [],
+        )[0]!;
+
+        const question = yield* requestPermission(
+          {
+            sessionId: "mock-session-1",
+            toolCall: { toolCallId: "interaction_steer_wait", kind: "other", title: "Which port?" },
+            options: [
+              { optionId: "3000", name: "3000", kind: "allow_once" },
+              { optionId: "8080", name: "8080", kind: "allow_once" },
+            ],
+          },
+          { requestId: "question-steer-wait", method: "session/request_permission" },
+        ).pipe(Effect.forkScoped({ startImmediately: true }));
+        const asked = yield* until(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        );
+        const requestId = asked.flatMap((event) =>
+          event.type === "runtime_request.updated" ? [event.runtimeRequest.id] : [],
+        )[0]!;
+
+        // Steering while a question is open must return without blocking or failing the turn.
+        yield* session.steerTurn({
+          threadId: ThreadId.make("thread-antigravity-wake"),
+          runId: RunId.make("run-antigravity-wake-1"),
+          providerThread,
+          providerTurnId,
+          message: {
+            messageId: MessageId.make("message-antigravity-steer-wait"),
+            text: "Reconnected now",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+        });
+        assert.lengthOf(
+          opened.prompts,
+          1,
+          "steer must wait for the pending question before sending session/prompt",
+        );
+
+        const respondFiber = yield* session
+          .respondToRuntimeRequest({
+            requestId,
+            answers: { interaction_steer_wait: "3000" },
+          })
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        const questionOutcome = yield* Fiber.join(question);
+        // First steer attempt races with permission processing and is rejected; retry succeeds.
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("100 millis");
+        yield* TestClock.adjust("2 seconds");
+        yield* Fiber.join(respondFiber).pipe(Effect.ignore);
+        assert.deepEqual(questionOutcome, {
+          outcome: { outcome: "selected", optionId: "3000" },
+        });
+        assert.lengthOf(opened.prompts, 3, "initial prompt + 1 rejected steer + 1 succeeded retry");
+        assert.deepEqual(opened.prompts.at(-1)!.prompt, [
+          { type: "text", text: "Reconnected now" },
+        ]);
+        assert.equal(opened.cancels(), 0, "retrying steer must not cancel the running turn");
+
+        yield* send({
+          sessionUpdate: "tool_call_update",
+          ...command,
+          status: "completed",
+          rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
+        });
+        yield* send({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Continuing after reconnect." },
+        });
+        yield* send(usage);
+        yield* opened.releaseSteer;
+        const run = [...started, ...(yield* until((event) => event.type === "turn.terminal"))];
+        const terminal = run.at(-1);
+        assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");
+        assert.equal(terminal?.type === "turn.terminal" && terminal.failure, null);
+        assert.include(JSON.stringify(run), "Continuing after reconnect.");
+      }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect("preserves the original running turn after finite steer retries are exhausted", () =>
+    Effect.gen(function* () {
+      const opened = yield* openSessionWithRunningCommand({}, undefined, {
+        agentVersion: "1.5.11",
+        holdsFirstPrompt: true,
+        manualReleaseFirstPrompt: true,
+        failSteerAttempts: 100,
+      });
+      const { session, providerThread, command, usage, send, startTurn, until } = opened;
+      yield* startTurn(1, false);
+      const started = yield* until(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.nativeItemRef?.nativeId === command.toolCallId,
+      );
+      const providerTurnId = started.flatMap((event) =>
+        event.type === "provider_turn.updated" ? [event.providerTurn.id] : [],
+      )[0]!;
+
+      yield* session.steerTurn({
+        threadId: ThreadId.make("thread-antigravity-wake"),
+        runId: RunId.make("run-antigravity-wake-1"),
+        providerThread,
+        providerTurnId,
+        message: {
+          messageId: MessageId.make("message-antigravity-steer-exhausted"),
+          text: "Reconnected now",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+      });
+      for (const delay of [
+        "100 millis",
+        "250 millis",
+        "500 millis",
+        "1 second",
+        "2 seconds",
+      ] as const) {
+        yield* TestClock.adjust(delay);
+      }
+      yield* TestClock.adjust("10 seconds");
+      assert.lengthOf(
+        opened.prompts,
+        7,
+        "steer retries must be finite (initial prompt + 1 steer attempt + 5 retries)",
+      );
+      assert.equal(opened.cancels(), 0);
+
+      // Original prompt keeps running and completes the turn cleanly.
+      yield* send({
+        sessionUpdate: "tool_call_update",
+        ...command,
+        status: "completed",
+        rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
+      });
+      yield* send({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Original turn finished cleanly." },
+      });
+      yield* send(usage);
+      yield* opened.releaseFirstPrompt;
+      const run = [...started, ...(yield* until((event) => event.type === "turn.terminal"))];
+      const terminal = run.at(-1);
+      assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");
+      assert.equal(terminal?.type === "turn.terminal" && terminal.failure, null);
+      assert.isFalse(
+        run.some((event) => event.type === "turn_item.updated" && event.turnItem.type === "error"),
+        "exhausted steer retries must not emit a fatal Provider error",
+      );
+      const finishedCommand = run.findLast(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.nativeItemRef?.nativeId === command.toolCallId,
+      );
+      assert.equal(
+        finishedCommand?.type === "turn_item.updated" && finishedCommand.turnItem.status,
+        "completed",
+      );
     }).pipe(Effect.provide(layerSession)),
   );
 
@@ -3439,5 +3717,189 @@ describe("AntigravityAdapterV2 update_steps checklist", () => {
         ["Create b.txt", "running"],
       ]);
     }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "promotes an answer closed by a finishing background command to final_answer when no new tools run after it",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const crypto = yield* SecureRandom.SecureRandom;
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let sessionUpdate: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        const instanceId = ProviderInstanceId.make("antigravity-bg-final-answer-test");
+        const threadId = ThreadId.make("thread-antigravity-bg-final-answer");
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) =>
+            makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: { T3_ACP_ANTIGRAVITY: "1" },
+              },
+            }).pipe(
+              Effect.provideService(SecureRandom.SecureRandom, crypto),
+              Effect.map((runtime): RuntimeService => ({
+                ...runtime,
+                handleSessionUpdate: (handler) =>
+                  Effect.sync(() => {
+                    sessionUpdate = handler;
+                  }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+                prompt: () =>
+                  Effect.gen(function* () {
+                    const send = (update: EffectAcpSchema.SessionUpdate) =>
+                      sessionUpdate === undefined
+                        ? Effect.die("the adapter must handle session updates")
+                        : sessionUpdate(
+                            normalizeAntigravitySessionUpdate({
+                              sessionId: "mock-session-1",
+                              update,
+                            }),
+                          );
+                    // 1. Background command #1 starts, agent posts waiting commentary, then runs a new tool.
+                    yield* send({
+                      sessionUpdate: "tool_call",
+                      toolCallId: "cmd-bg-1",
+                      title: "Run command",
+                      kind: "execute",
+                      status: "in_progress",
+                      rawInput: { CommandLine: "echo probe" },
+                    });
+                    yield* send({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: "Waiting for probe..." },
+                    });
+                    yield* send({
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: "cmd-bg-1",
+                      status: "completed",
+                    });
+                    // 2. Background command #2 starts (a new tool clears the earlier waiting note).
+                    yield* send({
+                      sessionUpdate: "tool_call",
+                      toolCallId: "cmd-bg-2",
+                      title: "Run command",
+                      kind: "execute",
+                      status: "in_progress",
+                      rawInput: { CommandLine: "acp-mcp-call schedule_task -" },
+                    });
+                    // 3. Agent delivers the full report while cmd-bg-2 is still exiting.
+                    yield* send({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: "Full A100 ready report." },
+                    });
+                    // 4. cmd-bg-2 completes, waking the agent for a brief confirmation with no new tools.
+                    yield* send({
+                      sessionUpdate: "tool_call_update",
+                      toolCallId: "cmd-bg-2",
+                      status: "completed",
+                    });
+                    yield* send({
+                      sessionUpdate: "agent_message_chunk",
+                      content: { type: "text", text: "Background confirmation: paused." },
+                    });
+                    return { stopReason: "end_turn" as const };
+                  }),
+              })),
+            ),
+          withProcess: (_stop, effect) => effect,
+          defaultModel: Effect.undefined,
+        });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-bg-final-answer"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* session.startTurn({
+          appThread: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project-antigravity-bg-final-answer"),
+            title: "Antigravity bg final answer",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: process.cwd(),
+            activeProviderThreadId: providerThread.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          threadId,
+          runId: RunId.make("run-antigravity-bg-final-answer"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("attempt-antigravity-bg-final-answer"),
+          rootNodeId: NodeId.make("node-antigravity-bg-final-answer"),
+          providerThread,
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-antigravity-bg-final-answer"),
+            text: "probe GPU",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const events = Array.from(
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        );
+
+        const latestById = new Map<
+          string,
+          { readonly text: string; readonly phase: string | undefined }
+        >();
+        for (const event of events) {
+          if (event.type === "turn_item.updated" && event.turnItem.type === "assistant_message") {
+            latestById.set(event.turnItem.id, {
+              text: event.turnItem.text,
+              phase: event.turnItem.phase,
+            });
+          }
+        }
+        assert.deepEqual(
+          [...latestById.values()],
+          [
+            { text: "Waiting for probe...", phase: undefined },
+            { text: "Full A100 ready report.", phase: "final_answer" },
+            { text: "Background confirmation: paused.", phase: undefined },
+          ],
+        );
+      }).pipe(Effect.provide(layerSession)),
   );
 });

@@ -966,11 +966,12 @@ export const readAntigravityChildrenAtWork = Effect.fn("readAntigravityChildrenA
 );
 
 const RUN_COMMAND_STEP_TYPE = 21;
+const GENERIC_STEP_TYPE = 132;
 const STEP_STATUS_DONE = 3;
 const STEP_STATUS_CLEARED = 5;
 const STEP_STATUS_CANCELLED = 6;
 const STEP_STATUS_ERROR = 7;
-const MAX_RECONCILE_COMMAND_ROWS = 200;
+const MAX_RECONCILE_COMMAND_ROWS = 2_000;
 
 export interface AntigravityStepToolCall {
   readonly id: string | undefined;
@@ -1065,6 +1066,7 @@ export const readAntigravityFinishedCommands = Effect.fn("readAntigravityFinishe
         const hasPayload = columns.has("step_payload");
         if (!hasMetadata && !hasPayload) return [];
         const selectColumns = [
+          "step_type AS type",
           "status",
           hasMetadata
             ? "CASE WHEN length(metadata) <= ? THEN metadata END AS metadata"
@@ -1078,6 +1080,7 @@ export const readAntigravityFinishedCommands = Effect.fn("readAntigravityFinishe
         if (hasPayload) bindArgs.push(MAX_STEP_BYTES);
         bindArgs.push(
           RUN_COMMAND_STEP_TYPE,
+          GENERIC_STEP_TYPE,
           STEP_STATUS_DONE,
           STEP_STATUS_CLEARED,
           STEP_STATUS_CANCELLED,
@@ -1090,13 +1093,14 @@ export const readAntigravityFinishedCommands = Effect.fn("readAntigravityFinishe
           .prepare(
             `SELECT ${selectColumns}
              FROM steps
-             WHERE step_type = ? AND status IN (?, ?, ?, ?)
+             WHERE step_type IN (?, ?) AND status IN (?, ?, ?, ?)
              ORDER BY idx DESC
              LIMIT ?`,
           )
           .iterate(...bindArgs);
         for (const row of rows) {
           if (row === null || typeof row !== "object") continue;
+          const stepType = "type" in row ? Number(row.type) : 0;
           const status = "status" in row ? Number(row.status) : 0;
           const metadata =
             "metadata" in row && row.metadata instanceof Uint8Array ? row.metadata : undefined;
@@ -1105,7 +1109,12 @@ export const readAntigravityFinishedCommands = Effect.fn("readAntigravityFinishe
               ? row.step_payload
               : undefined;
           const toolCall = decodeAntigravityStepToolCall({ metadata, payload });
-          if (toolCall?.id === undefined || !wanted.has(toolCall.id) || resolved.has(toolCall.id)) {
+          if (
+            toolCall?.id === undefined ||
+            (stepType === GENERIC_STEP_TYPE && toolCall.name !== "run_command") ||
+            !wanted.has(toolCall.id) ||
+            resolved.has(toolCall.id)
+          ) {
             continue;
           }
           resolved.set(

@@ -120,6 +120,7 @@ interface ThreadLifecycleInput {
   /** Also true while the server prepares, starts, or queues a run this client did not send. */
   readonly runIsLive: boolean;
   readonly pendingBackgroundTasks: Parameters<typeof backgroundWorkNowItem>[0]["tasks"];
+  readonly liveRunHoldingCommands?: Parameters<typeof backgroundWorkNowItem>[0]["tasks"];
   readonly turnItems: Parameters<typeof backgroundWorkNowItem>[0]["turnItems"];
   readonly activePendingApproval: PendingThreadRequests["activePendingApproval"];
   readonly activePendingUserInput: PendingThreadRequests["activePendingUserInput"];
@@ -173,6 +174,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     isWorking,
     runIsLive,
     pendingBackgroundTasks,
+    liveRunHoldingCommands = [],
     turnItems,
     activePendingApproval,
     activePendingUserInput,
@@ -424,6 +426,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     void handleSwitchCheckoutToThread();
   });
   const activeBackgroundTasks = activeThread ? pendingBackgroundTasks : [];
+  const activeLiveRunHoldingCommands =
+    activeThread && activeBackgroundTasks.length === 0 ? liveRunHoldingCommands : [];
+  const displayedBackgroundTasks =
+    activeBackgroundTasks.length > 0 ? activeBackgroundTasks : activeLiveRunHoldingCommands;
+  const showingLiveRunHoldingCommands = activeLiveRunHoldingCommands.length > 0;
   const [backgroundWorkStops, setBackgroundWorkStops] = useState<
     Record<string, BackgroundWorkStopRequest | undefined>
   >({});
@@ -431,7 +438,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const isStoppingBackgroundWork = isBackgroundWorkStopPending(
     backgroundWorkStop,
     `${environmentId}:${activeThreadId}`,
-    pendingBackgroundTasks,
+    displayedBackgroundTasks,
     useDeadlinePassed(backgroundWorkStop?.retryAt ?? null),
   );
   const handleStopBackgroundWork = async () => {
@@ -443,7 +450,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       return;
     const request: BackgroundWorkStopRequest = {
       threadKey: `${environmentId}:${activeThread.id}`,
-      taskIds: pendingBackgroundTasks.map((task) => task.taskId),
+      taskIds: displayedBackgroundTasks.map((task) => task.taskId),
       retryAt: null,
     };
     setBackgroundWorkStops((current) => ({ ...current, [request.threadKey]: request }));
@@ -638,10 +645,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         {
           environmentId,
           threadId: activeThread.id,
-          tasks: activeBackgroundTasks,
+          tasks: displayedBackgroundTasks,
           turnItems,
-          // Interrupt stops the active run first, not this work; the composer owns that Stop.
-          stopDisabled: runIsLive || !canOperateThread || isStoppingBackgroundWork,
+          // Interrupt stops the active run first, not earlier-run work; for commands holding the
+          // current live run open, Stop directly interrupts that run and its stuck commands.
+          stopDisabled:
+            (!showingLiveRunHoldingCommands && runIsLive) ||
+            !canOperateThread ||
+            isStoppingBackgroundWork,
           stopping: isStoppingBackgroundWork,
           onStop: handleStopBackgroundWorkStable,
           onOpenThread: onOpenRelatedThreadStable,

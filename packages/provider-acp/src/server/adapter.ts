@@ -80,6 +80,7 @@ import {
 } from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { ACP_MCP_CALL_LAUNCHER, ACP_MCP_CALL_STANDALONE_SCRIPT } from "./acpMcpCallLauncher.ts";
 import { makeAcpMcpOverAcpBridge, type AcpMcpOverAcpBridge } from "./mcpOverAcpBridge.ts";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -157,6 +158,13 @@ const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 // A model can stay silent this long before the first token of a reply the agent started itself.
 const ACP_OPEN_REPLY_QUIET_LIMIT: Duration.Input = "2 minutes";
 const ACP_BUSY_PROMPT_RETRY_INTERVAL: Duration.Input = "1 second";
+const ACP_STEER_WAITING_RESPONSE_RETRY_DELAYS: ReadonlyArray<Duration.Input> = [
+  "100 millis",
+  "250 millis",
+  "500 millis",
+  "1 second",
+  "2 seconds",
+];
 // Agents such as omp advertise a loaded session's commands shortly after answering session/load.
 const ACP_LOADED_COMMANDS_WAIT: Duration.Input = "2 seconds";
 const ACP_PROMPT_INACTIVITY_SLICE_MILLIS = 60_000;
@@ -167,6 +175,15 @@ const ACP_HOST_SLEEP_TOLERANCE_MILLIS = 10_000;
 function isAgentBusyPromptError(error: EffectAcpErrors.AcpError): boolean {
   return (
     error._tag === "AcpRequestError" && error.errorMessage.startsWith("Agent is already processing")
+  );
+}
+
+// `agy acp` rejects a prompt-steer while the running prompt is waiting for a permission or
+// question answer (including an auto-approved tool confirmation still in flight).
+function isPromptWaitingForResponseError(error: EffectAcpErrors.AcpError): boolean {
+  return (
+    error._tag === "AcpRequestError" &&
+    error.errorMessage.toLowerCase().includes("waiting for a permission or question answer")
   );
 }
 
@@ -1096,20 +1113,10 @@ interface AcpMcpContext {
   readonly authorization?: string;
 }
 
-// A GUI-subsystem executable (packaged Windows desktop) does not hold the console, so PowerShell
-// neither waits for it nor captures its output or exit code; cmd.exe running a batch file does.
-// cmd.exe decodes batch files with the console code page, so paths come from the (UTF-16) environment.
-const ACP_MCP_CALL_LAUNCHER = [
-  "@echo off",
-  "setlocal EnableExtensions DisableDelayedExpansion",
-  'set "ELECTRON_RUN_AS_NODE=1"',
-  "if not defined T3_ACP_MCP_ENTRYPOINT goto packaged",
-  '"%T3_ACP_MCP_NODE%" "%T3_ACP_MCP_ENTRYPOINT%" acp-mcp-call %*',
-  "exit /b %errorlevel%",
-  ":packaged",
-  '"%T3_ACP_MCP_NODE%" acp-mcp-call %*',
-  "",
-].join("\r\n");
+interface AcpMcpCallLauncherPaths {
+  readonly launcherPath: string;
+  readonly scriptPath: string;
+}
 
 const writeAcpMcpCallLauncher = Effect.fn("AcpAdapterV2.writeAcpMcpCallLauncher")(function* (
   stateDir: string,
@@ -1118,9 +1125,11 @@ const writeAcpMcpCallLauncher = Effect.fn("AcpAdapterV2.writeAcpMcpCallLauncher"
   const fileSystem = yield* FileSystem.FileSystem;
   const dir = `${stateDir}\\acp`;
   const launcherPath = `${dir}\\acp-mcp-call.cmd`;
+  const scriptPath = `${dir}\\acp-mcp-call.mjs`;
   return yield* fileSystem.makeDirectory(dir, { recursive: true }).pipe(
+    Effect.andThen(fileSystem.writeFileString(scriptPath, ACP_MCP_CALL_STANDALONE_SCRIPT)),
     Effect.andThen(fileSystem.writeFileString(launcherPath, ACP_MCP_CALL_LAUNCHER)),
-    Effect.as(launcherPath),
+    Effect.as({ launcherPath, scriptPath }),
     Effect.catch((error) =>
       Effect.logWarning("Could not write the ACP terminal tool launcher.", error).pipe(
         Effect.as(undefined),
@@ -1134,7 +1143,7 @@ function acpMcpContext(
   self: SelfInvocation,
   mcpOverHttp: boolean | undefined,
   deferMcpTools: boolean | undefined,
-  callLauncher: string | undefined,
+  callLauncher: AcpMcpCallLauncherPaths | undefined,
 ): AcpMcpContext {
   if (session === undefined) {
     return { servers: [], acpServers: [], httpServers: [] };
@@ -1182,7 +1191,12 @@ function acpMcpContext(
       T3_ACP_MCP_AUTHORIZATION: session.authorizationHeader,
       T3_ACP_MCP_NODE: self.command,
       ...(self.entrypoint === undefined ? {} : { T3_ACP_MCP_ENTRYPOINT: self.entrypoint }),
-      ...(callLauncher === undefined ? {} : { T3_ACP_MCP_CALL: callLauncher }),
+      ...(callLauncher === undefined
+        ? {}
+        : {
+            T3_ACP_MCP_CALL: callLauncher.launcherPath,
+            T3_ACP_MCP_CALL_SCRIPT: callLauncher.scriptPath,
+          }),
     },
   };
 }
@@ -1723,6 +1737,7 @@ interface ActiveTextSegment {
   emitted: boolean;
   // Text changed since the last emission; a delayed flush is scheduled.
   dirty: boolean;
+  phase?: "final_answer";
 }
 
 interface ActiveTextStream {
@@ -1752,6 +1767,12 @@ interface ActiveAcpTurn {
   readonly user: ActiveTextStream;
   readonly assistant: ActiveTextStream;
   readonly reasoning: ActiveTextStream;
+  /**
+   * Completed assistant segments closed by a finished background tool (not a new tool call).
+   * Cleared whenever the agent starts a new tool; if none starts before turn completion, they are
+   * promoted to `final_answer` so a brief post-wakeup follow-up does not fold the main reply away.
+   */
+  readonly trailingCompletedAssistants: Array<ActiveTextSegment>;
   providerRetry?:
     | {
         readonly failure: OrchestrationV2ProviderFailure;
@@ -1819,8 +1840,13 @@ interface ActiveAcpTurn {
   readonly promptDispatched: Deferred.Deferred<void, never>;
   /** Frees the runtime for the next prompt while the agent still holds this one's response. */
   foregroundIdle: Deferred.Deferred<void>;
-  /** Counts the turn's prompts; only the latest one settles the turn. */
+  /** Completed when the turn is interrupted or finalized, waking any waiting steer retries. */
+  readonly interruptedSignal: Deferred.Deferred<void>;
+  /** Counts the turn's prompts monotonically; `activePromptSequence` marks the current owner. */
   promptSequence: number;
+  activePromptSequence: number;
+  /** Live or settled-while-superseded prompts so a rejected steer can return ownership cleanly. */
+  readonly openPrompts: Map<number, { settled: Effect.Effect<void> | null }>;
   /** Number of automatic resume prompts already sent after a resumable outcome failure. */
   outcomeResumeAttempts: number;
   /** Clock millis just before `session/prompt` was handed to the runtime. */
@@ -1829,6 +1855,7 @@ interface ActiveAcpTurn {
   readonly promptStarted: Deferred.Deferred<void, never>;
   promptUsage: EffectAcpSchema.Usage | undefined;
   backgroundFinalizeGeneration: number;
+  postSettleHoldGeneration: number;
   /** `replyEndsWithUsageUpdate`: output arrived and its closing `usage_update` has not. */
   replyOpen: boolean;
   /** The agent's own id for this turn's prompt, from `forkFromTurn.nativeTurnId`. */
@@ -2363,6 +2390,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // The root's last reportForegroundWork state; undefined until the agent reports one.
         let rootForegroundWork: "running" | "idle" | undefined;
         const agentRequests = new Set<object>();
+        const activeInteractionRequests = new Set<Deferred.Deferred<void>>();
+        const trackInteractionRequest = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.acquireUseRelease(
+            Deferred.make<void>().pipe(
+              Effect.tap((done) =>
+                Effect.sync(() => {
+                  activeInteractionRequests.add(done);
+                }),
+              ),
+            ),
+            () => effect,
+            (done) =>
+              Effect.sync(() => {
+                activeInteractionRequests.delete(done);
+              }).pipe(Effect.andThen(Deferred.succeed(done, undefined)), Effect.asVoid),
+          );
         const nativeChildren = new Map<string, AcpNativeChildSession>();
         const extractSubagentUpdate = (tool: AcpToolCallState) =>
           flavor.extractSubagentSessionEvent !== undefined && !followsAgentWorkState
@@ -2945,6 +2988,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
+        let schedulePostSettleHoldExpiry: (
+          context: ActiveAcpTurn,
+          options?: { readonly allowOpenPrompt?: boolean },
+        ) => Effect.Effect<void> = () => Effect.void;
         let refreshModelSwitchCapability: Effect.Effect<void> = Effect.void;
         let reportStartupPhase: (phase: string | undefined) => Effect.Effect<void> = () =>
           Effect.void;
@@ -3506,6 +3553,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       messageId,
                       text,
                       streaming: !completed,
+                      ...(segment.phase === undefined ? {} : { phase: segment.phase }),
                     },
                   },
             );
@@ -3557,6 +3605,49 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             Effect.forkIn(sessionScope),
           );
         });
+
+        const promoteAssistantSegmentFinalAnswer = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          segment: ActiveTextSegment,
+        ) {
+          if (segment.phase === "final_answer" || segment.text.trim().length === 0) return;
+          segment.phase = "final_answer";
+          const now = yield* DateTime.now;
+          const ordinal = yield* resolveItemOrdinal(context, segment.nativeItemId);
+          const nodeId = providerNodeId(segment.nativeItemId);
+          const turnItemId = providerTurnItemId(segment.nativeItemId);
+          const messageId = providerMessageId(segment.nativeItemId);
+          const nativeItemRef = {
+            driver,
+            nativeId: segment.nativeItemId,
+            strength: "weak" as const,
+          };
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver,
+            turnItem: {
+              id: turnItemId,
+              threadId: context.input.threadId,
+              runId: context.input.runId,
+              nodeId,
+              providerThreadId: context.input.providerThread.id,
+              providerTurnId: context.providerTurnId,
+              nativeItemRef,
+              parentItemId: null,
+              ordinal,
+              status: "completed",
+              title: null,
+              startedAt: segment.startedAt,
+              completedAt: now,
+              updatedAt: now,
+              type: "assistant_message",
+              messageId,
+              text: segment.text,
+              streaming: false,
+              phase: "final_answer",
+            },
+          });
+        }, textEmissionPermit.withPermit);
 
         const closeTextStream = Effect.fnUntraced(function* (
           context: ActiveAcpTurn,
@@ -4660,12 +4751,30 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           projectedStatus?: ProjectedToolStatus,
           rawPayload?: unknown,
         ) {
+          const previous = context.tools.get(incoming.toolCallId);
+          const incomingToolStatus = toolStatus(incoming.status);
+          const isExistingToolTerminalUpdate =
+            previous !== undefined &&
+            incomingToolStatus !== "pending" &&
+            incomingToolStatus !== "running" &&
+            incomingToolStatus !== "waiting";
+          const openAssistant =
+            context.assistant.current?.sourceMessageId == null ? context.assistant.current : null;
           if (context.assistant.current?.sourceMessageId == null)
             yield* closeTextStream(context, "assistant");
+          if (previous === undefined) {
+            context.trailingCompletedAssistants.length = 0;
+          } else if (
+            isExistingToolTerminalUpdate &&
+            openAssistant !== null &&
+            openAssistant.text.trim().length > 0 &&
+            !context.trailingCompletedAssistants.includes(openAssistant)
+          ) {
+            context.trailingCompletedAssistants.push(openAssistant);
+          }
           if (context.reasoning.current?.sourceMessageId == null)
             yield* closeTextStream(context, "reasoning");
           yield* closeTextStream(context, "user");
-          const previous = context.tools.get(incoming.toolCallId);
           const merged = mergeToolCallState(previous, incoming);
           const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
           const backgroundTaskId = flavor.extractBackgroundTaskId?.(normalized);
@@ -6114,7 +6223,70 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             } else if (context.nativeThreadId === notification.sessionId) {
               if (update.sessionUpdate === "usage_update") {
                 context.replyOpen = false;
-                if (context.promptSettled) yield* idleReportedSubagents(context);
+                const hasOpenAssistant =
+                  context.assistant.current !== null &&
+                  context.assistant.current.text.trim().length > 0;
+                if (context.promptSettled) {
+                  if (hasOpenAssistant) {
+                    context.assistant.current!.phase = "final_answer";
+                    yield* closeTextStream(context, "assistant");
+                  }
+                  yield* idleReportedSubagents(context);
+                } else if (
+                  defersFinalizeForBackgroundWork &&
+                  flavor.postSettleCommandHold !== undefined &&
+                  !context.finalized &&
+                  !context.interrupted &&
+                  hasOpenAssistant &&
+                  context.tools
+                    .values()
+                    .some(
+                      (tool) =>
+                        toolStatus(tool.status) === "running" &&
+                        flavor.postSettleCommandHold!.isCommand(tool),
+                    )
+                ) {
+                  // Wait briefly so normal prompts that return `end_turn` right after `usage_update`
+                  // follow the standard post-settle path without racing.
+                  const expectedAssistant = context.assistant.current;
+                  const holdGenerationBefore = context.postSettleHoldGeneration;
+                  yield* Effect.gen(function* () {
+                    yield* Effect.sleep(ACP_DEFERRED_FINALIZE_DEBOUNCE);
+                    yield* runtimeCallbackPermit.withPermit(
+                      Effect.gen(function* () {
+                        if (
+                          context.finalized ||
+                          context.interrupted ||
+                          context.promptSettled ||
+                          context.replyOpen ||
+                          context.postSettleHoldGeneration !== holdGenerationBefore ||
+                          context.assistant.current !== expectedAssistant
+                        ) {
+                          return;
+                        }
+                        if (
+                          !context.tools
+                            .values()
+                            .some(
+                              (tool) =>
+                                toolStatus(tool.status) === "running" &&
+                                flavor.postSettleCommandHold!.isCommand(tool),
+                            )
+                        ) {
+                          return;
+                        }
+                        if (
+                          context.assistant.current !== null &&
+                          context.assistant.current.text.trim().length > 0
+                        ) {
+                          context.assistant.current.phase = "final_answer";
+                          yield* closeTextStream(context, "assistant");
+                        }
+                        yield* schedulePostSettleHoldExpiry(context, { allowOpenPrompt: true });
+                      }),
+                    );
+                  }).pipe(Effect.forkIn(sessionScope), Effect.asVoid);
+                }
                 yield* rearmDeferredFinalize(context);
               } else if (acpRootSessionUpdateIngestsOutput(notification)) {
                 context.replyOpen = true;
@@ -7808,6 +7980,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   }),
               ),
               holdingAgentRequest(handlerGeneration),
+              trackInteractionRequest,
             ),
           );
           yield* targetRuntime.handleElicitation((params, requestContext) =>
@@ -7933,7 +8106,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   : form.respond(userInput.answers);
               yield* userInput.acknowledgeNativeResponse;
               return response;
-            }).pipe(holdingAgentRequest(handlerGeneration)),
+            }).pipe(holdingAgentRequest(handlerGeneration), trackInteractionRequest),
           );
           if (flavor.registerExtensions !== undefined) {
             yield* flavor.registerExtensions({
@@ -8928,6 +9101,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const threadDisposition = options?.threadDisposition ?? "reusable";
           context.finalizedStatus = settledStatus;
           context.finalized = true;
+          context.openPrompts.clear();
+          yield* Deferred.succeed(context.interruptedSignal, undefined);
           const watchdog = context.inactivityWatchdog;
           context.inactivityWatchdog = undefined;
           if (watchdog !== undefined) {
@@ -8956,7 +9131,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             });
           }
           yield* mcpSessions.clearToolResults(context.input.threadId);
+          const closingAssistant = context.assistant.current;
           yield* closeTextStreams(context);
+          if (settledStatus === "completed" && context.trailingCompletedAssistants.length > 0) {
+            // Only promote earlier candidates when a later assistant reply (or multiple candidates)
+            // exists, so normal single-reply turns keep their exact event sequence.
+            const hasLaterAssistant =
+              closingAssistant !== null &&
+              closingAssistant.text.trim().length > 0 &&
+              !context.trailingCompletedAssistants.includes(closingAssistant);
+            const candidates = hasLaterAssistant
+              ? context.trailingCompletedAssistants
+              : context.trailingCompletedAssistants.slice(0, -1);
+            for (const segment of candidates) {
+              yield* promoteAssistantSegmentFinalAnswer(context, segment);
+            }
+          }
+          context.trailingCompletedAssistants.length = 0;
           // Ingestion may stop at turn.terminal, before a delayed flush would run.
           yield* textEmissionPermit.withPermit(
             Effect.forEach(context.subagents.values(), flushPendingSubagentAssistant, {
@@ -9148,11 +9339,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           yield* options.testHooks?.onDeferredFinalizeScheduled?.(debounce) ?? Effect.void;
         });
 
-        const schedulePostSettleHoldExpiry = Effect.fn("AcpAdapterV2.schedulePostSettleHoldExpiry")(
-          function* (context: ActiveAcpTurn) {
+        schedulePostSettleHoldExpiry = Effect.fn("AcpAdapterV2.schedulePostSettleHoldExpiry")(
+          function* (context: ActiveAcpTurn, holdOptions?: { readonly allowOpenPrompt?: boolean }) {
             const hold = flavor.postSettleCommandHold;
             if (hold === undefined) return;
-            if (!context.promptSettled || context.finalized) return;
+            const allowOpenPrompt = holdOptions?.allowOpenPrompt === true;
+            if ((!context.promptSettled && !allowOpenPrompt) || context.finalized) return;
+            const holdRuntimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+            context.postSettleHoldGeneration += 1;
+            const holdGeneration = context.postSettleHoldGeneration;
             const timeoutMillis = Duration.toMillis(hold.timeout);
             const reconcileIntervalMillis =
               hold.reconcileFinishedCommands === undefined
@@ -9160,11 +9355,34 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 : Math.max(1_000, Duration.toMillis(hold.reconcileInterval ?? "20 seconds"));
             const isRunningCommand = (tool: AcpToolCallState) =>
               toolStatus(tool.status) === "running" && hold.isCommand(tool);
+            const hasInFlightWirePrompt = () =>
+              !context.promptSettled ||
+              [...context.openPrompts.values()].some((entry) => entry.settled === null);
+            const canExpireSilentCommandHold = Effect.gen(function* () {
+              if (!context.tools.values().some(isRunningCommand)) return false;
+              if (context.replyOpen) return false;
+              if (openAgentRequests.size > 0 || activeInteractionRequests.size > 0) return false;
+              if ((yield* Ref.get(pendingRuntimeRequests)).size > 0) return false;
+              if (hasDeferredBackgroundWork(context, isRunningCommand)) return false;
+              for (const tool of context.tools.values()) {
+                if (isRunningCommand(tool)) continue;
+                const status = toolStatus(tool.status);
+                if (status === "pending" || status === "running" || status === "waiting") {
+                  return false;
+                }
+              }
+              return true;
+            });
             let quietSince = yield* Clock.currentTimeMillis;
             let lastReconcileAt = quietSince;
+            const holdStillCurrent = () =>
+              !context.finalized &&
+              !context.interrupted &&
+              (context.promptSettled || allowOpenPrompt) &&
+              context.postSettleHoldGeneration === holdGeneration;
             // Armed even without a command yet: a pending reply can still start one.
             yield* Effect.gen(function* () {
-              while (!context.finalized) {
+              while (holdStillCurrent()) {
                 quietSince = Math.max(quietSince, context.lastProgressAt);
                 const now = yield* Clock.currentTimeMillis;
                 const remaining = quietSince + timeoutMillis - now;
@@ -9201,15 +9419,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                         Effect.map((result) => Option.getOrElse(result, () => [])),
                         Effect.orElseSucceed(() => []),
                       );
-                    if (
-                      finished.length > 0 &&
-                      !context.finalized &&
-                      !context.interrupted &&
-                      context.promptSettled
-                    ) {
+                    if (finished.length > 0 && holdStillCurrent()) {
                       yield* runtimeCallbackPermit.withPermit(
                         Effect.gen(function* () {
-                          if (context.finalized || context.interrupted || !context.promptSettled) {
+                          if (!holdStillCurrent()) {
                             return;
                           }
                           let reconciledAny = false;
@@ -9219,7 +9432,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                             yield* emitTool(context, { ...tool, status: entry.status });
                             reconciledAny = true;
                           }
-                          if (reconciledAny && !hasDeferredBackgroundWork(context)) {
+                          if (
+                            reconciledAny &&
+                            context.promptSettled &&
+                            !hasDeferredBackgroundWork(context)
+                          ) {
                             yield* scheduleDeferredFinalize(context);
                           }
                         }),
@@ -9230,27 +9447,62 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   yield* Effect.sleep(Duration.millis(remaining));
                   continue;
                 }
-                if (
-                  context.tools.values().some(isRunningCommand) &&
-                  !hasDeferredBackgroundWork(context, isRunningCommand)
-                ) {
-                  yield* runtimeCallbackPermit.withPermit(
-                    Effect.gen(function* () {
-                      if (context.finalized || context.interrupted || !context.promptSettled) {
-                        return;
-                      }
-                      if (
-                        context.tools.values().some(isRunningCommand) &&
-                        !hasDeferredBackgroundWork(context, isRunningCommand)
-                      ) {
-                        yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
-                      }
-                    }),
-                  );
-                  return;
+                if (yield* canExpireSilentCommandHold) {
+                  if (hasInFlightWirePrompt()) {
+                    const outcome = yield* runtimeTransitionPermit.withPermit(
+                      Effect.gen(function* () {
+                        const result = yield* runRuntimeCallbackAtGeneration(
+                          holdRuntimeGeneration,
+                          Effect.gen(function* () {
+                            if (!holdStillCurrent()) return "stale" as const;
+                            if ((yield* Ref.get(activeTurn)) !== context) return "stale" as const;
+                            if (!(yield* canExpireSilentCommandHold)) return "rearm" as const;
+                            if (!hasInFlightWirePrompt()) {
+                              yield* finalizeTurn(
+                                context,
+                                context.promptSettledStatus ?? "completed",
+                              );
+                              return "settled" as const;
+                            }
+                            openAgentRequests.clear();
+                            yield* quarantineNativeTransportAtGeneration(holdRuntimeGeneration);
+                            yield* advanceRuntimeCallbackGeneration;
+                            yield* Ref.set(runtimeRestartRequired, true);
+                            yield* Deferred.succeed(context.foregroundIdle, undefined);
+                            yield* finalizeTurn(
+                              context,
+                              context.promptSettledStatus ?? "completed",
+                            );
+                            return "restarted" as const;
+                          }),
+                        );
+                        const value = Option.getOrElse(result, () => "stale" as const);
+                        if (value === "restarted" && runtimeScope !== undefined) {
+                          yield* Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore);
+                        }
+                        return value;
+                      }),
+                    );
+                    if (outcome !== "rearm") return;
+                  } else {
+                    let settled = false;
+                    yield* runtimeCallbackPermit.withPermit(
+                      Effect.gen(function* () {
+                        if (!holdStillCurrent()) {
+                          settled = true;
+                          return;
+                        }
+                        if (yield* canExpireSilentCommandHold) {
+                          yield* finalizeTurn(context, context.promptSettledStatus ?? "completed");
+                          settled = true;
+                        }
+                      }),
+                    );
+                    if (settled) return;
+                  }
                 }
                 // Something else still holds the turn; count silence again once it clears.
-                quietSince = now;
+                quietSince = yield* Clock.currentTimeMillis;
               }
             }).pipe(Effect.forkIn(sessionScope), Effect.asVoid);
           },
@@ -9260,6 +9512,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
         ) {
           if (openAgentRequests.size > 0) return true;
+          if (activeInteractionRequests.size > 0) return true;
           if ((yield* Ref.get(pendingRuntimeRequests)).size > 0) return true;
           for (const tool of context.tools.values()) {
             const status = toolStatus(tool.status);
@@ -9640,6 +9893,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           prompt: (
             superseded: () => boolean,
+            abandon: () => void,
           ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>,
           settle: {
             readonly generation: number;
@@ -9657,10 +9911,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 }
               | undefined;
             readonly compactSession: AcpAdapterV2Flavor["compactSession"];
+            readonly preserveTurnOnWaitingResponseRejection?:
+              | {
+                  readonly promptSettled: boolean;
+                  readonly promptSettledStatus: ActiveAcpTurn["promptSettledStatus"];
+                }
+              | undefined;
           },
         ): Effect.Effect<void> => {
           const sequence = ++context.promptSequence;
-          const superseded = () => context.promptSequence !== sequence;
+          context.openPrompts.set(sequence, { settled: null });
+          context.activePromptSequence = sequence;
+          const superseded = () => context.activePromptSequence !== sequence;
+          const abandon = () => {
+            context.openPrompts.delete(sequence);
+          };
           const rollbackOfferedAppContext = () => {
             if (
               settle.appContext?.offered !== undefined &&
@@ -9669,7 +9934,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.appContextOffered = settle.appContext.before;
             }
           };
-          return prompt(superseded).pipe(
+          return prompt(superseded, abandon).pipe(
             // Settle the wire before the completion callback's permit so a settled-soft
             // Stop sees the native return. Capture usage only before finalize: a late
             // response must not flip a settled turn.
@@ -9741,134 +10006,165 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   } else {
                     rollbackOfferedAppContext();
                   }
-                  if (context.finalized || followsAgentWorkState || superseded()) return;
-                  // ACP v2 reports a failed prompt through its idle stop reason, not an RPC error.
-                  const hiddenFailure =
-                    settle.checkPromptOutcome === undefined ||
-                    context.interrupted ||
-                    result.stopReason === "error" ||
-                    result.stopReason === "cancelled"
-                      ? undefined
-                      : yield* settle.checkPromptOutcome(result);
-                  const resumeWith = hiddenFailure?.resumeWith;
-                  const maxResumes = Math.max(1, hiddenFailure?.maxResumes ?? 1);
-                  if (
-                    hiddenFailure !== undefined &&
-                    resumeWith !== undefined &&
-                    steersWithPrompt &&
-                    context.outcomeResumeAttempts < maxResumes
-                  ) {
-                    const attempt = ++context.outcomeResumeAttempts;
-                    const baseDelayMs =
-                      hiddenFailure.resumeDelay === undefined
-                        ? 0
-                        : Math.max(
-                            0,
-                            Duration.toMillis(Duration.fromInputUnsafe(hiddenFailure.resumeDelay)),
-                          );
-                    const retryDelayMs = baseDelayMs > 0 ? baseDelayMs * 2 ** (attempt - 1) : 0;
-                    yield* reportProviderRetry({
-                      sessionId: context.nativeThreadId,
-                      failure: hiddenFailure.failure,
-                      attempt,
-                      maxAttempts: hiddenFailure.maxResumes ?? null,
-                      retryDelayMs: retryDelayMs > 0 ? retryDelayMs : null,
-                    });
-                    yield* Effect.gen(function* () {
-                      if (retryDelayMs > 0) {
-                        yield* Effect.sleep(Duration.millis(retryDelayMs));
-                      }
-                      if (context.finalized || context.interrupted) return;
-                      yield* steerWithPrompt({
-                        threadId: context.input.threadId,
-                        runId: context.input.runId,
-                        providerThread: context.input.providerThread,
-                        providerTurnId: context.providerTurnId,
-                        message: { ...context.input.message, text: resumeWith, attachments: [] },
+                  if (context.finalized || followsAgentWorkState) {
+                    context.openPrompts.delete(sequence);
+                    return;
+                  }
+                  const settleTurnOutcome: Effect.Effect<void> = Effect.gen(function* () {
+                    if (context.finalized || followsAgentWorkState || superseded()) return;
+                    context.openPrompts.delete(sequence);
+                    // ACP v2 reports a failed prompt through its idle stop reason, not an RPC error.
+                    const hiddenFailure =
+                      settle.checkPromptOutcome === undefined ||
+                      context.interrupted ||
+                      result.stopReason === "error" ||
+                      result.stopReason === "cancelled"
+                        ? undefined
+                        : yield* settle.checkPromptOutcome(result);
+                    const resumeWith = hiddenFailure?.resumeWith;
+                    const maxResumes = Math.max(1, hiddenFailure?.maxResumes ?? 1);
+                    if (
+                      hiddenFailure !== undefined &&
+                      resumeWith !== undefined &&
+                      steersWithPrompt &&
+                      context.outcomeResumeAttempts < maxResumes
+                    ) {
+                      const attempt = ++context.outcomeResumeAttempts;
+                      const baseDelayMs =
+                        hiddenFailure.resumeDelay === undefined
+                          ? 0
+                          : Math.max(
+                              0,
+                              Duration.toMillis(
+                                Duration.fromInputUnsafe(hiddenFailure.resumeDelay),
+                              ),
+                            );
+                      const retryDelayMs = baseDelayMs > 0 ? baseDelayMs * 2 ** (attempt - 1) : 0;
+                      yield* reportProviderRetry({
+                        sessionId: context.nativeThreadId,
+                        failure: hiddenFailure.failure,
+                        attempt,
+                        maxAttempts: hiddenFailure.maxResumes ?? null,
+                        retryDelayMs: retryDelayMs > 0 ? retryDelayMs : null,
                       });
-                    }).pipe(
-                      Effect.catchCause(() =>
-                        runRuntimeCallbackAtGeneration(
-                          settle.generation,
-                          Effect.gen(function* () {
-                            if (context.finalized || context.interrupted) return;
-                            yield* Ref.set(runtimeRestartRequired, true);
-                            yield* terminalizeOpenForegroundTools(context, "failed");
-                            yield* finalizeTurn(context, "failed", hiddenFailure.failure, {
-                              childTurnsContinue: hasSurvivingBackgroundWork(context),
-                              threadDisposition: hiddenFailure.threadDisposition,
-                            });
-                          }),
+                      yield* Effect.gen(function* () {
+                        if (retryDelayMs > 0) {
+                          yield* Effect.sleep(Duration.millis(retryDelayMs));
+                        }
+                        if (context.finalized || context.interrupted) return;
+                        yield* steerWithPrompt({
+                          threadId: context.input.threadId,
+                          runId: context.input.runId,
+                          providerThread: context.input.providerThread,
+                          providerTurnId: context.providerTurnId,
+                          message: { ...context.input.message, text: resumeWith, attachments: [] },
+                        });
+                      }).pipe(
+                        Effect.catchCause(() =>
+                          runRuntimeCallbackAtGeneration(
+                            settle.generation,
+                            Effect.gen(function* () {
+                              if (context.finalized || context.interrupted) return;
+                              yield* Ref.set(runtimeRestartRequired, true);
+                              yield* terminalizeOpenForegroundTools(context, "failed");
+                              yield* finalizeTurn(context, "failed", hiddenFailure.failure, {
+                                childTurnsContinue: hasSurvivingBackgroundWork(context),
+                                threadDisposition: hiddenFailure.threadDisposition,
+                              });
+                            }),
+                          ),
                         ),
-                      ),
-                      Effect.forkIn(sessionScope),
-                    );
-                    return;
-                  }
-                  if (hiddenFailure !== undefined) {
-                    yield* Ref.set(runtimeRestartRequired, true);
-                  }
-                  const failure =
-                    hiddenFailure?.failure ??
-                    (context.interrupted
-                      ? undefined
-                      : stopReasonFailure(result.stopReason, result.error));
-                  const status =
-                    failure !== undefined
-                      ? "failed"
-                      : result.stopReason === "cancelled"
-                        ? context.interrupted
-                          ? "interrupted"
-                          : "cancelled"
-                        : "completed";
-                  if (defersFinalizeForBackgroundWork && !context.interrupted) {
-                    context.promptSettled = true;
-                    context.promptSettledStatus = status;
-                    for (const [taskId, completion] of context.backgroundCommands) {
-                      if (completion === null) continue;
-                      yield* finishRegisteredBackgroundTool({ taskId, ...completion });
+                        Effect.forkIn(sessionScope),
+                      );
+                      return;
                     }
-                  }
-                  if (failure !== undefined) {
-                    yield* terminalizeOpenForegroundTools(context, "failed");
-                    // Unlike an RPC failure, the agent survives an idle error, so its
-                    // background tools and subagents keep reporting to this run.
-                    yield* finalizeTurn(context, "failed", failure, {
-                      childTurnsContinue: hasSurvivingBackgroundWork(context),
-                      ...(hiddenFailure === undefined
-                        ? {}
-                        : { threadDisposition: hiddenFailure.threadDisposition }),
-                    });
-                    return;
-                  }
-                  yield* idleReportedSubagents(context);
-                  if (context.finalized) return;
-                  const deferredBackgroundWork =
-                    defersFinalizeForBackgroundWork &&
-                    !context.interrupted &&
-                    hasDeferredBackgroundWork(context);
-                  const pendingReply =
-                    !deferredBackgroundWork &&
-                    defersFinalizeForBackgroundWork &&
-                    status === "completed" &&
-                    !context.interrupted &&
-                    flavor.hasPendingReply !== undefined
-                      ? yield* flavor.hasPendingReply(context.nativeThreadId)
-                      : false;
-                  if (context.finalized) return;
-                  if (deferredBackgroundWork || pendingReply) {
-                    yield* closeTextStreams(context);
-                    yield* schedulePostSettleHoldExpiry(context);
-                    if (pendingReply) {
-                      context.replyOpen = true;
-                      yield* scheduleDeferredFinalize(context);
+                    if (hiddenFailure !== undefined) {
+                      yield* Ref.set(runtimeRestartRequired, true);
                     }
-                    yield* (
-                      options.testHooks?.afterPromptSettledWithBackgroundWork?.() ?? Effect.void
-                    );
+                    const failure =
+                      hiddenFailure?.failure ??
+                      (context.interrupted
+                        ? undefined
+                        : stopReasonFailure(result.stopReason, result.error));
+                    const status =
+                      failure !== undefined
+                        ? "failed"
+                        : result.stopReason === "cancelled"
+                          ? context.interrupted
+                            ? "interrupted"
+                            : "cancelled"
+                          : "completed";
+                    if (defersFinalizeForBackgroundWork && !context.interrupted) {
+                      context.promptSettled = true;
+                      context.promptSettledStatus = status;
+                      for (const [taskId, completion] of context.backgroundCommands) {
+                        if (completion === null) continue;
+                        yield* finishRegisteredBackgroundTool({ taskId, ...completion });
+                      }
+                    }
+                    if (failure !== undefined) {
+                      yield* terminalizeOpenForegroundTools(context, "failed");
+                      // Unlike an RPC failure, the agent survives an idle error, so its
+                      // background tools and subagents keep reporting to this run.
+                      yield* finalizeTurn(context, "failed", failure, {
+                        childTurnsContinue: hasSurvivingBackgroundWork(context),
+                        ...(hiddenFailure === undefined
+                          ? {}
+                          : { threadDisposition: hiddenFailure.threadDisposition }),
+                      });
+                      return;
+                    }
+                    yield* idleReportedSubagents(context);
+                    if (context.finalized) return;
+                    const deferredBackgroundWork =
+                      defersFinalizeForBackgroundWork &&
+                      !context.interrupted &&
+                      hasDeferredBackgroundWork(context);
+                    const pendingReply =
+                      !deferredBackgroundWork &&
+                      defersFinalizeForBackgroundWork &&
+                      status === "completed" &&
+                      !context.interrupted &&
+                      flavor.hasPendingReply !== undefined
+                        ? yield* flavor.hasPendingReply(context.nativeThreadId)
+                        : false;
+                    if (context.finalized) return;
+                    if (deferredBackgroundWork || pendingReply) {
+                      if (status === "completed") {
+                        if (
+                          context.assistant.current !== null &&
+                          context.assistant.current.text.trim().length > 0
+                        ) {
+                          context.assistant.current.phase = "final_answer";
+                        }
+                        for (const segment of context.trailingCompletedAssistants) {
+                          yield* promoteAssistantSegmentFinalAnswer(context, segment);
+                        }
+                        context.trailingCompletedAssistants.length = 0;
+                      }
+                      yield* closeTextStreams(context);
+                      yield* schedulePostSettleHoldExpiry(context);
+                      if (pendingReply) {
+                        context.replyOpen = true;
+                        yield* scheduleDeferredFinalize(context);
+                      }
+                      yield* (
+                        options.testHooks?.afterPromptSettledWithBackgroundWork?.() ?? Effect.void
+                      );
+                      return;
+                    }
+                    yield* finalizeTurn(context, status);
+                  });
+                  if (superseded()) {
+                    const entry = context.openPrompts.get(sequence);
+                    if (entry !== undefined) {
+                      entry.settled = Deferred.succeed(context.promptWireSettled, undefined).pipe(
+                        Effect.andThen(settleTurnOutcome),
+                      );
+                    }
                     return;
                   }
-                  yield* finalizeTurn(context, status);
+                  yield* settleTurnOutcome;
                 }),
               ).pipe(
                 Effect.andThen(() => options.testHooks?.afterPromptCallback?.() ?? Effect.void),
@@ -9880,52 +10176,113 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 settle.generation,
                 Effect.gen(function* () {
                   rollbackOfferedAppContext();
-                  if (context.finalized || superseded()) return;
+                  if (context.finalized) {
+                    context.openPrompts.delete(sequence);
+                    return;
+                  }
                   const error = Cause.findError(cause);
-                  // Native close rejects prompts cancelled before insertion with -32800.
-                  const interrupted =
-                    context.interrupted ||
-                    (pendingStopCloseTurn === context &&
-                      Result.isSuccess(error) &&
-                      error.success._tag === "AcpRequestError" &&
-                      error.success.code === -32800);
-                  const failure = Cause.squash(cause);
-                  // A resumed prompt stands in for an outcome failure, which always restarts.
-                  if (
-                    !interrupted &&
-                    (context.outcomeResumeAttempts > 0 ||
-                      flavor.restartRuntimeAfterPromptError?.(failure) === true)
-                  ) {
-                    yield* Ref.set(runtimeRestartRequired, true);
+                  const isPreservedWaitingRejection =
+                    settle.preserveTurnOnWaitingResponseRejection !== undefined &&
+                    !context.interrupted &&
+                    Result.isSuccess(error) &&
+                    isPromptWaitingForResponseError(error.success);
+                  const failTurnOutcome: Effect.Effect<void> = Effect.gen(function* () {
+                    if (context.finalized || superseded()) return;
+                    context.openPrompts.delete(sequence);
+                    // Native close rejects prompts cancelled before insertion with -32800.
+                    const interrupted =
+                      context.interrupted ||
+                      (pendingStopCloseTurn === context &&
+                        Result.isSuccess(error) &&
+                        error.success._tag === "AcpRequestError" &&
+                        error.success.code === -32800);
+                    const failure = Cause.squash(cause);
+                    // A resumed prompt stands in for an outcome failure, which always restarts.
+                    if (
+                      !interrupted &&
+                      (context.outcomeResumeAttempts > 0 ||
+                        flavor.restartRuntimeAfterPromptError?.(failure) === true)
+                    ) {
+                      yield* Ref.set(runtimeRestartRequired, true);
+                    }
+                    // An agent that answered with an error may still finish tools it started,
+                    // never pending ones; any other failure means its process or pipe is gone.
+                    const agentAnswered =
+                      Result.isSuccess(error) && error.success._tag === "AcpRequestError";
+                    if (!interrupted) {
+                      yield* terminalizeOpenForegroundTools(context, "failed", {
+                        unstartedOnly: agentAnswered,
+                      });
+                    }
+                    yield* finalizeTurn(
+                      context,
+                      interrupted ? "interrupted" : "failed",
+                      flavor.promptFailure?.(failure) ??
+                        makeProviderFailure({
+                          cause: failure,
+                          class: "provider_error",
+                        }),
+                    ).pipe(
+                      Effect.andThen(
+                        Effect.logWarning("orchestration-v2.acp-prompt-failed", {
+                          driver,
+                          providerSessionId: input.providerSessionId,
+                          providerThreadId: context.input.providerThread.id,
+                          providerTurnId: context.providerTurnId,
+                          cause,
+                        }),
+                      ),
+                    );
+                  });
+                  if (superseded()) {
+                    const entry = context.openPrompts.get(sequence);
+                    if (entry !== undefined && !isPreservedWaitingRejection) {
+                      entry.settled = failTurnOutcome;
+                    } else {
+                      context.openPrompts.delete(sequence);
+                    }
+                    return;
                   }
-                  // An agent that answered with an error may still finish tools it started,
-                  // never pending ones; any other failure means its process or pipe is gone.
-                  const agentAnswered =
-                    Result.isSuccess(error) && error.success._tag === "AcpRequestError";
-                  if (!interrupted) {
-                    yield* terminalizeOpenForegroundTools(context, "failed", {
-                      unstartedOnly: agentAnswered,
-                    });
-                  }
-                  yield* finalizeTurn(
-                    context,
-                    interrupted ? "interrupted" : "failed",
-                    flavor.promptFailure?.(failure) ??
-                      makeProviderFailure({
-                        cause: failure,
-                        class: "provider_error",
-                      }),
-                  ).pipe(
-                    Effect.andThen(
-                      Effect.logWarning("orchestration-v2.acp-prompt-failed", {
+                  if (isPreservedWaitingRejection) {
+                    context.openPrompts.delete(sequence);
+                    yield* Effect.logWarning(
+                      "orchestration-v2.acp-steer-rejected-waiting-for-response",
+                      {
                         driver,
                         providerSessionId: input.providerSessionId,
                         providerThreadId: context.input.providerThread.id,
                         providerTurnId: context.providerTurnId,
+                        attempts: ACP_STEER_WAITING_RESPONSE_RETRY_DELAYS.length + 1,
                         cause,
-                      }),
-                    ),
-                  );
+                      },
+                    );
+                    const previousSequence =
+                      context.openPrompts.size > 0 ? Math.max(...context.openPrompts.keys()) : null;
+                    if (previousSequence !== null) {
+                      context.activePromptSequence = previousSequence;
+                      const previousEntry = context.openPrompts.get(previousSequence);
+                      if (previousEntry !== undefined && previousEntry.settled !== null) {
+                        const runSettled = previousEntry.settled;
+                        previousEntry.settled = null;
+                        yield* runSettled;
+                      }
+                      return;
+                    }
+                    const previous = settle.preserveTurnOnWaitingResponseRejection!;
+                    if (previous.promptSettled) {
+                      context.promptSettled = true;
+                      context.promptSettledStatus = previous.promptSettledStatus;
+                      yield* Deferred.succeed(context.promptWireSettled, undefined);
+                      if (defersFinalizeForBackgroundWork && hasDeferredBackgroundWork(context)) {
+                        yield* schedulePostSettleHoldExpiry(context);
+                        yield* rearmDeferredFinalize(context);
+                      } else {
+                        yield* finalizeTurn(context, previous.promptSettledStatus ?? "completed");
+                      }
+                    }
+                    return;
+                  }
+                  yield* failTurnOutcome;
                 }),
               ).pipe(Effect.asVoid),
             ),
@@ -10098,6 +10455,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               user: { current: null, nextSegment: 0, closedNamedSegments: new Map() },
               assistant: { current: null, nextSegment: 0, closedNamedSegments: new Map() },
               reasoning: { current: null, nextSegment: 0, closedNamedSegments: new Map() },
+              trailingCompletedAssistants: [],
               contextUsage: rememberedContextUsage ?? turnInput.providerThread.contextUsage ?? null,
               nativeMetadata: initialNativeMetadata,
               tools: new Map(),
@@ -10127,12 +10485,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               promptWireSettled,
               promptDispatched,
               foregroundIdle: yield* Deferred.make<void>(),
+              interruptedSignal: yield* Deferred.make<void>(),
               promptSequence: 0,
+              activePromptSequence: 0,
+              openPrompts: new Map(),
               outcomeResumeAttempts: 0,
               promptSentAt: null,
               promptStarted,
               promptUsage: undefined,
               backgroundFinalizeGeneration: 0,
+              postSettleHoldGeneration: 0,
               replyOpen: false,
               nativePromptId: undefined,
               lastProgressAt: 0,
@@ -10448,6 +10810,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     ...attachmentBlocks,
                   ];
                   // The steer prompt carries the turn on, also past a prompt that already settled.
+                  const previousPromptSettled = context.promptSettled;
+                  const previousPromptSettledStatus = context.promptSettledStatus;
+                  const preserveTurnOnWaitingResponseRejection =
+                    context.outcomeResumeAttempts === 0
+                      ? {
+                          promptSettled: previousPromptSettled,
+                          promptSettledStatus: previousPromptSettledStatus,
+                        }
+                      : undefined;
                   const released = context.foregroundIdle;
                   context.foregroundIdle = yield* Deferred.make<void>();
                   if (yield* Deferred.isDone(context.promptWireSettled)) {
@@ -10456,6 +10827,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   context.promptSettled = false;
                   context.promptSettledStatus = null;
                   context.backgroundFinalizeGeneration += 1;
+                  context.postSettleHoldGeneration += 1;
                   context.promptSentAt = yield* Clock.currentTimeMillis;
                   context.lastProgressAt = context.promptSentAt;
                   const watchdog = context.inactivityWatchdog;
@@ -10474,22 +10846,99 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   const releasedForSteer = context.foregroundIdle;
                   yield* followPrompt(
                     context,
-                    (superseded) =>
-                      sendPromptWhenIdle(
-                        context,
-                        () =>
-                          runtime.prompt(
-                            { prompt: steerPrompt },
-                            { dispatched, released: releasedForSteer },
-                          ),
-                        superseded,
-                      ),
+                    (superseded, abandon) => {
+                      const stopped = () =>
+                        context.interrupted || context.finalized || superseded();
+                      const stopSignal = Effect.raceFirst(
+                        Deferred.await(releasedForSteer),
+                        Deferred.await(context.interruptedSignal),
+                      );
+                      const raceWithStop = <A>(effect: Effect.Effect<A>) =>
+                        Effect.raceFirst(
+                          effect.pipe(Effect.as("done" as const)),
+                          stopSignal.pipe(Effect.as("stopped" as const)),
+                        );
+                      const waitForInteractions = Effect.gen(function* () {
+                        while (!stopped()) {
+                          const interactions = [...activeInteractionRequests];
+                          const pending = [...(yield* Ref.get(pendingRuntimeRequests)).values()];
+                          if (interactions.length === 0 && pending.length === 0) return;
+                          // Unblock steerTurn immediately while waiting on permission/question answers.
+                          yield* Deferred.succeed(dispatched, undefined);
+                          const waitAll = Effect.forEach(
+                            [
+                              ...interactions.map((done) =>
+                                Deferred.await(done).pipe(Effect.ignore),
+                              ),
+                              ...pending.map((request) =>
+                                (request.type === "approval"
+                                  ? Deferred.await(request.decision).pipe(Effect.asVoid)
+                                  : Deferred.await(request.answers).pipe(Effect.asVoid)
+                                ).pipe(Effect.ignore),
+                              ),
+                            ],
+                            (wait) => wait,
+                            { concurrency: "unbounded", discard: true },
+                          );
+                          const raced = yield* raceWithStop(waitAll);
+                          if (raced === "stopped" || stopped()) return;
+                          yield* Effect.yieldNow;
+                        }
+                      });
+                      const attemptPrompt: (
+                        retryIndex: number,
+                      ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError> =
+                        Effect.fnUntraced(function* (retryIndex: number) {
+                          yield* waitForInteractions;
+                          if (stopped()) {
+                            if (superseded()) abandon();
+                            return { stopReason: "cancelled" as const };
+                          }
+                          return yield* sendPromptWhenIdle(
+                            context,
+                            () =>
+                              runtime.prompt(
+                                { prompt: steerPrompt },
+                                { dispatched, released: releasedForSteer },
+                              ),
+                            superseded,
+                          ).pipe(
+                            Effect.catchIf(
+                              (error) =>
+                                preserveTurnOnWaitingResponseRejection !== undefined &&
+                                isPromptWaitingForResponseError(error) &&
+                                retryIndex < ACP_STEER_WAITING_RESPONSE_RETRY_DELAYS.length &&
+                                !stopped(),
+                              (error) =>
+                                Effect.gen(function* () {
+                                  yield* waitForInteractions;
+                                  if (stopped()) {
+                                    if (superseded()) abandon();
+                                    return yield* error;
+                                  }
+                                  const delay =
+                                    ACP_STEER_WAITING_RESPONSE_RETRY_DELAYS[retryIndex]!;
+                                  const waited = yield* raceWithStop(Effect.sleep(delay));
+                                  if (waited === "stopped" || stopped()) {
+                                    if (superseded()) abandon();
+                                    return yield* error;
+                                  }
+                                  return yield* attemptPrompt(retryIndex + 1);
+                                }),
+                            ),
+                          );
+                        });
+                      return attemptPrompt(0).pipe(
+                        Effect.ensuring(Deferred.succeed(dispatched, undefined)),
+                      );
+                    },
                     {
                       generation,
                       checkPromptOutcome,
                       promptParts: null,
                       appContext: steerAppContext,
                       compactSession: undefined,
+                      preserveTurnOnWaitingResponseRejection,
                     },
                   ).pipe(Effect.forkIn(sessionScope));
                   yield* Deferred.succeed(released, undefined);
@@ -11164,6 +11613,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     });
                     const runTransition = Effect.gen(function* () {
                       context.interrupted = true;
+                      yield* Deferred.succeed(context.interruptedSignal, undefined);
                       if (hardRestart || turnInput.requestRuntimeRestart === true) {
                         yield* quarantineStoppedRun();
                       }

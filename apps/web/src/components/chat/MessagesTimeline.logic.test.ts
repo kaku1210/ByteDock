@@ -5279,6 +5279,122 @@ describe("subagent continued by a later turn", () => {
       "closing-2",
     ]);
   });
+
+  it.each(["showAll", "zen"] as const)(
+    "keeps a promoted final_answer visible outside the turn fold when a background confirmation follows (%s)",
+    (toolCallVisibility) => {
+      const runId = RunId.make("run-bg-wakeup");
+      const rows = deriveMessagesTimelineRows({
+        toolCallVisibility,
+        timelineEntries: [
+          {
+            id: "u1",
+            kind: "message",
+            createdAt: "2026-11-26T11:40:54.000Z",
+            message: {
+              id: MessageId.make("u1"),
+              role: "user",
+              text: "Probe GPU",
+              runId,
+              inputIntent: "turn_start",
+              createdAt: "2026-11-26T11:40:54.000Z",
+              updatedAt: "2026-11-26T11:40:54.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "w1",
+            kind: "work",
+            createdAt: "2026-11-26T11:41:00.000Z",
+            entry: {
+              id: "w1",
+              createdAt: "2026-11-26T11:41:00.000Z",
+              runId,
+              label: "Ran probe",
+              tone: "tool",
+            },
+          },
+          {
+            id: "a-progress",
+            kind: "message",
+            createdAt: "2026-11-26T11:41:17.000Z",
+            message: {
+              id: MessageId.make("a-progress"),
+              role: "assistant",
+              text: "Waiting for script...",
+              runId,
+              createdAt: "2026-11-26T11:41:17.000Z",
+              updatedAt: "2026-11-26T11:42:29.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "w2",
+            kind: "work",
+            createdAt: "2026-11-26T11:46:20.000Z",
+            entry: {
+              id: "w2",
+              createdAt: "2026-11-26T11:46:20.000Z",
+              runId,
+              label: "Checked status",
+              tone: "tool",
+            },
+          },
+          {
+            id: "a-report",
+            kind: "message",
+            createdAt: "2026-11-26T11:46:31.000Z",
+            message: {
+              id: MessageId.make("a-report"),
+              role: "assistant",
+              text: "Full A100 ready report.",
+              runId,
+              createdAt: "2026-11-26T11:46:31.000Z",
+              updatedAt: "2026-11-26T11:48:07.000Z",
+              streaming: false,
+            },
+            projectedItem: {
+              item: {
+                type: "assistant_message",
+                phase: "final_answer",
+                status: "completed",
+                completedAt: DateTime.makeUnsafe("2026-11-26T11:48:07.000Z"),
+              },
+            } as never,
+          },
+          {
+            id: "a-confirm",
+            kind: "message",
+            createdAt: "2026-11-26T11:48:13.000Z",
+            message: {
+              id: MessageId.make("a-confirm"),
+              role: "assistant",
+              text: "Background confirmation: paused.",
+              runId,
+              createdAt: "2026-11-26T11:48:13.000Z",
+              updatedAt: "2026-11-26T11:48:13.000Z",
+              streaming: false,
+            },
+          },
+        ],
+        latestRun: {
+          runId,
+          status: "completed",
+          startedAt: "2026-11-26T11:40:54.000Z",
+          completedAt: "2026-11-26T11:48:13.000Z",
+        },
+        isWorking: false,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      });
+
+      expect(rows.map((row) => row.id)).toEqual(
+        toolCallVisibility === "zen"
+          ? ["u1", "a-report", "a-confirm"]
+          : ["u1", `turn-fold:${runId}`, "a-report", "a-confirm"],
+      );
+    },
+  );
 });
 
 describe("isTimelineMinimapTurnVisible", () => {

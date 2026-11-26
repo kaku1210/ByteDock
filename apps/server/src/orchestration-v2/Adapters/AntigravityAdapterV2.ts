@@ -262,10 +262,12 @@ export function makeAntigravityAcpAdapterFlavor(
     wakeOnDetachedRequest: true,
     replyEndsWithUsageUpdate: true,
     toolOutlivesPrompt: antigravityToolOutlivesPrompt,
-    // agy sometimes loses the terminal update or wake for a background command, which would
-    // hold the turn in Working forever. Poll native step completion every 20s and keep 30m as fallback.
+    // agy sometimes loses the terminal update or leaves a silent background command running
+    // after the assistant finishes replying, which would hold the turn in Working indefinitely.
+    // Poll native step completion every 20s and bound silent post-settle holds to 5 minutes
+    // (late completions still wake via enablePostSettleContinuation).
     postSettleCommandHold: {
-      timeout: "30 minutes",
+      timeout: "5 minutes",
       isCommand: antigravityCommandOutlivesPrompt,
       ...(profileDirectory === undefined
         ? {}

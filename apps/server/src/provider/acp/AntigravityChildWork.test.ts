@@ -827,6 +827,9 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
           "call_cancelled",
           "call_errored",
           "call_schedule",
+          "call_generic_done",
+          "call_generic_cancelled",
+          "call_generic_read",
         ];
 
         // Missing DB, empty toolCallIds, and invalid session id fail closed.
@@ -867,6 +870,9 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
           insert.run(5, 21, 6, metadataFor("call_cancelled"), null);
           insert.run(6, 21, 7, null, payloadFor("call_errored"));
           insert.run(7, 132, 3, metadataFor("call_schedule", "schedule"), null);
+          insert.run(8, 132, 3, metadataFor("call_generic_done", "run_command"), null);
+          insert.run(9, 132, 6, null, payloadFor("call_generic_cancelled", "run_command"));
+          insert.run(10, 132, 3, metadataFor("call_generic_read", "read_file"), null);
         } finally {
           db.close();
         }
@@ -877,6 +883,8 @@ it.layer(NodeServices.layer)("readAntigravityChildWork", (it) => {
           toolCallIds: candidateIds,
         });
         expect(finished).toEqual([
+          { toolCallId: "call_generic_cancelled", status: "failed" },
+          { toolCallId: "call_generic_done", status: "completed" },
           { toolCallId: "call_errored", status: "failed" },
           { toolCallId: "call_cancelled", status: "failed" },
           { toolCallId: "call_cleared", status: "completed" },
