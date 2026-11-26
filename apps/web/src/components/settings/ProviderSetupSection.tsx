@@ -25,6 +25,7 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsRow } from "./settingsLayout";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
+import { WindowsDefenderExclusionsSettingsRow } from "./WindowsDefenderExclusionsSettingsRow";
 
 interface ProviderSetupSectionProps {
   readonly environmentId: EnvironmentId;
@@ -339,6 +340,8 @@ function ProviderSetupActions({
         provider={provider}
         readOnly={false}
       />
+
+      <WindowsDefenderExclusionsSettingsRow useSearchableId={false} />
 
       {error || queryError ? (
         <div className="grid gap-2 px-3 py-3 sm:px-4">

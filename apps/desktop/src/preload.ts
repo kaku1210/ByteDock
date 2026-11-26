@@ -359,6 +359,12 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     uninstall: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_UNINSTALL_CHANNEL),
     addToPath: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_ADD_TO_PATH_CHANNEL),
   },
+  windowsDefenderExclusions: {
+    getState: () => ipcRenderer.invoke(IpcChannels.WINDOWS_DEFENDER_EXCLUSIONS_GET_STATE_CHANNEL),
+    apply: () => ipcRenderer.invoke(IpcChannels.WINDOWS_DEFENDER_EXCLUSIONS_APPLY_CHANNEL),
+    dismissPrompt: () =>
+      ipcRenderer.invoke(IpcChannels.WINDOWS_DEFENDER_EXCLUSIONS_DISMISS_PROMPT_CHANNEL),
+  },
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;

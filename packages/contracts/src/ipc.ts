@@ -359,6 +359,35 @@ export const DesktopCliCommandStateSchema = Schema.Struct({
 });
 export type DesktopCliCommandState = typeof DesktopCliCommandStateSchema.Type;
 
+export const DesktopWindowsDefenderExclusionKindSchema = Schema.Literals([
+  "antigravity-tools",
+  "antigravity-temp",
+  "app-install",
+]);
+export type DesktopWindowsDefenderExclusionKind =
+  typeof DesktopWindowsDefenderExclusionKindSchema.Type;
+
+export const DesktopWindowsDefenderExclusionEntrySchema = Schema.Struct({
+  path: Schema.String,
+  kind: DesktopWindowsDefenderExclusionKindSchema,
+  excluded: Schema.Boolean,
+});
+export type DesktopWindowsDefenderExclusionEntry =
+  typeof DesktopWindowsDefenderExclusionEntrySchema.Type;
+
+export const DesktopWindowsDefenderExclusionsStateSchema = Schema.Struct({
+  supported: Schema.Boolean,
+  realTimeProtectionEnabled: Schema.NullOr(Schema.Boolean),
+  verificationSource: Schema.Literals(["live", "verified-cache", "unverified", "unsupported"]),
+  allExcluded: Schema.Boolean,
+  entries: Schema.Array(DesktopWindowsDefenderExclusionEntrySchema),
+  manualCommand: Schema.NullOr(Schema.String),
+  promptDismissed: Schema.Boolean,
+  lastVerifiedAt: Schema.NullOr(Schema.String),
+});
+export type DesktopWindowsDefenderExclusionsState =
+  typeof DesktopWindowsDefenderExclusionsStateSchema.Type;
+
 export interface DesktopUpdateActionResult {
   accepted: boolean;
   completed: boolean;
@@ -1238,6 +1267,12 @@ export interface DesktopBridge {
     install: () => Promise<DesktopCliCommandState>;
     uninstall: () => Promise<DesktopCliCommandState>;
     addToPath: () => Promise<DesktopCliCommandState>;
+  };
+  /** Windows-only helper to add Antigravity and T3 Code folders to Windows Defender exclusions. */
+  windowsDefenderExclusions?: {
+    getState: () => Promise<DesktopWindowsDefenderExclusionsState>;
+    apply: () => Promise<DesktopWindowsDefenderExclusionsState>;
+    dismissPrompt: () => Promise<DesktopWindowsDefenderExclusionsState>;
   };
   webLinks: {
     setReady: (ready: boolean) => Promise<void>;

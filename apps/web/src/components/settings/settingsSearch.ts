@@ -1048,6 +1048,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "windows-defender-exclusions",
+    title: msg("Windows Defender exclusions"),
+    to: "/settings/general",
+    desktopOnly: true,
+    windowsOnly: true,
+    searchTerms: [
+      "windows defender antivirus exclusion antigravity slow startup performance whitelist powershell 排除项 杀毒 防护 反重力 启动慢 加速",
+    ],
+  },
+  {
     id: "mobile-app",
     title: msg("Mobile app"),
     to: "/settings/about",

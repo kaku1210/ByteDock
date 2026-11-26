@@ -40,6 +40,12 @@ export const CLI_COMMAND_GET_STATE_CHANNEL = "desktop:cli-command-get-state";
 export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
 export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
 export const CLI_COMMAND_ADD_TO_PATH_CHANNEL = "desktop:cli-command-add-to-path";
+export const WINDOWS_DEFENDER_EXCLUSIONS_GET_STATE_CHANNEL =
+  "desktop:windows-defender-exclusions-get-state";
+export const WINDOWS_DEFENDER_EXCLUSIONS_APPLY_CHANNEL =
+  "desktop:windows-defender-exclusions-apply";
+export const WINDOWS_DEFENDER_EXCLUSIONS_DISMISS_PROMPT_CHANNEL =
+  "desktop:windows-defender-exclusions-dismiss-prompt";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
 export const GET_DATABASE_MIGRATION_PROGRESS_CHANNEL = "desktop:get-database-migration-progress";
 export const GET_RELAY_TELEMETRY_ENABLED_CHANNEL = "desktop:get-relay-telemetry-enabled";

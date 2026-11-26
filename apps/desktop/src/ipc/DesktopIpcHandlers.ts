@@ -94,6 +94,11 @@ import {
   uninstallCliCommand,
   addCliCommandToPath,
 } from "./methods/cliCommand.ts";
+import {
+  getWindowsDefenderExclusionsState,
+  applyWindowsDefenderExclusions,
+  dismissWindowsDefenderExclusionsPrompt,
+} from "./methods/windowsDefenderExclusions.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
@@ -190,6 +195,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
   yield* ipc.handle(addCliCommandToPath);
+  yield* ipc.handle(getWindowsDefenderExclusionsState);
+  yield* ipc.handle(applyWindowsDefenderExclusions);
+  yield* ipc.handle(dismissWindowsDefenderExclusionsPrompt);
   for (const previewMethod of PreviewIpc.methods) {
     // Explicit types preserve the error/service union of these heterogeneous preview methods.
     yield* ipc.handle<
