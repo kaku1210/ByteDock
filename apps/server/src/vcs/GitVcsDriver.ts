@@ -672,6 +672,40 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
   const vcsProcess = yield* VcsProcess.VcsProcess;
   const random = yield* SecureRandom.SecureRandom;
   const hostPlatform = yield* HostProcess.Platform;
+  // VcsProcess clears inherited GIT_DIR/GIT_WORK_TREE and sets safe.bareRepository=explicit, so a
+  // work tree must have a `.git` entry (directory or gitfile) on its realpath ancestor chain.
+  // Checking this before spawning `git` lets non-repo parent folders return immediately instead of
+  // waiting behind saturated VcsProcess slots.
+  const hasAncestorGitEntry = Effect.fn("GitVcsDriver.hasAncestorGitEntry")(function* (
+    cwd: string,
+  ) {
+    const status = yield* fileSystem.stat(cwd).pipe(
+      Effect.map((info) => (info.type === "Directory" ? ("dir" as const) : ("unknown" as const))),
+      Effect.catch((error) =>
+        Effect.succeed(
+          error._tag === "PlatformError" && error.reason._tag === "NotFound"
+            ? ("missing" as const)
+            : ("unknown" as const),
+        ),
+      ),
+    );
+    if (status === "missing") return false;
+    if (status === "unknown") return true;
+    const resolved = yield* fileSystem
+      .realPath(cwd)
+      .pipe(Effect.orElseSucceed(() => path.resolve(cwd)));
+    let current = resolved;
+    while (true) {
+      const found = yield* fileSystem
+        .exists(path.join(current, ".git"))
+        .pipe(Effect.orElseSucceed(() => true));
+      if (found) return true;
+      const parent = path.dirname(current);
+      if (parent === current) return false;
+      current = parent;
+    }
+  });
+
   // Returns stdout, or null when there is no work tree. A non-repository exits 128 like a broken
   // one, so only Git's message (pinned to the C locale) or a missing cwd tells them apart.
   const probeWorkTree = Effect.fn("GitVcsDriver.probeWorkTree")(function* (
@@ -680,6 +714,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
     args: ReadonlyArray<string>,
     maxOutputBytes: number,
   ) {
+    if (!(yield* hasAncestorGitEntry(cwd))) return null;
     const result = yield* gitCommand(vcsProcess, operation, cwd, args, {
       env: { LC_ALL: "C" },
       allowNonZeroExit: true,

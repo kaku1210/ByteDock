@@ -3163,6 +3163,39 @@ it.effect("GitVcsDriver fails repository probes when git cannot read the reposit
   }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
+it.effect("GitVcsDriver reports no repository for a non-git directory without spawning git", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-non-git-fastpath-" });
+    let spawned = 0;
+    const process = yield* VcsProcess.make.pipe(
+      Effect.provideService(ProcessRunner.ProcessRunner, {
+        run: () =>
+          Effect.sync(() => {
+            spawned += 1;
+            return {
+              code: ChildProcessSpawner.ExitCode(0),
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provideService(VcsProcess.VcsProcess, process),
+    );
+
+    assert.strictEqual(yield* driver.isInsideWorkTree(cwd), false);
+    assert.strictEqual(yield* driver.detectRepository(cwd), null);
+    assert.strictEqual(spawned, 0);
+  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect("GitVcsDriver reports no repository for a deleted cwd or a bare repository", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
