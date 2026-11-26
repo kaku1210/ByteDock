@@ -235,6 +235,48 @@ describe("cycle-to-date local estimates", () => {
       expect(result.blockers).toContain(reason);
     },
   );
+
+  it("tolerates small intra-cycle Antigravity probe jitter while blocking large regressions", () => {
+    const agSource: EstimateSource = {
+      ...source,
+      scope: {
+        driver: "antigravity",
+        provider: "antigravity",
+        providerLabel: "Antigravity",
+        instanceId: "antigravity",
+        accountKey: "account-a",
+        windowId: "gemini-weekly",
+        windowLabel: "Gemini · Weekly",
+      },
+    };
+    const agQuota = (id: string, time: number, percent: number) => ({
+      ...quota(id, time, percent),
+      limitId: "gemini-weekly",
+    });
+    const jittered: EstimateEvent[] = [
+      { ...usage, timestampMs: start + 1000 },
+      agQuota("p1", start + 1000, 19.12),
+      agQuota("p2", start + 2000, 18.29),
+      agQuota("p3", end, 20),
+    ];
+    const jitterSample = selectUsageEstimateCycleSamples(jittered, agSource).at(-1)!;
+    expect(estimateUsageCycle(agSource, jittered, pricing, jitterSample)).toMatchObject({
+      status: "reference_only",
+      blockers: [],
+      cycleEquivalentUsd: 375,
+    });
+    const bigDrop: EstimateEvent[] = [
+      { ...usage, timestampMs: start + 1000 },
+      agQuota("p1", start + 1000, 30),
+      agQuota("p2", end, 20),
+    ];
+    const dropSample = selectUsageEstimateCycleSamples(bigDrop, agSource).at(-1)!;
+    expect(estimateUsageCycle(agSource, bigDrop, pricing, dropSample)).toMatchObject({
+      status: "blocked",
+      cycleEquivalentUsd: null,
+      blockers: ["quota_regressed"],
+    });
+  });
 });
 
 describe("local usage interval estimates", () => {

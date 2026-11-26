@@ -706,4 +706,129 @@ describe("readAntigravityUsage", () => {
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect(
+    "deduplicates keyless generation/step pairs and attempt lists summing to primary usage",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const dir = yield* tempDir;
+        const execId = "9d47328c92055178e5a63cce51fe3ad4";
+        const singleUsage = [
+          ...protoNumber(2, 21852),
+          ...protoNumber(3, 690),
+          ...protoNumber(9, 411),
+          ...protoNumber(10, 279),
+        ];
+        const retryTotal = [
+          ...protoNumber(2, 4367),
+          ...protoNumber(3, 544),
+          ...protoNumber(5, 301060),
+          ...protoNumber(9, 117),
+          ...protoNumber(10, 427),
+        ];
+        const retryAttempt1 = [...protoNumber(2, 2253), ...protoNumber(5, 150428)];
+        const retryAttempt2 = [
+          ...protoNumber(2, 2114),
+          ...protoNumber(3, 544),
+          ...protoNumber(5, 150632),
+          ...protoNumber(9, 117),
+          ...protoNumber(10, 427),
+        ];
+        const genStart0 = [...protoNumber(1, 1795566787), ...protoNumber(2, 230_000_000)];
+        const stepStart0 = [...protoNumber(1, 1795566787), ...protoNumber(2, 231_000_000)];
+        const stepEnd0 = [...protoNumber(1, 1795566803), ...protoNumber(2, 388_000_000)];
+        // Second distinct call with identical token counts 20 seconds later must NOT collapse.
+        const genStart1 = [...protoNumber(1, 1795566807), ...protoNumber(2, 230_000_000)];
+        const stepStart1 = [...protoNumber(1, 1795566807), ...protoNumber(2, 232_000_000)];
+        const stepEnd1 = [...protoNumber(1, 1795566812), ...protoNumber(2, 100_000_000)];
+
+        yield* seedDatabase(path.join(dir, "keyless.db"), (db) =>
+          Effect.gen(function* () {
+            yield* createTables(db);
+            // Call 0: gen_metadata has f4 + identical f17[0], step has f9 + identical f28[0].
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              0,
+              new Uint8Array([
+                ...protoBytes(1, [
+                  ...protoNumber(3, 326),
+                  ...protoBytes(4, singleUsage),
+                  ...protoBytes(9, protoBytes(4, genStart0)),
+                  ...protoBytes(17, protoBytes(2, singleUsage)),
+                  ...protoText(19, "gemini-4-neon"),
+                ]),
+                ...protoText(4, execId),
+              ]),
+            ]);
+            yield* db.run("INSERT INTO steps VALUES (?, ?)", [
+              1,
+              new Uint8Array([
+                ...protoBytes(1, stepStart0),
+                ...protoBytes(8, stepEnd0),
+                ...protoBytes(9, singleUsage),
+                ...protoText(12, execId),
+                ...protoBytes(24, protoText(12, "gemini-4-neon-xhigh")),
+                ...protoBytes(28, protoBytes(2, singleUsage)),
+              ]),
+            ]);
+            // Call 1: identical tokens 20s later -> separate record (still deduplicates its own 3 copies).
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              1,
+              new Uint8Array([
+                ...protoBytes(1, [
+                  ...protoNumber(3, 326),
+                  ...protoBytes(4, singleUsage),
+                  ...protoBytes(9, protoBytes(4, genStart1)),
+                  ...protoBytes(17, protoBytes(2, singleUsage)),
+                  ...protoText(19, "gemini-4-neon"),
+                ]),
+                ...protoText(4, execId),
+              ]),
+            ]);
+            yield* db.run("INSERT INTO steps VALUES (?, ?)", [
+              4,
+              new Uint8Array([
+                ...protoBytes(1, stepStart1),
+                ...protoBytes(8, stepEnd1),
+                ...protoBytes(9, singleUsage),
+                ...protoText(12, execId),
+                ...protoBytes(24, protoText(12, "gemini-4-neon-xhigh")),
+              ]),
+            ]);
+            // Call 2: retried generation whose f17 attempts sum exactly to f4 -> emit only the 2 attempts, not primary + 2 attempts.
+            yield* db.run("INSERT INTO gen_metadata VALUES (?, ?)", [
+              2,
+              new Uint8Array([
+                ...protoBytes(1, [
+                  ...protoNumber(3, 326),
+                  ...protoBytes(4, retryTotal),
+                  ...protoBytes(9, protoBytes(4, protoNumber(1, 1795566900))),
+                  ...protoBytes(17, protoBytes(2, retryAttempt1)),
+                  ...protoBytes(17, protoBytes(2, retryAttempt2)),
+                  ...protoText(19, "gemini-4-neon"),
+                ]),
+                ...protoText(4, execId),
+              ]),
+            ]);
+          }),
+        );
+        const result = yield* readAntigravityUsage(dir, 0);
+        assert.deepStrictEqual(result.errors, []);
+        const read = records(result);
+        assert.strictEqual(read.length, 4);
+        assert.deepStrictEqual(
+          read
+            .slice(0, 2)
+            .map((record) => [record.model, record.rateModel, record.totals.uncachedInputTokens]),
+          [
+            ["gemini-4-neon-xhigh", "gemini-4-neon", 21852],
+            ["gemini-4-neon-xhigh", "gemini-4-neon", 21852],
+          ],
+        );
+        assert.strictEqual(
+          read.slice(2).reduce((sum, record) => sum + record.totals.uncachedInputTokens, 0),
+          4367,
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

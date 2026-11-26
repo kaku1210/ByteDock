@@ -130,7 +130,7 @@ const MODEL_IDS: Record<number, string> = {
 // Effort and routing variants share the base model's price.
 export const antigravityRateModel = (model: string) => {
   const base = model.replace(
-    /-(?:extra-low|low|medium|high|tiered|control|thinking|agent|orchestrator)$/,
+    /-(?:extra-low|low|medium|xhigh|high|tiered|control|thinking|agent|orchestrator)$/,
     "",
   );
   return /^gemini-3-flash-(?:agent(?:-[ab])?|[ab])$/.test(model)
@@ -176,7 +176,9 @@ interface CompactUsage {
 interface Metadata {
   readonly model: string;
   readonly modelId: number;
+  readonly executionId: string;
   readonly timestampMs: number | null;
+  readonly startTimestampMs: number | null;
   readonly usages: readonly CompactUsage[];
 }
 
@@ -366,6 +368,44 @@ function compactUsage(usageFields) {
   };
 }
 
+function resolveRowUsages(primaryUsage, attemptUsages) {
+  if (primaryUsage === undefined) return attemptUsages;
+  if (attemptUsages.length === 0) return [primaryUsage];
+  let uncached = 0;
+  let cached = 0;
+  let cacheCreation = 0;
+  let output = 0;
+  let reasoning = 0;
+  for (const attempt of attemptUsages) {
+    uncached += attempt.uncachedInputTokens;
+    cached += attempt.cachedInputTokens;
+    cacheCreation += attempt.cacheCreationTokens;
+    output += attempt.outputTokens;
+    reasoning += attempt.reasoningTokens;
+  }
+  const attemptsEqualPrimary =
+    uncached === primaryUsage.uncachedInputTokens &&
+    cached === primaryUsage.cachedInputTokens &&
+    cacheCreation === primaryUsage.cacheCreationTokens &&
+    output === primaryUsage.outputTokens &&
+    reasoning === primaryUsage.reasoningTokens;
+  if (!attemptsEqualPrimary) {
+    return [primaryUsage, ...attemptUsages];
+  }
+  if (attemptUsages.length === 1) {
+    const attempt = attemptUsages[0];
+    const keys = [...new Set([...primaryUsage.keys, ...attempt.keys])];
+    return [
+      {
+        ...primaryUsage,
+        modelId: primaryUsage.modelId || attempt.modelId,
+        keys,
+      },
+    ];
+  }
+  return attemptUsages;
+}
+
 function decodeMetadata(bytes, step) {
   const root = fields(bytes);
   if (!step && bytesAt(root, 1) === undefined) {
@@ -375,22 +415,28 @@ function decodeMetadata(bytes, step) {
   const model = step ? nested(data, 24) : data;
   const usageBytes = bytesAt(data, step ? 9 : 4);
   const primaryUsageFields = usageBytes === undefined ? undefined : fields(usageBytes);
-  const usages = primaryUsageFields === undefined ? [] : [compactUsage(primaryUsageFields)];
+  const primaryUsage =
+    primaryUsageFields === undefined ? undefined : compactUsage(primaryUsageFields);
+  const attemptUsages = [];
   for (const retry of data.get(step ? 28 : 17) ?? []) {
     if (!(retry instanceof Uint8Array)) throw new Error("Invalid retry metadata");
     const retryUsage = bytesAt(fields(retry), 2);
-    if (retryUsage !== undefined) usages.push(compactUsage(fields(retryUsage)));
+    if (retryUsage !== undefined) attemptUsages.push(compactUsage(fields(retryUsage)));
   }
+  const usages = resolveRowUsages(primaryUsage, attemptUsages);
   const names = [textAt(model, step ? 12 : 19), textAt(model, step ? 8 : 21)].map(modelName);
+  const startTimestampMs = step
+    ? timestamp(nested(data, 1))
+    : timestamp(nested(nested(data, 9), 4));
   return {
     model:
       names.find(isConcreteModel) ?? names.find((name) => name && !/^model[_-]/.test(name)) ?? "",
     modelId:
       numberAt(model, step ? 1 : 3) ||
       (primaryUsageFields === undefined ? 0 : numberAt(primaryUsageFields, 1)),
-    timestampMs: step
-      ? (timestamp(nested(data, 8)) ?? timestamp(nested(data, 1)))
-      : timestamp(nested(nested(data, 9), 4)),
+    executionId: step ? textAt(data, 12) : textAt(root, 4),
+    timestampMs: step ? (timestamp(nested(data, 8)) ?? startTimestampMs) : startTimestampMs,
+    startTimestampMs,
     usages,
   };
 }
@@ -792,6 +838,18 @@ async function readDatabase(
   return { data, cursor };
 }
 
+const KEYLESS_PAIR_TIMESTAMP_TOLERANCE_MS = 5_000;
+
+function totalsEqual(left: UsageRecord["totals"], right: UsageRecord["totals"]): boolean {
+  return (
+    left.uncachedInputTokens === right.uncachedInputTokens &&
+    left.cachedInputTokens === right.cachedInputTokens &&
+    left.cacheCreationTokens === right.cacheCreationTokens &&
+    left.outputTokens === right.outputTokens &&
+    left.reasoningTokens === right.reasoningTokens
+  );
+}
+
 function usageCandidates(
   sessionId: string,
   generations: ReadonlyArray<{ idx: number; entry: Metadata }>,
@@ -800,6 +858,16 @@ function usageCandidates(
   fallbackTimestamp: number,
 ): UsageCandidate[] {
   const records: UsageCandidate[] = [];
+  const keylessSteps: Array<{
+    readonly candidateIndex: number;
+    readonly index: number;
+    readonly usageIndex: number;
+    readonly executionId: string;
+    readonly startTimestampMs: number;
+    readonly modelId: number;
+    readonly totals: UsageRecord["totals"];
+    matched: boolean;
+  }> = [];
   const generationModels = new Map(generations.map(({ idx, entry }) => [idx, entry]));
   for (const [source, entries] of [
     ["step", steps],
@@ -832,6 +900,55 @@ function usageCandidates(
           0
         )
           continue;
+        const keys = [...usage.keys];
+        const candidateIndex = records.length;
+        if (keys.length === 0 && entry.startTimestampMs !== null) {
+          if (source === "step") {
+            keylessSteps.push({
+              candidateIndex,
+              index,
+              usageIndex,
+              executionId: entry.executionId,
+              startTimestampMs: entry.startTimestampMs,
+              modelId,
+              totals,
+              matched: false,
+            });
+          } else {
+            // Pair keyless gen_metadata entries 1-to-1 with their matching step record so
+            // historical Antigravity rows without response IDs are not counted twice.
+            let bestStep: (typeof keylessSteps)[number] | undefined;
+            let bestDiff = KEYLESS_PAIR_TIMESTAMP_TOLERANCE_MS + 1;
+            for (const stepCandidate of keylessSteps) {
+              if (stepCandidate.matched) continue;
+              if (!totalsEqual(stepCandidate.totals, totals)) continue;
+              if (
+                stepCandidate.executionId &&
+                entry.executionId &&
+                stepCandidate.executionId !== entry.executionId
+              ) {
+                continue;
+              }
+              if (stepCandidate.modelId > 0 && modelId > 0 && stepCandidate.modelId !== modelId) {
+                continue;
+              }
+              const diff = Math.abs(stepCandidate.startTimestampMs - entry.startTimestampMs);
+              if (diff <= KEYLESS_PAIR_TIMESTAMP_TOLERANCE_MS && diff < bestDiff) {
+                bestDiff = diff;
+                bestStep = stepCandidate;
+              }
+            }
+            if (bestStep !== undefined) {
+              bestStep.matched = true;
+              const pairKey = `antigravity:${sessionId}:pair:${bestStep.index}:${bestStep.usageIndex}`;
+              records[bestStep.candidateIndex] = {
+                ...records[bestStep.candidateIndex]!,
+                keys: [...records[bestStep.candidateIndex]!.keys, pairKey],
+              };
+              keys.push(pairKey);
+            }
+          }
+        }
         const record: UsageRecord = {
           provider: "antigravity",
           sessionId,
@@ -846,7 +963,7 @@ function usageCandidates(
           record,
           modelId,
           modelQuality: isConcreteModel(model) ? 4 : model ? 1 : 0,
-          keys: usage.keys,
+          keys,
           timestampQuality: entry.timestampMs !== null ? 2 : trajectoryTimestamp !== null ? 1 : 0,
         });
       }

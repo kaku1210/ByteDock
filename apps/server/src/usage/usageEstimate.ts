@@ -8,6 +8,10 @@ import { USAGE_ESTIMATE_RESET_TOLERANCE_MS } from "@t3tools/shared/usageEstimate
 
 import { priceUsage, type ModelRate, type RateTable } from "./usagePricing.ts";
 
+// Antigravity probes can oscillate slightly between replicas or release temporary ~1-2pp
+// in-flight session holds within the same cycle; larger drops still indicate a real regression.
+const ANTIGRAVITY_CYCLE_REGRESSION_TOLERANCE_PP = 2.5;
+
 const Id = Schema.String.check(Schema.isMinLength(1));
 const Timestamp = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const Price = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
@@ -178,6 +182,10 @@ function estimateUsage(
   if (quotas.some((quota) => quota.origin === "session_cache"))
     limitations.push("quota_may_be_cached");
 
+  const regressionTolerance =
+    cycleToDate && source.scope?.driver === "antigravity"
+      ? ANTIGRAVITY_CYCLE_REGRESSION_TOLERANCE_PP
+      : 0;
   let previous = first;
   for (const quota of quotas) {
     if (
@@ -192,7 +200,7 @@ function estimateUsage(
     }
     if (
       previous &&
-      quota.usedPercent < previous.usedPercent &&
+      quota.usedPercent + regressionTolerance < previous.usedPercent &&
       (!cycleToDate || quota.origin !== "session_cache")
     )
       blockers.add("quota_regressed");

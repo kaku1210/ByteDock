@@ -109,7 +109,7 @@ export function subscriptionEstimateSources(
         source.instanceIds.includes(provider.instanceId),
     );
     const login = accountKey(provider);
-    const ambiguous = candidates.some((source) =>
+    const isSharedSource = (source: SubscriptionUsageSource) =>
       source.instanceIds.some((id) =>
         providers.some(
           (other) =>
@@ -119,8 +119,8 @@ export function subscriptionEstimateSources(
             !other.usageLimits.unavailable &&
             accountKey(other) !== login,
         ),
-      ),
-    );
+      );
+    const hasIsolatedSource = candidates.some((source) => !isSharedSource(source));
     return limits.windows.flatMap((window) => {
       // Existing Codex weekly history stays on its original immutable ledger identity.
       if (provider.driver === "codex" && window.kind === "weekly") return [];
@@ -133,6 +133,19 @@ export function subscriptionEstimateSources(
           : Number.isFinite(reset) && duration > 0
             ? reset - duration * 60_000
             : undefined;
+      // When an account has its own isolated history directory (e.g. per-instance ACP profile),
+      // dormant shared global directories with no matching records in this cycle do not make
+      // the cycle's attribution ambiguous.
+      const ambiguous = candidates.some((source) => {
+        if (!isSharedSource(source)) return false;
+        if (!hasIsolatedSource || source.incomplete) return true;
+        return source.records.some(
+          (record) =>
+            record.timestampMs <= checkedAtMs &&
+            (cycleStart === undefined || record.timestampMs >= cycleStart) &&
+            belongsToWindow(usageProvider, window, record) !== false,
+        );
+      });
       const blockers = new Set<string>();
       if (ambiguous) blockers.add("account_ambiguous");
       if (candidates.length === 0) blockers.add("usage_unavailable");

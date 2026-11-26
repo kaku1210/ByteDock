@@ -184,6 +184,30 @@ describe("provider subscription observations", () => {
         "device",
       ).every((b) => b.blockers.length === 0),
     ).toBe(true);
+    // Dormant shared directories with no matching in-cycle records do not block accounts
+    // that also have their own isolated history directory (e.g. per-instance Antigravity profiles).
+    const dormantShared: SubscriptionUsageSource = {
+      ...shared,
+      dir: "/shared-global",
+      records: [usage("claude", "fixture-model", now - 2 * 86400000)],
+    };
+    const isolatedA = { ...source("claude", a.instanceId), dir: "/isolated-a" };
+    const isolatedB = { ...source("claude", b.instanceId), dir: "/isolated-b" };
+    expect(
+      subscriptionEstimateSources([a, b], [isolatedA, isolatedB, dormantShared], "device").every(
+        (batch) => !batch.blockers.includes("account_ambiguous"),
+      ),
+    ).toBe(true);
+    // As soon as the shared global directory has an in-cycle record, ambiguity blocks again.
+    const activeShared: SubscriptionUsageSource = {
+      ...dormantShared,
+      records: [usage("claude", "fixture-model", now - 1000)],
+    };
+    expect(
+      subscriptionEstimateSources([a, b], [isolatedA, isolatedB, activeShared], "device").every(
+        (batch) => batch.blockers.includes("account_ambiguous"),
+      ),
+    ).toBe(true);
   });
   it("uses OpenCode Go requests and excludes directly billed providers", () => {
     const records = [
