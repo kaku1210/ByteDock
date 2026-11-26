@@ -1,6 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { ManagedPolicyLimits } from "@t3tools/contracts";
 import { EDITORS, REMOTE_CAPABLE_EDITOR_IDS } from "@t3tools/contracts";
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -306,53 +305,28 @@ describe("installRelayTelemetryEnabled", () => {
       return { beforeDiscovery, afterDiscovery: ask() };
     }).pipe(Effect.scoped);
 
-  it.effect(
-    "defaults off and reads the desktop host telemetry preference before returning the renderer policy",
-    () =>
-      Effect.gen(function* () {
-        assert.deepEqual(yield* relayTelemetryEnabled({ T3CODE_TELEMETRY_ENABLED: "false" }), {
-          beforeDiscovery: false,
-          afterDiscovery: false,
-        });
-        // Undecided until the login shell is read, then defaults to off unless explicitly opted in.
-        assert.deepEqual(yield* relayTelemetryEnabled({}), {
-          beforeDiscovery: null,
-          afterDiscovery: false,
-        });
-        assert.deepEqual(
-          yield* relayTelemetryEnabled({}, undefined, { T3CODE_TELEMETRY_ENABLED: "true" }),
-          { beforeDiscovery: null, afterDiscovery: true },
-        );
-        assert.deepEqual(
-          yield* relayTelemetryEnabled({}, undefined, { T3CODE_TELEMETRY_ENABLED: "false" }),
-          { beforeDiscovery: null, afterDiscovery: false },
-        );
-      }),
-  );
-
-  it.effect("turns relay tracing off when the managed policy turns telemetry off", () =>
+  it.effect("always returns false because outbound relay tracing is removed", () =>
     Effect.gen(function* () {
-      const policy = (limits: ManagedPolicyLimits) => ({
-        schemaVersion: 1 as const,
-        organization: "Example Corp",
-        limits,
+      assert.deepEqual(yield* relayTelemetryEnabled({ T3CODE_TELEMETRY_ENABLED: "false" }), {
+        beforeDiscovery: false,
+        afterDiscovery: false,
       });
-      const after = function* (...args: Parameters<typeof relayTelemetryEnabled>) {
-        return (yield* relayTelemetryEnabled(...args)).afterDiscovery;
-      };
-      assert.isFalse(
-        yield* after({ T3CODE_TELEMETRY_ENABLED: "true" }, policy({ telemetry: false })),
+      assert.deepEqual(yield* relayTelemetryEnabled({}), {
+        beforeDiscovery: false,
+        afterDiscovery: false,
+      });
+      assert.deepEqual(
+        yield* relayTelemetryEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }, undefined, {
+          T3CODE_TELEMETRY_ENABLED: "true",
+        }),
+        { beforeDiscovery: false, afterDiscovery: false },
       );
-      assert.isTrue(
-        yield* after({ T3CODE_TELEMETRY_ENABLED: "true" }, policy({ webhookTasks: false })),
-      );
-      assert.isFalse(yield* after({}, policy({ webhookTasks: false })));
-      // A policy that cannot be read fails closed.
-      assert.isFalse(
-        yield* after(
+      assert.deepEqual(
+        yield* relayTelemetryEnabled(
           { T3CODE_TELEMETRY_ENABLED: "true" },
           new ManagedPolicyFileError({ path: "/test", reason: "bad JSON" }),
         ),
+        { beforeDiscovery: false, afterDiscovery: false },
       );
     }),
   );

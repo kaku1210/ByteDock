@@ -400,40 +400,11 @@ describe("isCiEnvironment", () => {
 });
 
 describe("isRelayTracingEnabled", () => {
-  it("turns off for DO_NOT_TRACK, even when T3 telemetry is on", () => {
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ DO_NOT_TRACK: "1" }));
-    assert.isFalse(
-      OtelEnvironment.isRelayTracingEnabled({
-        DO_NOT_TRACK: "true",
-        T3CODE_TELEMETRY_ENABLED: "1",
-      }),
-    );
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ DO_NOT_TRACK: "0" }));
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ DO_NOT_TRACK: "" }));
-    assert.isTrue(
-      OtelEnvironment.isRelayTracingEnabled({
-        DO_NOT_TRACK: "0",
-        T3CODE_TELEMETRY_ENABLED: "true",
-      }),
-    );
-    assert.isTrue(
-      OtelEnvironment.isRelayTracingEnabled({
-        DO_NOT_TRACK: "",
-        T3CODE_TELEMETRY_ENABLED: "true",
-      }),
-    );
-  });
-
-  it("defaults off and respects explicit opt-in plus the T3CODE SDK override of the standard kill switch", () => {
+  it("always returns false because official relay tracing export is removed", () => {
     assert.isFalse(OtelEnvironment.isRelayTracingEnabled({}));
-    assert.isTrue(OtelEnvironment.isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }));
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ T3CODE_TELEMETRY_ENABLED: "true" }));
+    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ DO_NOT_TRACK: "0" }));
     assert.isFalse(
-      OtelEnvironment.isRelayTracingEnabled({
-        T3CODE_TELEMETRY_ENABLED: "true",
-        OTEL_SDK_DISABLED: "true",
-      }),
-    );
-    assert.isTrue(
       OtelEnvironment.isRelayTracingEnabled({
         T3CODE_TELEMETRY_ENABLED: "true",
         OTEL_SDK_DISABLED: "true",
@@ -441,26 +412,11 @@ describe("isRelayTracingEnabled", () => {
       }),
     );
     assert.isFalse(
-      OtelEnvironment.isRelayTracingEnabled({
-        T3CODE_TELEMETRY_ENABLED: "true",
-        OTEL_SDK_DISABLED: "false",
-        T3CODE_OTEL_SDK_DISABLED: "true",
-      }),
-    );
-  });
-
-  it("is off on a CI runner unless T3CODE_TELEMETRY_ENABLED turns it on", () => {
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ CI: "true" }));
-    assert.isFalse(OtelEnvironment.isRelayTracingEnabled({ JENKINS_URL: "https://ci.example" }));
-    assert.isTrue(
       OtelEnvironment.isRelayTracingEnabled({ CI: "true", T3CODE_TELEMETRY_ENABLED: "true" }),
     );
-    assert.isFalse(
-      OtelEnvironment.isRelayTracingEnabled({ CI: "true", T3CODE_TELEMETRY_ENABLED: "false" }),
-    );
   });
 
-  it.effect("product opt-out beats SDK enable without disabling user-configured tracing", () =>
+  it.effect("keeps user-configured OTLP tracing working while relay tracing stays off", () =>
     Effect.gen(function* () {
       const env = {
         T3CODE_TELEMETRY_ENABLED: "false",
