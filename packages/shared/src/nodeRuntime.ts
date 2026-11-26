@@ -52,26 +52,40 @@ export const selfInvocationArgs = (
 ): ReadonlyArray<string> =>
   invocation.entrypoint === undefined ? args : [invocation.entrypoint, ...args];
 
+/** Resolves the Node runtime for a feature using the supplied environment or the host environment. */
 export const resolveNodeExecutable = Effect.fn("nodeRuntime.resolveNodeExecutable")(function* (
   feature: typeof NodeRuntimeFeature.Type,
   environment?: NodeJS.ProcessEnv,
 ) {
   const executablePath = yield* HostProcess.ExecutablePath;
-  if (!(yield* HostProcess.IsExecutable)) return executablePath;
-
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
+  const packagedExecutable = yield* HostProcess.IsExecutable;
+  // Electron-as-Node can linger after writing Antigravity's browser marker on Windows.
+  const preferStandaloneNode =
+    platform === "win32" && (feature === "Antigravity" || feature === "Antigravity sign-in");
+  if (
+    !packagedExecutable &&
+    (!preferStandaloneNode || path.basename(executablePath).toLowerCase() === "node.exe")
+  ) {
+    return executablePath;
+  }
+
+  const fs = yield* FileSystem.FileSystem;
   const env = environment ?? (yield* HostProcess.Environment);
   const resolvedNodePath = yield* resolveCommandPath(platform === "win32" ? "node.exe" : "node", {
     env: platform === "win32" ? { ...env, PATHEXT: ".EXE" } : env,
   }).pipe(Effect.provideService(CommandResolutionCache, new Map()));
-  if (resolvedNodePath === null) return yield* new NodeRuntimeUnavailableError({ feature });
+  // A desktop host can still run the helper with ELECTRON_RUN_AS_NODE. A standalone T3 CLI cannot.
+  const withoutExternalNode = packagedExecutable
+    ? Effect.fail(new NodeRuntimeUnavailableError({ feature }))
+    : Effect.succeed(executablePath);
+  if (resolvedNodePath === null) return yield* withoutExternalNode;
   const nodePath = path.resolve(resolvedNodePath);
   const resolvedPath = yield* fs
     .realPath(nodePath)
     .pipe(Effect.mapError((cause) => new NodeRuntimeUnavailableError({ feature, cause })));
-  if (resolvedPath === executablePath) return yield* new NodeRuntimeUnavailableError({ feature });
+  if (resolvedPath === executablePath) return yield* withoutExternalNode;
   const [hostInfo, nodeInfo] = yield* Effect.all([
     fs.stat(executablePath).pipe(Effect.option),
     fs.stat(nodePath).pipe(Effect.option),
@@ -85,7 +99,7 @@ export const resolveNodeExecutable = Effect.fn("nodeRuntime.resolveNodeExecutabl
     hostInfo.value.ino.value > 0n &&
     hostInfo.value.ino.value === nodeInfo.value.ino.value
   ) {
-    return yield* new NodeRuntimeUnavailableError({ feature });
+    return yield* withoutExternalNode;
   }
   // Launchers such as Vite+ dispatch by argv[0]; keep the node name intact.
   return nodePath;

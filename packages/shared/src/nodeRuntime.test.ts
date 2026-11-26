@@ -107,12 +107,16 @@ describe("Node runtime selection", () => {
       yield* fs.writeFileString(path.join(wrappers, "node.bat"), "@echo off");
       const node = path.join(runtime, "node.exe");
       yield* fs.copyFile(process.execPath, node);
-      expect(
-        yield* resolveNodeExecutable("Local device support", {
-          PATH: `${wrappers};${runtime}`,
-          PATHEXT: ".CMD;.BAT",
-        }),
-      ).toBe(node);
+      const env = { PATH: `${wrappers};${runtime}`, PATHEXT: ".CMD;.BAT" };
+      expect(yield* resolveNodeExecutable("Local device support", env)).toBe(node);
+      for (const feature of ["Antigravity", "Antigravity sign-in"] as const) {
+        expect(
+          yield* resolveNodeExecutable(feature, env).pipe(
+            Effect.provideService(HostProcess.ExecutablePath, path.join(directory, "T3 Code.exe")),
+            Effect.provideService(HostProcess.IsExecutable, false),
+          ),
+        ).toBe(node);
+      }
     }).pipe(
       Effect.scoped,
       Effect.provideService(HostProcess.ExecutablePath, "/packaged/t3"),
@@ -122,17 +126,24 @@ describe("Node runtime selection", () => {
     ),
   );
 
-  it.effect("reports install guidance when Windows only has batch runtime wrappers", () =>
+  it.effect("falls back to Electron for Antigravity when Windows only has batch wrappers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped();
       yield* fs.writeFileString(path.join(directory, "node.cmd"), "@echo off");
       yield* fs.writeFileString(path.join(directory, "node.bat"), "@echo off");
-      const error = yield* resolveNodeExecutable("Local device support", {
-        PATH: directory,
-        PATHEXT: ".CMD;.BAT;.EXE",
-      }).pipe(Effect.flip);
+      const env = { PATH: directory, PATHEXT: ".CMD;.BAT;.EXE" };
+      const electron = path.join(directory, "T3 Code.exe");
+      for (const feature of ["Antigravity", "Antigravity sign-in"] as const) {
+        expect(
+          yield* resolveNodeExecutable(feature, env).pipe(
+            Effect.provideService(HostProcess.ExecutablePath, electron),
+            Effect.provideService(HostProcess.IsExecutable, false),
+          ),
+        ).toBe(electron);
+      }
+      const error = yield* resolveNodeExecutable("Local device support", env).pipe(Effect.flip);
       expect(error._tag).toBe("NodeRuntimeUnavailableError");
       expect(error.message).toContain("Install Node.js");
     }).pipe(

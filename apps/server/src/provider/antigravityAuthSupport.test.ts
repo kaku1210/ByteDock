@@ -1,6 +1,7 @@
 import * as Sink from "effect/Sink";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import type * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -8,6 +9,7 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { windowsPowerShellPath } from "@t3tools/shared/windowsSystem";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -689,8 +691,8 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       }),
   );
 
-  it.effect.skipIf(!symlinksSupported)(
-    "links the user's global rule files and never replaces the profile's own",
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32" || !symlinksSupported)(
+    "links the user's global rule files on POSIX and never replaces the profile's own",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -762,10 +764,15 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       expect(yield* fs.exists(profileGemini)).toBe(false);
       expect(yield* fs.readFileString(profileSkillsJson)).toBe('{"entries":[{"path":"/skills"}]}');
 
+      yield* fs.writeFileString(profileAgents, "profile agents edit");
+      expect(yield* fs.readFileString(path.join(userGemini, "AGENTS.md"))).toBe(
+        "edited agents rule",
+      );
       yield* fs.writeFileString(profileGemini, "profile's own rule");
       yield* fs.writeFileString(path.join(userGemini, "GEMINI.md"), "global gemini rule");
       yield* fs.remove(userSkillsJson);
       yield* prepare;
+      expect(yield* fs.readFileString(profileAgents)).toBe("profile agents edit");
       expect(yield* fs.readFileString(profileGemini)).toBe("profile's own rule");
       expect(yield* fs.exists(profileSkillsJson)).toBe(false);
     }),
@@ -800,28 +807,42 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
     }),
   );
 
-  const preflightHelper = (exitDelay: Effect.Effect<void>) => {
-    const spawns = { count: 0 };
+  const preflightUrl = "https://example.invalid/t3-antigravity-browser-preflight";
+  const preflightMarker = `${ANTIGRAVITY_AUTH_BROWSER_MARKER}"${preflightUrl}"\n`;
+  const preflightHelper = Effect.fn("preflightHelper")(function* (
+    exitDelay: Effect.Effect<void>,
+    output: { stdout?: string; stderr?: string; exitCode?: number; omitResultFile?: boolean } = {},
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const spawns: ChildProcess.StandardCommand[] = [];
     const started = Deferred.makeUnsafe<void>();
-    const spawner = ChildProcessSpawner.make(() =>
+    const spawner = ChildProcessSpawner.make((command) =>
       Effect.sync(() => {
-        spawns.count += 1;
+        if (command._tag !== "StandardCommand") {
+          throw new Error("Expected a single browser preflight");
+        }
+        spawns.push(command);
+        const resultPath = command.options.env?.T3_BROWSER_PROBE_RESULT;
+        const supervised = typeof resultPath === "string";
+        const stderr = output.stderr ?? preflightMarker;
+        const exitCode = supervised && output.stdout ? 1 : (output.exitCode ?? 0);
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
           exitCode: Deferred.succeed(started, undefined).pipe(
             Effect.andThen(exitDelay),
-            Effect.as(ChildProcessSpawner.ExitCode(0)),
+            Effect.andThen(
+              supervised && exitCode === 0 && !output.omitResultFile
+                ? fs.writeFileString(resultPath, stderr)
+                : Effect.void,
+            ),
+            Effect.as(ChildProcessSpawner.ExitCode(exitCode)),
           ),
           isRunning: Effect.succeed(false),
           kill: () => Effect.void,
           unref: Effect.succeed(Effect.void),
           stdin: Sink.drain,
-          stdout: Stream.empty,
-          stderr: Stream.encodeText(
-            Stream.make(
-              `${ANTIGRAVITY_AUTH_BROWSER_MARKER}"https://example.invalid/t3-antigravity-browser-preflight"\n`,
-            ),
-          ),
+          stdout: supervised ? Stream.empty : Stream.encodeText(Stream.make(output.stdout ?? "")),
+          stderr: supervised ? Stream.empty : Stream.encodeText(Stream.make(stderr)),
           all: Stream.empty,
           getInputFd: () => Sink.drain,
           getOutputFd: () => Stream.empty,
@@ -829,11 +850,12 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       }),
     );
     return { spawner, spawns, started };
-  };
+  });
 
   const prepareWithHelper = Effect.fn("prepareWithHelper")(function* (
     runtimeExecutablePath: string,
     spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+    platform: NodeJS.Platform = "linux",
   ) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -842,14 +864,126 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       profileDirectory: path.join(directory, "profile"),
       userHome: path.join(directory, "home"),
       runtimeExecutablePath,
-      platform: "linux",
+      platform,
       baseEnv: {},
     }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
   });
 
+  it.effect(
+    "supervises the Windows desktop preflight and keeps Electron as the browser helper",
+    () =>
+      Effect.gen(function* () {
+        const electron = "C:/T3/T3 Code.exe";
+        const helper = yield* preflightHelper(Effect.void);
+        const profile = yield* prepareWithHelper(electron, helper.spawner, "win32").pipe(
+          Effect.provideService(HostProcess.ExecutablePath, electron),
+        );
+        expect(profile.browserCommand).toContain(`'${electron}'`);
+        expect(helper.spawns).toHaveLength(1);
+        expect(helper.spawns[0]).toMatchObject({
+          command: windowsPowerShellPath(yield* HostProcess.Environment),
+          args: expect.arrayContaining(["-NoProfile", "-NonInteractive"]),
+          options: {
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+            env: {
+              T3_BROWSER_PROBE_EXECUTABLE: electron,
+              T3_BROWSER_PROBE_RESULT: expect.any(String),
+              BROWSER: profile.browserCommand,
+              ELECTRON_RUN_AS_NODE: "1",
+            },
+          },
+        });
+      }),
+  );
+
+  it.effect("preflights the same Electron directly when the supervisor cannot initialize", () =>
+    Effect.gen(function* () {
+      const electron = "C:/T3/T3 Code.exe";
+      const supervisor = yield* preflightHelper(Effect.void, { exitCode: 125 });
+      const direct = yield* preflightHelper(Effect.void);
+      const spawner = ChildProcessSpawner.make((command) =>
+        (supervisor.spawns.length === 0 ? supervisor : direct).spawner.spawn(command),
+      );
+      const profile = yield* prepareWithHelper(electron, spawner, "win32").pipe(
+        Effect.provideService(HostProcess.ExecutablePath, electron),
+      );
+      expect(supervisor.spawns).toHaveLength(1);
+      expect(supervisor.spawns[0]).toMatchObject({
+        command: windowsPowerShellPath(yield* HostProcess.Environment),
+        options: { env: { T3_BROWSER_PROBE_EXECUTABLE: electron } },
+      });
+      expect(direct.spawns).toHaveLength(1);
+      expect(direct.spawns[0]).toMatchObject({
+        command: electron,
+        args: ["-e", expect.stringContaining(ANTIGRAVITY_AUTH_BROWSER_MARKER), "--", preflightUrl],
+        options: { env: { BROWSER: profile.browserCommand } },
+      });
+    }),
+  );
+
+  it.effect("runs standalone Windows Node directly for the browser preflight", () =>
+    Effect.gen(function* () {
+      const node = "C:/Program Files/nodejs/node.exe";
+      const helper = yield* preflightHelper(Effect.void);
+      const profile = yield* prepareWithHelper(node, helper.spawner, "win32").pipe(
+        Effect.provideService(HostProcess.ExecutablePath, node),
+      );
+      expect(profile.browserCommand).toContain(`'${node}'`);
+      expect(helper.spawns).toHaveLength(1);
+      expect(helper.spawns[0]).toMatchObject({
+        command: node,
+        args: ["-e", expect.stringContaining(ANTIGRAVITY_AUTH_BROWSER_MARKER), "--", preflightUrl],
+        options: { env: { BROWSER: profile.browserCommand } },
+      });
+    }),
+  );
+
+  it.effect(
+    "rejects a Windows desktop preflight that exits successfully without a result file",
+    () =>
+      Effect.gen(function* () {
+        const electron = "C:/T3/T3 Code.exe";
+        const helper = yield* preflightHelper(Effect.void, { omitResultFile: true });
+        const result = yield* prepareWithHelper(electron, helper.spawner, "win32").pipe(
+          Effect.provideService(HostProcess.ExecutablePath, electron),
+          Effect.result,
+        );
+        expect(helper.spawns).toHaveLength(1);
+        expect(Result.isFailure(result) && result.failure).toMatchObject({
+          _tag: "AcpTransportError",
+          detail: "Antigravity browser suppression could not be verified.",
+        });
+      }),
+  );
+
+  it.effect.each(["C:/T3/T3 Code.exe", "C:/Program Files/nodejs/node.exe"])(
+    "rejects unexpected output or an unsuccessful preflight for %s",
+    (executable) =>
+      Effect.gen(function* () {
+        for (const output of [
+          { stdout: "unexpected" },
+          { stderr: `${preflightMarker}unexpected` },
+          { exitCode: 1 },
+        ]) {
+          const helper = yield* preflightHelper(Effect.void, output);
+          const result = yield* prepareWithHelper(executable, helper.spawner, "win32").pipe(
+            Effect.provideService(HostProcess.ExecutablePath, executable),
+            Effect.result,
+          );
+          expect(helper.spawns).toHaveLength(1);
+          expect(Result.isFailure(result) && result.failure).toMatchObject({
+            _tag: "AcpTransportError",
+            detail: "Antigravity browser suppression could not be verified.",
+          });
+        }
+      }),
+  );
+
   it.effect("allows a browser preflight that takes longer than five seconds", () =>
     Effect.gen(function* () {
-      const helper = preflightHelper(Effect.sleep("20 seconds"));
+      const helper = yield* preflightHelper(Effect.sleep("20 seconds"));
       const fiber = yield* prepareWithHelper("/fake/slow-node", helper.spawner).pipe(
         Effect.forkChild,
       );
@@ -857,13 +991,71 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
       yield* TestClock.adjust("20 seconds");
       yield* Fiber.join(fiber);
 
-      expect(helper.spawns.count).toBe(1);
+      expect(helper.spawns).toHaveLength(1);
+    }),
+  );
+
+  it.effect(
+    "reuses a verified browser preflight across repeated and concurrent profile launches",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const platform = yield* HostProcess.Platform;
+        const temporaryDirectory = yield* fs.makeTempDirectoryScoped();
+        const runtimePath = path.join(
+          temporaryDirectory,
+          platform === "win32" ? "node.exe" : "fake-node",
+        );
+        yield* fs.writeFileString(runtimePath, "v1");
+
+        const release = yield* Deferred.make<void>();
+        const helper = yield* preflightHelper(Deferred.await(release));
+
+        const first = yield* prepareWithHelper(runtimePath, helper.spawner, platform).pipe(
+          Effect.forkChild,
+        );
+        const second = yield* prepareWithHelper(runtimePath, helper.spawner, platform).pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(helper.started);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        expect(helper.spawns).toHaveLength(1);
+
+        // Sequential launch with the unchanged executable skips spawning completely.
+        yield* prepareWithHelper(runtimePath, helper.spawner, platform);
+        expect(helper.spawns).toHaveLength(1);
+
+        // Updating the executable on disk invalidates the cached preflight.
+        yield* fs.writeFileString(runtimePath, "v2-updated-binary");
+        yield* prepareWithHelper(runtimePath, helper.spawner, platform);
+        expect(helper.spawns).toHaveLength(2);
+      }),
+  );
+
+  it.effect("does not cache a failed browser preflight for the same spawner", () =>
+    Effect.gen(function* () {
+      let attempt = 0;
+      const failing = yield* preflightHelper(Effect.void, { exitCode: 1 });
+      const succeeding = yield* preflightHelper(Effect.void);
+      const spawner = ChildProcessSpawner.make((command) => {
+        attempt += 1;
+        return (attempt === 1 ? failing : succeeding).spawner.spawn(command);
+      });
+
+      const first = yield* prepareWithHelper("/fake/flaky-node", spawner).pipe(Effect.result);
+      expect(Result.isFailure(first)).toBe(true);
+      yield* prepareWithHelper("/fake/flaky-node", spawner);
+      expect(failing.spawns).toHaveLength(1);
+      expect(succeeding.spawns).toHaveLength(1);
     }),
   );
 
   it.effect("fails a hung preflight after 30 seconds and verifies again on the next open", () =>
     Effect.gen(function* () {
-      const hung = preflightHelper(Effect.never);
+      const hung = yield* preflightHelper(Effect.never);
       const fiber = yield* prepareWithHelper("/fake/hung-node", hung.spawner).pipe(
         Effect.result,
         Effect.forkChild,
@@ -881,9 +1073,9 @@ it.layer(NodeServices.layer)("Antigravity profile preparation", (it) => {
         });
       }
 
-      const recovered = preflightHelper(Effect.void);
+      const recovered = yield* preflightHelper(Effect.void);
       yield* prepareWithHelper("/fake/hung-node", recovered.spawner);
-      expect(recovered.spawns.count).toBe(1);
+      expect(recovered.spawns).toHaveLength(1);
     }),
   );
 

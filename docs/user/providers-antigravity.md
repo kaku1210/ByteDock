@@ -6,6 +6,11 @@ which models and account access are available through this agent.
 
 ## Set up Antigravity
 
+On Windows, the desktop app uses `node.exe` from PATH for the Antigravity startup
+check and sign-in when available. Otherwise it uses its built-in Electron runtime,
+which can take longer to exit. If the check still times out, install Node.js on
+the Windows machine running the provider and reopen T3 Code so it sees the updated PATH.
+
 On web or desktop, open **Settings > Providers**, choose the environment that runs
 your project, and enable Antigravity. Install its runtime there, then choose
 **Sign in** and complete the browser sign-in. Wait for T3 Code to confirm

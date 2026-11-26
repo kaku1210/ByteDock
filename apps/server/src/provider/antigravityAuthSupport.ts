@@ -12,11 +12,13 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as AcpErrors from "effect-acp/errors";
 
+import { windowsElectronBrowserProbe } from "./windowsElectronBrowserProbe.ts";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
@@ -58,6 +60,35 @@ const browserHelperSource =
   `"${ANTIGRAVITY_AUTH_BROWSER_MARKER}"+JSON.stringify(process.argv[1])+"\\n",` +
   `()=>process.exit(0))`;
 const browserPreflightUrl = "https://example.invalid/t3-antigravity-browser-preflight";
+
+interface BrowserPreflightCacheEntry {
+  verified: boolean;
+  readonly gate: Semaphore.Semaphore;
+}
+
+// Keyed by spawner identity so isolated test spawners never share cached results while a live
+// server verifies each runtime binary once instead of spawning a probe on every session launch.
+const browserPreflightCache = new WeakMap<
+  ChildProcessSpawner.ChildProcessSpawner["Service"],
+  Map<string, BrowserPreflightCacheEntry>
+>();
+
+function browserPreflightEntry(
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  key: string,
+): BrowserPreflightCacheEntry {
+  let entries = browserPreflightCache.get(spawner);
+  if (entries === undefined) {
+    entries = new Map();
+    browserPreflightCache.set(spawner, entries);
+  }
+  let entry = entries.get(key);
+  if (entry === undefined) {
+    entry = { verified: false, gate: Semaphore.makeUnsafe(1) };
+    entries.set(key, entry);
+  }
+  return entry;
+}
 
 const removedEnvironmentKeys = new Set([
   "GEMINI_API_KEY",
@@ -368,6 +399,7 @@ const copyAntigravityUserConfigFiles = Effect.fn("copyAntigravityUserConfigFiles
           delete copies[key];
           return;
         }
+        if (current === source && copies[key] === source) return;
         yield* fs.makeDirectory(path.dirname(link), { recursive: true });
         yield* fs.writeFileString(link, source);
         copies[key] = source;
@@ -381,8 +413,10 @@ const copyAntigravityUserConfigFiles = Effect.fn("copyAntigravityUserConfigFiles
         ),
       );
     }
+    const nextManifestText = encodeRuleCopies(copies);
+    if (nextManifestText === manifestText) return;
     yield* fs
-      .writeFileString(manifestPath, encodeRuleCopies(copies))
+      .writeFileString(manifestPath, nextManifestText)
       .pipe(
         Effect.catch((error) =>
           Effect.logWarning("Antigravity rule copy record could not be written.", { error }),
@@ -473,44 +507,103 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
     ...(caBundlePath === undefined ? {} : { caBundlePath }),
   };
   const environment = antigravityEnvironment(profile, input.baseEnv ?? process.env, auth);
-  yield* Effect.gen(function* () {
-    const child = yield* spawner.spawn(
-      ChildProcess.make(helperExecutable, ["-e", browserHelperSource, "--", browserPreflightUrl], {
-        env: environment,
-        extendEnv: false,
-        shell: false,
+  const windowsElectron =
+    platform === "win32" &&
+    runtimeExecutablePath === (yield* HostProcess.ExecutablePath) &&
+    path.basename(helperExecutable).toLowerCase() !== "node.exe";
+  const helperStat = yield* fs.stat(runtimeExecutablePath).pipe(Effect.option);
+  const helperFingerprint =
+    Option.isSome(helperStat) && helperStat.value.type === "File"
+      ? `${String(helperStat.value.size)}:${Option.map(helperStat.value.mtime, (date) => date.getTime()).pipe(Option.getOrElse(() => -1))}`
+      : "unstat";
+  const preflightKey = [
+    platform,
+    windowsElectron ? "electron" : "direct",
+    helperExecutable,
+    helperFingerprint,
+    browserHelperSource,
+  ].join("\0");
+  const preflightEntry = browserPreflightEntry(spawner, preflightKey);
+  if (!preflightEntry.verified) {
+    const verifyBrowserSuppression = Effect.gen(function* () {
+      const expectedMarker = `${ANTIGRAVITY_AUTH_BROWSER_MARKER}"${browserPreflightUrl}"\n`;
+      if (windowsElectron) {
+        const resultPath = path.join(yield* fs.makeTempDirectoryScoped(), "browser-probe.stderr");
+        const supervisor = windowsElectronBrowserProbe(
+          helperExecutable,
+          browserHelperSource,
+          browserPreflightUrl,
+          resultPath,
+          environment,
+          yield* HostProcess.Environment,
+        );
+        // Restricted Windows installations can still use the original direct Electron check.
+        const child = yield* spawner.spawn(supervisor).pipe(Effect.option);
+        if (Option.isSome(child)) {
+          const exitCode = Number(yield* child.value.exitCode);
+          if (exitCode !== 125) {
+            if (exitCode === 0 && (yield* fs.readFileString(resultPath)) === expectedMarker) return;
+            return yield* authSupportError(
+              "Antigravity browser suppression could not be verified.",
+            );
+          }
+        }
+      }
+      const child = yield* spawner.spawn(
+        ChildProcess.make(
+          helperExecutable,
+          ["-e", browserHelperSource, "--", browserPreflightUrl],
+          {
+            env: environment,
+            extendEnv: false,
+            shell: false,
+          },
+        ),
+      );
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectUint8StreamText({ stream: child.stdout, maxBytes: 4_096 }),
+          collectUint8StreamText({ stream: child.stderr, maxBytes: 4_096 }),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      );
+      if (
+        Number(exitCode) !== 0 ||
+        stdout.bytes !== 0 ||
+        stdout.truncated ||
+        stderr.truncated ||
+        stderr.text !== expectedMarker
+      ) {
+        return yield* authSupportError("Antigravity browser suppression could not be verified.");
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: "30 seconds",
+        orElse: () =>
+          Effect.fail(
+            authSupportError(
+              windowsElectron
+                ? "Antigravity browser suppression verification timed out. Install Node.js on PATH to use node.exe for the startup check."
+                : "Antigravity browser suppression verification timed out.",
+            ),
+          ),
+      }),
+      Effect.mapError((error) =>
+        error._tag === "AcpTransportError"
+          ? error
+          : authSupportError("Antigravity browser suppression could not be verified."),
+      ),
+    );
+    yield* preflightEntry.gate.withPermits(1)(
+      Effect.gen(function* () {
+        if (preflightEntry.verified) return;
+        yield* verifyBrowserSuppression;
+        preflightEntry.verified = true;
       }),
     );
-    const [stdout, stderr, exitCode] = yield* Effect.all(
-      [
-        collectUint8StreamText({ stream: child.stdout, maxBytes: 4_096 }),
-        collectUint8StreamText({ stream: child.stderr, maxBytes: 4_096 }),
-        child.exitCode,
-      ],
-      { concurrency: "unbounded" },
-    );
-    if (
-      Number(exitCode) !== 0 ||
-      stdout.bytes !== 0 ||
-      stdout.truncated ||
-      stderr.truncated ||
-      stderr.text !== `${ANTIGRAVITY_AUTH_BROWSER_MARKER}"${browserPreflightUrl}"\n`
-    ) {
-      return yield* authSupportError("Antigravity browser suppression could not be verified.");
-    }
-  }).pipe(
-    Effect.scoped,
-    Effect.timeoutOrElse({
-      duration: "30 seconds",
-      orElse: () =>
-        Effect.fail(authSupportError("Antigravity browser suppression verification timed out.")),
-    }),
-    Effect.mapError((error) =>
-      error._tag === "AcpTransportError"
-        ? error
-        : authSupportError("Antigravity browser suppression could not be verified."),
-    ),
-  );
+  }
 
   for (const directory of [geminiHome, acpDirectory, tempDirectory]) {
     yield* fs
