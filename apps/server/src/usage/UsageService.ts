@@ -960,9 +960,22 @@ export const make = Effect.gen(function* () {
     retentionCutoffMs: number,
     awaitRefresh: boolean,
     fromMemory: boolean,
+    scopedProviders?: ReadonlySet<string>,
   ) {
+    const activeDirs =
+      scopedProviders === undefined
+        ? dirs
+        : dirs.filter((dir) => scopedProviders.has(dir.provider));
+    const activePending =
+      scopedProviders === undefined
+        ? pending
+        : pending.filter((dir) => scopedProviders.has(dir.provider));
+    const activeScanReaders =
+      scopedProviders === undefined
+        ? scanReaders
+        : scanReaders.filter(({ reader }) => scopedProviders.has(reader.provider));
     const scans = Effect.forEach(
-      scanReaders,
+      activeScanReaders,
       ({ driver, reader }) =>
         usageInstances(driver, settings).pipe(
           Effect.flatMap((instances) =>
@@ -1012,11 +1025,14 @@ export const make = Effect.gen(function* () {
 
     // Scan independent sources together, directories sequentially to bound open files; keep order, since the first copy decides a duplicate's bucket.
     const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)), scans],
+      [
+        Effect.forEach(activeDirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)),
+        scans,
+      ],
       { concurrency: "unbounded" },
     );
     const scanned = new Map<string, ScannedDir>();
-    for (const source of [...transcripts, ...pending, ...scanDirs.flat()]) {
+    for (const source of [...transcripts, ...activePending, ...scanDirs.flat()]) {
       const key = encodeUsageRecordKey([source.provider, source.dir, source.volumeId]);
       const previous = scanned.get(key);
       scanned.set(
@@ -1069,6 +1085,32 @@ export const make = Effect.gen(function* () {
     }
 
     const startedAtMs = yield* Clock.currentTimeMillis;
+    if (input.sessionScopes !== undefined && input.sessionScopes.length === 0) {
+      const readAt = yield* DateTime.now;
+      const finishedAtMs = yield* Clock.currentTimeMillis;
+      return {
+        summary: {
+          contractVersion: USAGE_CONTRACT_VERSION,
+          readAt: DateTime.formatIso(readAt),
+          timeZone: input.timeZone,
+          sinceDay: input.sinceDay,
+          untilDay: input.untilDay,
+          buckets: [],
+          sources: [],
+          pricing: pricing(startedAtMs),
+          subscriptionEstimates: [],
+          scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
+          ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
+          sessionScopes: input.sessionScopes,
+          ...(input.apiEquivalent === undefined ? {} : { apiEquivalent: input.apiEquivalent }),
+        } satisfies UsageSummary,
+        fromMemory: false,
+      };
+    }
+    const scopedProviders =
+      input.sessionScopes === undefined
+        ? undefined
+        : new Set(input.sessionScopes.map((scope) => scope.provider));
     const providers = yield* providerRegistry.getProviders;
     yield* ensureScanCacheLoaded;
 
@@ -1107,13 +1149,17 @@ export const make = Effect.gen(function* () {
       const resolved = yield* resolveTranscriptDirs(settings, retentionCutoffMs, awaitRefresh).pipe(
         Effect.provideContext(readerContext),
       );
+      const relevantDirs =
+        scopedProviders === undefined
+          ? resolved.dirs
+          : resolved.dirs.filter((dir) => scopedProviders.has(dir.provider));
       // A window no complete scan has read would show partial totals, so every directory must cover it.
       // Saved files are keyed by path, so two providers reading one directory keep only one parse.
       const fromMemory =
         provisional &&
-        resolved.dirs.length > 0 &&
-        new Set(resolved.dirs.map((source) => source.dir)).size === resolved.dirs.length &&
-        resolved.dirs.every(
+        relevantDirs.length > 0 &&
+        new Set(relevantDirs.map((source) => source.dir)).size === relevantDirs.length &&
+        relevantDirs.every(
           (source) => (coveredSince.get(coverageKey(source)) ?? Infinity) <= scanWindowStartMs,
         );
       const [, scanned] = yield* Effect.all(
@@ -1126,6 +1172,7 @@ export const make = Effect.gen(function* () {
             retentionCutoffMs,
             awaitRefresh,
             fromMemory,
+            scopedProviders,
           ),
         ],
         { concurrency: 2 },
@@ -1231,12 +1278,13 @@ export const make = Effect.gen(function* () {
     const summaryPricing = pricing(startedAtMs);
     const summaryRates = rates;
     const summaryRatesFetchedAtMs = ratesFetchedAtMs;
-    const overridesJson = yield* encodePricingOverrides(
-      Object.fromEntries([...priceOverrides].sort(([a], [b]) => a.localeCompare(b))),
-    ).pipe(Effect.orDie);
-    const estimatePricingKey = `${summaryRatesFetchedAtMs ?? "builtin"}:${DEFAULT_PRICE_REVISION}:${overridesJson}`;
+    const includeSubscriptionEstimates = input.sessionScopes === undefined;
     let estimatePricingId: string | null = null;
-    if (summaryRates.size > 0) {
+    if (includeSubscriptionEstimates && summaryRates.size > 0) {
+      const overridesJson = yield* encodePricingOverrides(
+        Object.fromEntries([...priceOverrides].sort(([a], [b]) => a.localeCompare(b))),
+      ).pipe(Effect.orDie);
+      const estimatePricingKey = `${summaryRatesFetchedAtMs ?? "builtin"}:${DEFAULT_PRICE_REVISION}:${overridesJson}`;
       const hash = yield* crypto.digest(
         Digest.sha256,
         new TextEncoder().encode(estimatePricingKey),
@@ -1401,30 +1449,34 @@ export const make = Effect.gen(function* () {
             counted = true;
             if (record.sessionId.length > 0) sessionIds.add(record.sessionId);
           }
-          estimateRecords.push(usageRecord);
+          if (includeSubscriptionEstimates) {
+            estimateRecords.push(usageRecord);
+          }
         }
       }
 
       const sourceMessage =
         message ?? (files === null ? "No transcript directory on this environment." : null);
-      subscriptionSources.push({
-        provider,
-        dir,
-        volumeId,
-        ...(sourceHostId ? { hostId: sourceHostId } : {}),
-        instanceIds: scannedDirs[index]!.instanceIds,
-        records: estimateRecords,
-        missing:
-          files === null &&
-          estimateRecords.length === 0 &&
-          (status === undefined || status === "missing"),
-        incomplete:
-          files === null ||
-          malformedRecords > 0 ||
-          status === "partial" ||
-          status === "failed" ||
-          refreshing === true,
-      });
+      if (includeSubscriptionEstimates) {
+        subscriptionSources.push({
+          provider,
+          dir,
+          volumeId,
+          ...(sourceHostId ? { hostId: sourceHostId } : {}),
+          instanceIds: scannedDirs[index]!.instanceIds,
+          records: estimateRecords,
+          missing:
+            files === null &&
+            estimateRecords.length === 0 &&
+            (status === undefined || status === "missing"),
+          incomplete:
+            files === null ||
+            malformedRecords > 0 ||
+            status === "partial" ||
+            status === "failed" ||
+            refreshing === true,
+        });
+      }
       sources.push({
         fingerprint: {
           hostId: sourceHostId ?? hostId,
@@ -1481,47 +1533,54 @@ export const make = Effect.gen(function* () {
       );
 
     const aggregated = aggregator.finish();
-    const subscriptionBatches = subscriptionEstimateSources(providers, subscriptionSources, hostId);
-    for (const batch of subscriptionBatches) {
-      yield* estimateStore.ingest({ source: batch.source, events: batch.events }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new UsageReadError({
-              reason: "scanFailed",
-              detail: "Could not persist subscription usage observations.",
-              cause,
-            }),
-        ),
+    let subscriptionEstimates: UsageSummary["subscriptionEstimates"] = [];
+    if (includeSubscriptionEstimates) {
+      const subscriptionBatches = subscriptionEstimateSources(
+        providers,
+        subscriptionSources,
+        hostId,
       );
-    }
-    const subscriptionEstimates = yield* estimateStore
-      .readSeries({
-        sources: [
-          ...scannedDirs
-            .filter((source) => source.provider === "codex")
-            .map((source) => ({
-              id: encodeUsageRecordKey(["codex", hostId, source.dir, source.volumeId]),
-              path: source.dir,
+      for (const batch of subscriptionBatches) {
+        yield* estimateStore.ingest({ source: batch.source, events: batch.events }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: "Could not persist subscription usage observations.",
+                cause,
+              }),
+          ),
+        );
+      }
+      subscriptionEstimates = yield* estimateStore
+        .readSeries({
+          sources: [
+            ...scannedDirs
+              .filter((source) => source.provider === "codex")
+              .map((source) => ({
+                id: encodeUsageRecordKey(["codex", hostId, source.dir, source.volumeId]),
+                path: source.dir,
+              })),
+            ...subscriptionBatches.map((batch) => ({
+              id: batch.source.id,
+              path: batch.path,
+              blockers: batch.blockers,
             })),
-          ...subscriptionBatches.map((batch) => ({
-            id: batch.source.id,
-            path: batch.path,
-            blockers: batch.blockers,
-          })),
-        ],
-        pricingId: estimatePricingId,
-        nowMs: yield* Clock.currentTimeMillis,
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new UsageReadError({
-              reason: "scanFailed",
-              detail: "Could not read local subscription estimates.",
-              cause,
-            }),
-        ),
-      );
+          ],
+          pricingId: estimatePricingId,
+          nowMs: yield* Clock.currentTimeMillis,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: "Could not read local subscription estimates.",
+                cause,
+              }),
+          ),
+        );
+    }
     const readAt = yield* DateTime.now;
     const finishedAtMs = yield* Clock.currentTimeMillis;
 

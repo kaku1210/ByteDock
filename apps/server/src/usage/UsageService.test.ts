@@ -1786,10 +1786,15 @@ describe("UsageService", () => {
         yield* restarted.refreshRates;
         assert.strictEqual((yield* restarted.readSummary(input)).buckets[0]!.costUsd, cost);
         assert.notStrictEqual((yield* restarted.readSummary(WINDOW)).buckets[0]!.costUsd, cost);
+        const scopedEmpty = yield* restarted.readSummary({ ...input, sessionScopes: [] });
+        assert.deepEqual(scopedEmpty.buckets, []);
+        assert.deepEqual(scopedEmpty.sources, []);
+        assert.deepEqual(scopedEmpty.subscriptionEstimates, []);
         assert.deepEqual(
-          (yield* restarted.readSummary({ ...input, sessionScopes: [] })).buckets,
-          [],
+          [...new Set(initial.sources.map((source) => source.fingerprint.provider))],
+          ["claude"],
         );
+        assert.deepEqual(initial.subscriptionEstimates, []);
         yield* restarted.awaitPersisted;
       }).pipe(
         Effect.provide(

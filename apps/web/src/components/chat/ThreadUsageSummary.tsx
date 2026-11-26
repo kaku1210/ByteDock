@@ -61,7 +61,7 @@ export function ThreadUsageSummary({ threadRef }: { threadRef: ScopedThreadRef }
       }
     >
       <div className="space-y-2 px-2.5 text-xs" data-thread-usage>
-        {canRead ? (
+        {collapsed ? null : canRead ? (
           <PricedThreadUsage
             environmentId={threadRef.environmentId}
             input={input}
