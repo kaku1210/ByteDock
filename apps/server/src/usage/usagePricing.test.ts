@@ -43,6 +43,8 @@ describe("usage pricing", () => {
       "gemini-4-argon-low",
       "gemini-4-argon-medium",
       "gemini-4-argon-high",
+      "gemini-4-argon-tiered",
+      "gemini-4-argon-tiered-high",
       "gemini-4-argon-trial",
     ]) {
       const before = { ...record(model), timestampMs: Date.parse("2026-11-11T00:00:00Z") };

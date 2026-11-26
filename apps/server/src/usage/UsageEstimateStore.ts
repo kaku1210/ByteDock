@@ -184,18 +184,27 @@ const make = Effect.gen(function* () {
           if (previous.kind !== "usage" || event.kind !== "usage")
             return yield* new UsageEstimateIntegrityError({ reason: "event_conflict" });
 
-          // Readers can learn a pricing alias after recording the same usage. Only fill a
-          // missing alias: measured usage stays immutable, and stale scans cannot erase it.
+          // Readers can learn or refine a pricing alias after recording the same usage. Only fill
+          // a missing alias or strip a trailing variant suffix into its base model; measured usage
+          // stays immutable, stale scans cannot erase it, and unrelated models still conflict.
           const { rateModel: previousRateModel, ...previousUsage } = previous;
           const { rateModel, ...usage } = event;
+          const isBaseModelRefinement =
+            previousRateModel !== undefined &&
+            rateModel !== undefined &&
+            previousRateModel.startsWith(`${rateModel}-`);
           if (
             !NodeUtil.isDeepStrictEqual(previousUsage, usage) ||
             (previousRateModel !== undefined &&
               rateModel !== undefined &&
-              previousRateModel !== rateModel)
+              previousRateModel !== rateModel &&
+              !isBaseModelRefinement)
           )
             return yield* new UsageEstimateIntegrityError({ reason: "event_conflict" });
-          if (previousRateModel === undefined && rateModel !== undefined) {
+          if (
+            (previousRateModel === undefined && rateModel !== undefined) ||
+            isBaseModelRefinement
+          ) {
             yield* sql`UPDATE usage_estimate_events SET payload=${payload},revision=${revision + 1} WHERE source_id=${batch.source.id} AND id=${event.id}`;
             enriched = true;
           }

@@ -261,6 +261,30 @@ it.effect("enriches pricing metadata without duplicating usage or rewriting save
       );
     }
     expect(yield* store.readSeries(input)).toEqual([after]);
+
+    // Refining a variant rateModel suffix to its base model updates cleanly without conflict.
+    const variantEvent = {
+      ...events[1],
+      id: "u2",
+      model: "base-model-tiered-high",
+      rateModel: "base-model-tiered",
+    };
+    expect(yield* store.ingest({ source, events: [variantEvent] })).toEqual({
+      inserted: 1,
+      revision: 3,
+    });
+    expect(
+      yield* store.ingest({
+        source,
+        events: [{ ...variantEvent, rateModel: "base-model" }],
+      }),
+    ).toEqual({
+      inserted: 0,
+      revision: 4,
+    });
+    const [refined] = yield* store.readSeries(input);
+    expect(refined?.current?.result.costUsd).toBe(300);
+    expect(refined?.current?.result.blockers).toEqual([]);
   }).pipe(
     Effect.provide(
       Layer.provide(UsageEstimateStore.layer, NodeSqliteClient.layer({ filename: ":memory:" })),

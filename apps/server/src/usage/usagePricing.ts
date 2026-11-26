@@ -342,8 +342,8 @@ function resolveRate(table: RateTable, model: string): ModelRate | null {
   if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
   const exact = table.get(key);
   if (exact) return exact;
-  // Reasoning changes token volume, not the unit price. Keep vendor prefixes intact.
-  const reasoning = key.replace(/-(?:none|minimal|low|medium|high|xhigh|max)$/, "");
+  // Reasoning and routing tiers change token volume, not unit price. Keep vendor prefixes intact.
+  const reasoning = key.replace(/(?:-(?:none|minimal|low|medium|high|xhigh|max|tiered))+$/, "");
   if (reasoning !== key && /(?:^|\/)(?:gemini-\d|swe-2(?:-|$)|claude-|gpt-|deepseek-)/.test(key))
     return table.get(reasoning) ?? null;
   // Antigravity's Argon trial is the same model's trial quota route, not an API price tier.
