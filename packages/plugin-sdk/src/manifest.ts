@@ -39,6 +39,13 @@ export const PluginWebhookContribution = Schema.Struct({
   route: Schema.String,
   auth: PluginWebhookAuthMode,
   tokenSecretRef: Schema.optionalKey(Schema.String),
+  hmac: Schema.optionalKey(
+    Schema.Struct({
+      algorithm: Schema.Literals(["sha1", "sha256"]),
+      mode: Schema.Literals(["onebot-custom", "standard-hex"]),
+      rawBody: Schema.Boolean,
+    }),
+  ),
   replayDefense: Schema.optionalKey(
     Schema.Struct({
       requireMonotonicSeq: Schema.Boolean,
@@ -105,6 +112,14 @@ export const ByteDockPluginManifest = Schema.Struct({
           Schema.Struct({
             id: Schema.String,
             matchType: Schema.String,
+          }),
+        ),
+      ),
+      commands: Schema.optionalKey(
+        Schema.Array(
+          Schema.Struct({
+            id: Schema.String,
+            titleI18n: Schema.optionalKey(Schema.String),
           }),
         ),
       ),

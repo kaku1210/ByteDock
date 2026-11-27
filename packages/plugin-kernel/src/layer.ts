@@ -12,6 +12,7 @@ import {
 import { makeHookRegistry, type HookRegistryService } from "./hooks.ts";
 import { makeHostModuleRegistry, type HostModuleRegistryService } from "./hostModules.ts";
 import { makeHotReloadController, type HotReloadController } from "./hotReload.ts";
+import { makePluginMcpBridge, type PluginMcpBridgeService } from "./mcpBridge.ts";
 import { makeRevisionManager, type RevisionManagerService } from "./revision.ts";
 import { makeThreadSessionGate, type ThreadSessionGateService } from "./sessionGate.ts";
 
@@ -23,6 +24,7 @@ export interface PluginKernelService {
   readonly hooks: HookRegistryService;
   readonly egress: EgressGuardController;
   readonly hotReload: HotReloadController;
+  readonly mcpBridge: PluginMcpBridgeService;
   readonly listDescriptors: () => Effect.Effect<ReadonlyArray<PluginRuntimeDescriptor>>;
 }
 
@@ -46,6 +48,7 @@ export const makePluginKernel = Effect.fn("pluginKernel.make")(function* () {
     },
   });
   const hotReload = yield* makeHotReloadController({ hostModules, revisions });
+  const mcpBridge = makePluginMcpBridge({ hooks });
 
   const listDescriptors = () =>
     revisions.active().pipe(
@@ -70,6 +73,7 @@ export const makePluginKernel = Effect.fn("pluginKernel.make")(function* () {
     hooks,
     egress,
     hotReload,
+    mcpBridge,
     listDescriptors,
   } satisfies PluginKernelService;
 });

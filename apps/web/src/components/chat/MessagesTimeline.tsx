@@ -29,6 +29,7 @@ import type { WorkflowOpening } from "@t3tools/client-runtime/state/subagentRunt
 import { observeResize } from "~/lib/observeResize";
 import { preserveReadingPosition } from "~/lib/preserveReadingPosition";
 import { useStableCallback } from "~/hooks/useStableCallback";
+import { PluginTimelineCardHost } from "../plugin/PluginUiSlots"; // bytedock-seam-import:ui-slots-v01
 
 const NOOP_USE_ARTIFACT_TEMPLATE = () => {};
 const EMPTY_PENDING_APPROVALS: ReadonlyArray<PendingApproval> = [];
@@ -1846,6 +1847,9 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "worktree-setup" ? <WorktreeSetupTimelineRow row={row} /> : null}
       {row.kind === "event" ? <V2EventTimelineRow row={row} /> : null}
+      {/* bytedock-seam:ui-slots-v01 */}
+      <PluginTimelineCardHost rowId={row.id} />
+      {/* end-bytedock-seam:ui-slots-v01 */}
     </div>
   );
 });

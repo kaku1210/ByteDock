@@ -2853,7 +2853,7 @@ export function resolveDesktopProductName(version: string): string {
     : productName;
 }
 
-const DESKTOP_ARTIFACT_NAME = "T3-Code-Plus-${version}-${arch}.${ext}";
+const DESKTOP_ARTIFACT_NAME = "ByteDock-${version}-${arch}.${ext}";
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,

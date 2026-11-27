@@ -56,6 +56,7 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolExposure from "./McpToolExposure.ts";
+import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:mcp-dynamic-bridge
 import * as McpWebhookTransport from "./McpWebhookTransport.ts";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
@@ -1530,6 +1531,32 @@ const layerToolExposure = Layer.effect(
   McpToolExposure.McpToolExposure,
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
+    // bytedock-seam:mcp-dynamic-bridge
+    const pluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+    if (Option.isSome(pluginKernel)) {
+      const mcpBridge = pluginKernel.value.mcpBridge;
+      const bridgedExposure = McpToolExposure.make(
+        () => [
+          ...server.tools
+            .filter(({ annotations }) => {
+              const enabledWhen = Context.getOrUndefined(annotations, McpSchema.EnabledWhen);
+              return (
+                enabledWhen === undefined || enabledWhen({ protocolVersion: "", capabilities: {} })
+              );
+            })
+            .map(({ tool }) => ({ name: tool.name, description: tool.description ?? "" })),
+          ...mcpBridge.listSearchableTools(),
+        ],
+        () => server.notifications["notifications/tools/list_changed"]({}),
+      );
+      return McpToolExposure.McpToolExposure.of({
+        search: bridgedExposure.search,
+        isListed: (providerSessionId, tool) =>
+          bridgedExposure.isListed(providerSessionId, tool) ||
+          mcpBridge.isVisibleForSession(providerSessionId, tool),
+      });
+    }
+    // end-bytedock-seam:mcp-dynamic-bridge
     return McpToolExposure.make(
       () =>
         server.tools

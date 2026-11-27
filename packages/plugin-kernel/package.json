@@ -2,6 +2,7 @@
   "name": "@bytedock/plugin-kernel",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {
@@ -47,6 +48,14 @@
     "./hotReload": {
       "types": "./src/hotReload.ts",
       "import": "./src/hotReload.ts"
+    },
+    "./mcpBridge": {
+      "types": "./src/mcpBridge.ts",
+      "import": "./src/mcpBridge.ts"
+    },
+    "./webhookGuard": {
+      "types": "./src/webhookGuard.ts",
+      "import": "./src/webhookGuard.ts"
     },
     "./layer": {
       "types": "./src/layer.ts",

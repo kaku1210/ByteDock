@@ -130,7 +130,7 @@
     {
       "id": "mcp-dynamic-bridge",
       "file": "apps/server/src/mcp/McpHttpServer.ts",
-      "anchor": "block",
+      "anchor": "both",
       "tagCount": 1,
       "mode": "strict",
       "driftThresholdPct": 3,
@@ -140,7 +140,7 @@
     {
       "id": "ui-slots-v01",
       "file": "apps/web/src/components/{chat/RightPanelSurfaceContent.tsx,settings/SettingsSidebarNav.tsx,chat/MessagesTimeline.tsx,ChatView.tsx}",
-      "anchor": "block",
+      "anchor": "both",
       "tagCount": 4,
       "mode": "strict",
       "driftThresholdPct": 3,

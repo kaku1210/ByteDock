@@ -29,6 +29,7 @@ import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
 import { FamilyCollaborationOverviewPanel } from "./FamilyCollaborationOverviewPanel";
+import { PluginDockPanelHost } from "../plugin/PluginUiSlots"; // bytedock-seam-import:ui-slots-v01
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -90,6 +91,10 @@ export function RightPanelSurfaceContent(props: {
 }) {
   const { surface, threadRef, visible, onCloseSurface } = props;
   const gt = useGT();
+  // bytedock-seam:ui-slots-v01
+  const pluginDockPanel = <PluginDockPanelHost visible={visible} />;
+  if (surface === null) return pluginDockPanel;
+  // end-bytedock-seam:ui-slots-v01
   if (surface === null) return null;
   switch (surface.kind) {
     case "preview":

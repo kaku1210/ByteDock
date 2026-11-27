@@ -67,6 +67,7 @@ import {
 } from "./useAvailableSettingsSearchItems";
 import { handleSettingsSectionKeyDown } from "./settingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { PluginSettingsSidebarGroup } from "../plugin/PluginUiSlots"; // bytedock-seam-import:ui-slots-v01
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -433,6 +434,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       </div>
                     </div>
                   ))}
+                  {/* bytedock-seam:ui-slots-v01 */}
+                  <PluginSettingsSidebarGroup compactSearchOpen={compactSearchOpen} />
+                  {/* end-bytedock-seam:ui-slots-v01 */}
                 </div>
               </div>
             )}

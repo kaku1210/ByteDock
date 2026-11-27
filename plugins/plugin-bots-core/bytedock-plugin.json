@@ -1,0 +1,43 @@
+{
+  "id": "builtin.bots-core",
+  "name": "ByteDock Bots Core",
+  "version": "0.1.0",
+  "apiVersion": "0.1",
+  "execution": "trusted-worker",
+  "trust": "builtin",
+  "entry": {
+    "server": "./src/index.ts"
+  },
+  "permissions": {
+    "rpcScopes": ["plugins:bots:read", "plugins:bots:write"],
+    "storage": "isolated-sqlite",
+    "hooks": [
+      { "name": "agent.open.before", "onError": "pass", "timeoutMs": 2000 },
+      { "name": "agent.turn.before", "onError": "pass", "timeoutMs": 300 },
+      { "name": "agent.compact.before", "onError": "pass", "timeoutMs": 2000 }
+    ]
+  },
+  "contributes": {
+    "panels": [
+      {
+        "id": "bots-manager",
+        "titleI18n": "bots.panel.title",
+        "icon": "bot",
+        "mode": "declarative",
+        "defaultArea": "right"
+      }
+    ],
+    "commands": [
+      {
+        "id": "bot.new",
+        "titleI18n": "bots.command.new"
+      }
+    ],
+    "timelineRenderers": [
+      {
+        "id": "decision-gate-card",
+        "matchType": "plugin-card"
+      }
+    ]
+  }
+}

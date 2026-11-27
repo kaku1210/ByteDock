@@ -315,6 +315,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { requestUrl } from "./requestUrl.ts";
 import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:plugins-rpc-handlers
 import { PluginRpcError } from "@t3tools/contracts"; // bytedock-seam-import:plugins-rpc-handlers
+import * as BuiltinPluginRuntime from "./plugins/BuiltinPluginRuntime.ts"; // bytedock-seam-import:plugins-rpc-handlers
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1662,6 +1663,7 @@ export const layerWsRpc = (
       const pluginKernel = Option.isSome(maybePluginKernel)
         ? maybePluginKernel.value
         : yield* PluginKernel.makePluginKernel();
+      yield* BuiltinPluginRuntime.ensureBuiltinPluginsRegistered(pluginKernel);
       // end-bytedock-seam:plugins-rpc-handlers
       // Webhook URLs start agents; expose them only to operate-scoped sessions while keeping tasks readable.
       const withVisibleWebhookUrls = (result: ScheduledTaskListResult): ScheduledTaskListResult =>
@@ -3939,10 +3941,17 @@ export const layerWsRpc = (
             });
           }
           const active = yield* pluginKernel.revisions.active();
+          const result = yield* BuiltinPluginRuntime.invokeBuiltinPluginMethod({
+            kernel: pluginKernel,
+            targetStateDir: config.stateDir,
+            pluginId: input.pluginId,
+            method: input.method,
+            payload: input.payload,
+          });
           return {
             revision: active.rev,
             auditId: verdict.auditId,
-            result: null,
+            result,
           };
         }),
         [WS_METHODS.pluginsSubscribe]: (input) =>

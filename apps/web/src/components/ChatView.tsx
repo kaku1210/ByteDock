@@ -55,6 +55,7 @@ import { useLogicalProjectEnvironments } from "../hooks/useLogicalProjectEnviron
 import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
+import { PluginStatusBarStrip } from "./plugin/PluginUiSlots"; // bytedock-seam-import:ui-slots-v01
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { pendingMergeBackTransfersForThread } from "@t3tools/client-runtime/state/thread-relationships";
@@ -4261,6 +4262,9 @@ export default function ChatView(props: ChatViewProps) {
                           </div>
                         </div>
                       </ComposerSurface.Shell>
+                      {/* bytedock-seam:ui-slots-v01 */}
+                      {!embedded ? <PluginStatusBarStrip threadId={activeThread.id} /> : null}
+                      {/* end-bytedock-seam:ui-slots-v01 */}
                       {isDraftHeroState && composerBannerItems.length > 0 ? (
                         // Out of flow, like the headline, so a notice never moves the centered composer.
                         // Short windows pin the composer to the bottom, where an out-of-flow notice

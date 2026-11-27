@@ -1,0 +1,51 @@
+{
+  "id": "community.napcat-qq",
+  "name": "NapCatQQ OneBot v11 Channel",
+  "version": "0.1.0",
+  "apiVersion": "0.1",
+  "execution": "trusted-worker",
+  "trust": "local-dev",
+  "entry": {
+    "server": "./src/index.ts"
+  },
+  "permissions": {
+    "rpcScopes": ["plugins:napcat:read", "plugins:napcat:write"],
+    "secretNamespaces": ["bytedock.napcat"],
+    "networkHosts": ["127.0.0.1", "localhost"],
+    "storage": "kv",
+    "hooks": [{ "name": "egress.request.before", "onError": "deny", "timeoutMs": 2000 }]
+  },
+  "contributes": {
+    "settingsSection": {
+      "id": "napcat-qq",
+      "titleI18n": "napcat.settings.title",
+      "group": "plugins",
+      "icon": "message-square"
+    },
+    "statusBarItems": [
+      {
+        "id": "napcat-status",
+        "align": "right",
+        "priority": 40
+      }
+    ],
+    "webhooks": [
+      {
+        "route": "/api/plugins/community.napcat-qq/onebot/event",
+        "auth": "token",
+        "tokenSecretRef": "bytedock.napcat.webhook_token",
+        "hmac": {
+          "algorithm": "sha1",
+          "mode": "onebot-custom",
+          "rawBody": true
+        },
+        "replayDefense": {
+          "requireMonotonicSeq": true,
+          "windowSeconds": 300
+        },
+        "rateLimitPerMin": 50,
+        "frameOptions": "DENY"
+      }
+    ]
+  }
+}

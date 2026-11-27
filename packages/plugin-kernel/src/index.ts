@@ -1,3 +1,4 @@
+export type { ByteDockPluginManifest } from "@bytedock/plugin-sdk/manifest";
 export * from "./hostModules.ts";
 export * from "./compiler.ts";
 export * from "./revision.ts";
@@ -8,4 +9,6 @@ export * from "./configService.ts";
 export * from "./hooks.ts";
 export * from "./egressGuard.ts";
 export * from "./hotReload.ts";
+export * from "./mcpBridge.ts";
+export * from "./webhookGuard.ts";
 export * from "./layer.ts";

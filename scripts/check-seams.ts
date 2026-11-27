@@ -57,11 +57,11 @@ export interface SeamCheckResult {
   readonly notices: ReadonlyArray<SeamNotice>;
 }
 
-const SEAM_START_RE = /\/\/\s*bytedock-seam:([a-z0-9-]+)\b/;
-const SEAM_END_RE = /\/\/\s*end-bytedock-seam:([a-z0-9-]+)\b/;
+const SEAM_START_RE = /(?:\/\/|\/\*)\s*bytedock-seam:([a-z0-9-]+)\b/;
+const SEAM_END_RE = /(?:\/\/|\/\*)\s*end-bytedock-seam:([a-z0-9-]+)\b/;
 const SEAM_IMPORT_RE = /\/\/\s*bytedock-seam-import:([a-z0-9-]+)\b/;
-const IDEA_SYNC_RE = /\/\/\s*bytedock-idea-sync:([A-Za-z0-9._#-]+)\b/;
-const IDEA_SYNC_END_RE = /\/\/\s*end-bytedock-idea-sync:([A-Za-z0-9._#-]+)\b/;
+const IDEA_SYNC_RE = /(?:\/\/|\/\*)\s*bytedock-idea-sync:([A-Za-z0-9._#-]+)\b/;
+const IDEA_SYNC_END_RE = /(?:\/\/|\/\*)\s*end-bytedock-idea-sync:([A-Za-z0-9._#-]+)\b/;
 
 /** Expands a single brace-group path like `dir/{a.ts,b/c.ts}` into concrete repo-relative POSIX paths. */
 export function expandLedgerPaths(pattern: string): ReadonlyArray<string> {

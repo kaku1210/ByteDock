@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import type { OtlpEndpointSource } from "@t3tools/contracts";
 import { sweepStalePendingAttachments } from "./attachmentStore.ts";
 import { markNoCopyOnWrite } from "./noCopyOnWrite.ts";
+import { applyPendingStateDbImportIfPresent } from "./plugins/LegacyT3Importer.ts";
 import {
   DEFAULT_SIGNAL_EXPORT,
   nodeProcessRuntimeAttributes,
@@ -186,6 +187,10 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
   const path = yield* Path.Path;
 
   yield* fs.makeDirectory(derivedPaths.stateDir, { recursive: true });
+  const promotedPendingImport = applyPendingStateDbImportIfPresent(derivedPaths.stateDir);
+  if (promotedPendingImport) {
+    yield* Effect.logInfo("Promoted staged legacy statev2.sqlite import into ByteDock stateDir.");
+  }
   // Only before the database exists: a No_COW WAL beside an existing copy-on-write database
   // could not be reflinked into one backup folder with it. When unsure, leave the folder as is.
   if (!(yield* fs.exists(derivedPaths.dbPath).pipe(Effect.orElseSucceed(() => true)))) {
