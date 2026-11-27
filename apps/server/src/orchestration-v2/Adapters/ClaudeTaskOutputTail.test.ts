@@ -163,4 +163,25 @@ describe("claudeTaskOutputRoot", () => {
         );
       }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("resolves the un-suffixed claude temp root on Windows", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const root = (environment: Record<string, string>, cwd: string | null = null) =>
+        claudeTaskOutputRoot(environment, path, cwd, "win32");
+      assert.equal(
+        root({ TEMP: "C:\\Users\\dev\\AppData\\Local\\Temp" }),
+        path.resolve(".", "C:\\Users\\dev\\AppData\\Local\\Temp", "claude"),
+      );
+      assert.equal(
+        root({ Temp: "C:\\Temp\\Lower" }),
+        path.resolve(".", "C:\\Temp\\Lower", "claude"),
+      );
+      assert.equal(
+        root({ CLAUDE_CODE_TMPDIR: "C:\\CustomTmp", TEMP: "C:\\Users\\dev\\AppData\\Local\\Temp" }),
+        path.resolve(".", "C:\\CustomTmp", "claude"),
+      );
+      assert.equal(root({}), undefined);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

@@ -29,6 +29,7 @@ import {
 import { Fragment } from "react";
 import { m, type MessageResolver } from "~/i18n/messages";
 import { tickTextContent } from "~/lib/tickTextContent";
+import { BackgroundCommandActivity } from "./BackgroundCommandActivity";
 import { BackgroundWorkDetails } from "./BackgroundWorkDetails";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -212,17 +213,29 @@ export function backgroundWorkNowItem(
   const presentation = presentPendingBackgroundWork(input.tasks, resolve);
   if (presentation === null) return null;
   const rows = presentation.items.map((task) => {
-    const itemKey =
-      input.tasks.find((pending) => pending.taskId === task.taskId)?.nativeItemId ?? task.taskId;
+    const pendingTask = input.tasks.find((pending) => pending.taskId === task.taskId);
+    const itemKey = pendingTask?.nativeItemId ?? task.taskId;
     // Same key derivePendingBackgroundWork gives turn-item tasks; subagent items carry progress.
-    const item = input.turnItems.findLast(
-      (candidate) => (candidate.nativeItemRef?.nativeId || candidate.id) === itemKey,
+    const item = input.turnItems.findLast((candidate) =>
+      pendingTask?.itemId === undefined
+        ? (candidate.nativeItemRef?.nativeId || candidate.id) === itemKey
+        : candidate.id === pendingTask.itemId,
     );
     const subagent = item?.type === "subagent" ? item : undefined;
+    const commandItem = item?.type === "command_execution" ? item : undefined;
+    const startedAtMs = item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : null;
+    const runningCommand =
+      commandItem?.status === "running"
+        ? {
+            threadId: pendingTask?.sourceThreadId ?? commandItem.threadId ?? input.threadId,
+            itemId: pendingTask?.itemId ?? commandItem.id,
+            startedAtMs: startedAtMs ?? DateTime.toEpochMillis(commandItem.updatedAt),
+          }
+        : null;
     return {
       task,
       label:
-        item?.type === "command_execution" && commandDisplayText(item.input) === task.label ? (
+        commandItem && commandDisplayText(commandItem.input) === task.label ? (
           <span className="font-mono in-data-[slot=popover-popup]:whitespace-pre-wrap">
             {task.label}
           </span>
@@ -232,7 +245,8 @@ export function backgroundWorkNowItem(
           task.label
         ),
       activity: subagent?.progress?.replace(/\s+/gu, " ").trim() || null,
-      startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : null,
+      runningCommand,
+      startedAtMs,
       updatedAtMs: subagent ? DateTime.toEpochMillis(subagent.updatedAt) : 0,
     };
   });
@@ -262,7 +276,15 @@ export function backgroundWorkNowItem(
         presentation.title
       ),
     description: only ? (
-      only.activity
+      (only.activity ??
+      (only.runningCommand ? (
+        <BackgroundCommandActivity
+          environmentId={input.environmentId}
+          threadId={only.runningCommand.threadId}
+          itemId={only.runningCommand.itemId}
+          startedAtMs={only.runningCommand.startedAtMs}
+        />
+      ) : null))
     ) : newest ? (
       <>
         {newest.label}: {newest.activity}

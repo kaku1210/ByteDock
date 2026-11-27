@@ -10,6 +10,7 @@ import {
   OrchestrationV2GetTurnItemResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -92,7 +93,13 @@ const guestCommandOutputAtom = Atom.family((key: string) => {
   // `scan` emits its seed first; skipping it keeps the row "loading" until the first frame.
   return Atom.make(
     frames.pipe(
-      Stream.scan(() => EMPTY_COMMAND_OUTPUT, applyCommandOutputFrame),
+      Stream.mapEffect((frame) =>
+        Clock.currentTimeMillis.pipe(Effect.map((nowMs) => [frame, nowMs] as const)),
+      ),
+      Stream.scan(
+        () => EMPTY_COMMAND_OUTPUT,
+        (view, [frame, nowMs]) => applyCommandOutputFrame(view, frame, nowMs),
+      ),
       Stream.filter((view) => view !== EMPTY_COMMAND_OUTPUT),
     ),
   );

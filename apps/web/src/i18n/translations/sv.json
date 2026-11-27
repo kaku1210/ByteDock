@@ -13222,5 +13222,7 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "effde45eb45f3c7e": "ingen ny utdata på {duration}",
+  "1a6ad987dcf3a605": "Ingen utdata på {duration}"
 }

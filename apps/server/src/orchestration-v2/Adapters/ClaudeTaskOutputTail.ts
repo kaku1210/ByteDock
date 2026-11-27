@@ -13,13 +13,41 @@ const MAX_LOCATE_ATTEMPTS = 40;
 /** Skip ahead of fast writers; only the tail is displayed. */
 const MAX_READ_BYTES = 256 * 1024;
 
-/** Claude Code's per-user temp root, or none where it has no uid (Windows). */
+function readEnvironmentValue(
+  environment: Readonly<Record<string, string | undefined>> | undefined,
+  name: string,
+  caseInsensitive: boolean,
+): string | undefined {
+  if (environment === undefined) return undefined;
+  const direct = environment[name]?.trim();
+  if (direct) return direct;
+  if (!caseInsensitive) return undefined;
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(environment)) {
+    if (key.toLowerCase() === target) {
+      const trimmed = value?.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return undefined;
+}
+
+/** Claude Code's per-user temp root (`claude-<uid>` on POSIX, `claude` on Windows). */
 export function claudeTaskOutputRoot(
   environment: Readonly<Record<string, string | undefined>> | undefined,
   path: Path.Path,
   cwd: string | null,
   platform: NodeJS.Platform,
 ): string | undefined {
+  if (platform === "win32") {
+    const base =
+      readEnvironmentValue(environment, "CLAUDE_CODE_TMPDIR", true) ||
+      readEnvironmentValue(environment, "TEMP", true) ||
+      readEnvironmentValue(environment, "TMP", true) ||
+      readEnvironmentValue(environment, "TMPDIR", true);
+    if (!base) return undefined;
+    return path.resolve(cwd ?? ".", base, "claude");
+  }
   const uid = process.getuid?.();
   if (uid === undefined) return undefined;
   // Claude Code's macOS build falls back to /tmp and ignores the TMPDIR that

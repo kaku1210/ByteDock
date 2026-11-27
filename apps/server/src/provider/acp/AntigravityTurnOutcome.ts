@@ -11,16 +11,21 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
-import { decodeAntigravityStepToolCall } from "./AntigravityChildWork.ts";
+import {
+  decodeAntigravityStepToolCall,
+  readAntigravityPendingReply,
+} from "./AntigravityChildWork.ts";
 import { antigravityManagedPath, antigravityProfileRoot } from "./AntigravityProfilePaths.ts";
 
 // CORTEX_STEP_TYPE_ERROR_MESSAGE in the native trajectory.
 const ERROR_STEP_TYPE = 17;
 // CORTEX_STEP_TYPE_PLANNER_RESPONSE: the model answered within this turn.
 const PLANNER_RESPONSE_STEP_TYPE = 15;
-// CORTEX_STEP_TYPE_RUN_COMMAND: shell commands that can outlive the ACP wire update.
+// CORTEX_STEP_TYPE_RUN_COMMAND: legacy shell command step type.
 const RUN_COMMAND_STEP_TYPE = 21;
-// CORTEX_STEP_TYPE_GENERIC: includes native `schedule` waits (status = 2 while waiting).
+// CORTEX_STEP_TYPE_SYSTEM_MESSAGE: reactive wakes delivered when background tasks report.
+const SYSTEM_MESSAGE_STEP_TYPE = 101;
+// CORTEX_STEP_TYPE_GENERIC: agy 1.5+ stores `run_command` and `schedule` steps here.
 const GENERIC_STEP_TYPE = 132;
 const STEP_STATUS_PENDING = 1;
 const STEP_STATUS_RUNNING = 2;
@@ -86,6 +91,10 @@ const GO_DURATION_UNIT_MS: Record<string, number> = {
 };
 const NATIVE_SESSION_ID = /^[\w-]+$/;
 const TRANSIENT_GATEWAY_STATUSES = new Set(["502", "503", "504"]);
+const TRANSIENT_STREAM_ERROR =
+  /\b(?:The stream was interrupted|stream reading error|unexpected EOF)\b/i;
+const TRANSIENT_NETWORK_ERROR =
+  /\b(?:There was a network issue connecting to the server|TLS handshake timeout|i\/o timeout|context deadline exceeded|connection reset by peer|An established connection was aborted|wsarecv|wsasend)\b/i;
 const decodeDaemonArg = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ IsDaemon: Schema.optional(Schema.Boolean) })),
 );
@@ -211,7 +220,7 @@ const hasActiveWaitAfter =
         Option.getOrUndefined(decodeDaemonArg(toolCall.argumentsJson))?.IsDaemon === true;
       if (isDaemon) continue;
       if (type === GENERIC_STEP_TYPE) {
-        if (toolCall?.name === "schedule") return true;
+        if (toolCall?.name === "schedule" || toolCall?.name === "run_command") return true;
         continue;
       }
       if (type === RUN_COMMAND_STEP_TYPE) {
@@ -219,6 +228,80 @@ const hasActiveWaitAfter =
       }
     }
     return false;
+  };
+
+const readPostSettleActivityAfter =
+  (sinceIndex: number, ignoreToolCallIds: ReadonlySet<string>) =>
+  (
+    database: NodeSqlite.DatabaseSync,
+  ): { readonly hasActivity: boolean; readonly maxStepIndex: number } => {
+    const maxStepIndex = lastStepIndex(database);
+    if (maxStepIndex <= sinceIndex) {
+      return { hasActivity: false, maxStepIndex };
+    }
+    const columns = new Set(
+      database
+        .prepare("PRAGMA table_info(steps)")
+        .all()
+        .flatMap((row) =>
+          row !== null && typeof row === "object" && "name" in row && typeof row.name === "string"
+            ? [row.name]
+            : [],
+        ),
+    );
+    if (!columns.has("step_type")) {
+      return { hasActivity: false, maxStepIndex };
+    }
+    const hasMetadata = columns.has("metadata");
+    const hasPayload = columns.has("step_payload");
+    const selectColumns = [
+      "step_type AS type",
+      hasMetadata
+        ? "CASE WHEN length(metadata) <= ? THEN metadata END AS metadata"
+        : "NULL AS metadata",
+      hasPayload
+        ? "CASE WHEN length(step_payload) <= ? THEN step_payload END AS step_payload"
+        : "NULL AS step_payload",
+    ].join(", ");
+    const bindArgs: Array<number> = [];
+    if (hasMetadata) bindArgs.push(MAX_ACTIVE_WAIT_BLOB_BYTES);
+    if (hasPayload) bindArgs.push(MAX_ACTIVE_WAIT_BLOB_BYTES);
+    bindArgs.push(
+      sinceIndex,
+      PLANNER_RESPONSE_STEP_TYPE,
+      SYSTEM_MESSAGE_STEP_TYPE,
+      RUN_COMMAND_STEP_TYPE,
+      GENERIC_STEP_TYPE,
+      MAX_ACTIVE_WAIT_ROWS,
+    );
+    const rows = database
+      .prepare(
+        `SELECT ${selectColumns}
+         FROM steps
+         WHERE idx > ? AND step_type IN (?, ?, ?, ?)
+         ORDER BY idx DESC
+         LIMIT ?`,
+      )
+      .iterate(...bindArgs);
+    for (const row of rows) {
+      if (row === null || typeof row !== "object") continue;
+      const type = "type" in row ? Number(row.type) : 0;
+      if (type === PLANNER_RESPONSE_STEP_TYPE || type === SYSTEM_MESSAGE_STEP_TYPE) {
+        return { hasActivity: true, maxStepIndex };
+      }
+      const metadata =
+        "metadata" in row && row.metadata instanceof Uint8Array ? row.metadata : undefined;
+      const payload =
+        "step_payload" in row && row.step_payload instanceof Uint8Array
+          ? row.step_payload
+          : undefined;
+      const toolCall = decodeAntigravityStepToolCall({ metadata, payload });
+      if (toolCall?.id !== undefined && ignoreToolCallIds.has(toolCall.id)) {
+        continue;
+      }
+      return { hasActivity: true, maxStepIndex };
+    }
+    return { hasActivity: false, maxStepIndex };
   };
 
 function resetAtFrom(text: string, now: DateTime.Utc | undefined): string | undefined {
@@ -332,16 +415,40 @@ function turnFailure(
       };
     }
     const streamChunkError = invalidStreamChunkGatewayError(errorText);
-    if (streamChunkError === null) return undefined;
-    return {
-      failure: makeProviderFailure({
-        class: "provider_error",
-        message: streamChunkError.message,
-        code: streamChunkError.status,
-        retryable: true,
-      }),
-      threadDisposition: "reusable",
-    };
+    if (streamChunkError !== null) {
+      return {
+        failure: makeProviderFailure({
+          class: "provider_error",
+          message: streamChunkError.message,
+          code: streamChunkError.status,
+          retryable: true,
+        }),
+        threadDisposition: "reusable",
+      };
+    }
+    if (TRANSIENT_STREAM_ERROR.test(errorText)) {
+      return {
+        failure: makeProviderFailure({
+          class: "provider_error",
+          message: "The Antigravity response stream was interrupted.",
+          code: "STREAM_INTERRUPTED",
+          retryable: true,
+        }),
+        threadDisposition: "reusable",
+      };
+    }
+    if (TRANSIENT_NETWORK_ERROR.test(errorText)) {
+      return {
+        failure: makeProviderFailure({
+          class: "provider_error",
+          message: "There was a network issue connecting to Antigravity.",
+          code: "NETWORK_ERROR",
+          retryable: true,
+        }),
+        threadDisposition: "reusable",
+      };
+    }
+    return undefined;
   }
   // The agent maps only the SDK's QUOTA_EXHAUSTED stop reason to `refusal`.
   if (errorText === undefined && stopReason !== "refusal") return undefined;
@@ -403,6 +510,27 @@ function turnFailure(
         };
       }
       return reusable(failure);
+    }
+    const streamInterrupted = TRANSIENT_STREAM_ERROR.test(text);
+    const networkIssue = !streamInterrupted && TRANSIENT_NETWORK_ERROR.test(text);
+    if (streamInterrupted || networkIssue) {
+      const failure = makeProviderFailure({
+        class: "provider_error",
+        message: streamInterrupted
+          ? "The Antigravity response stream was interrupted."
+          : "There was a network issue connecting to Antigravity.",
+        code: streamInterrupted ? "STREAM_INTERRUPTED" : "NETWORK_ERROR",
+        retryable: true,
+      });
+      return options?.retired === true
+        ? reusable(failure)
+        : {
+            failure,
+            threadDisposition: "reusable",
+            resumeWith: "continue",
+            maxResumes: 2,
+            resumeDelay: "2 seconds",
+          };
     }
     return reusable(
       makeProviderFailure({
@@ -575,3 +703,49 @@ export const watchAntigravityActiveWait = Effect.fn("AntigravityTurnOutcome.watc
     });
   },
 );
+
+/**
+ * Watches for post-settle native steps (`SYSTEM_MESSAGE`, `PLANNER_RESPONSE`, or newly spawned
+ * tool calls) or unread high-priority wakes written after `session/prompt` settled. `agy acp`
+ * 1.5.x stops forwarding updates and permission prompts once `session/prompt` returns, so
+ * detecting silent native progress lets the adapter reattach the stream with a wake prompt.
+ */
+export const watchAntigravityPostSettleActivity = Effect.fn(
+  "AntigravityTurnOutcome.watchPostSettleActivity",
+)(function* (profileDirectory: string, sessionId: string) {
+  const baseline = yield* snapshotSessionBaseline(profileDirectory, sessionId);
+  if (baseline === undefined) {
+    return {
+      check: (_input: { readonly ignoreToolCallIds: ReadonlyArray<string> }) =>
+        Effect.succeed(false),
+      acknowledge: () => Effect.void,
+    };
+  }
+  let ackedIndex = baseline.startIndex;
+  const readMaxIndex = Effect.fn("AntigravityTurnOutcome.readMaxStepIndex")(function* () {
+    const filePath = yield* verifyBaselineFile(baseline);
+    if (filePath === undefined) return undefined;
+    return yield* readSteps(filePath, lastStepIndex).pipe(Effect.orElseSucceed(() => undefined));
+  });
+  return {
+    check: Effect.fn("AntigravityTurnOutcome.checkPostSettleActivity")(function* (input: {
+      readonly ignoreToolCallIds: ReadonlyArray<string>;
+    }) {
+      const filePath = yield* verifyBaselineFile(baseline);
+      if (filePath !== undefined) {
+        const result = yield* readSteps(
+          filePath,
+          readPostSettleActivityAfter(ackedIndex, new Set(input.ignoreToolCallIds)),
+        ).pipe(Effect.orElseSucceed(() => undefined));
+        if (result?.hasActivity === true) return true;
+      }
+      return yield* readAntigravityPendingReply({ profileDirectory, sessionId });
+    }),
+    acknowledge: Effect.fn("AntigravityTurnOutcome.acknowledgePostSettleActivity")(function* () {
+      const current = yield* readMaxIndex();
+      if (current !== undefined && current > ackedIndex) {
+        ackedIndex = current;
+      }
+    }),
+  };
+});
