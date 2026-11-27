@@ -35,6 +35,10 @@ const API_ERROR =
   /Error (\d{3}), Message: ((?:(?!, Status: |Error \d{3}, Message: ).)+), Status: ([A-Z_]+|\d{3}[^,\n]*)/s;
 // Antigravity 1.5 with a Google account writes "STATUS (code NNN): message".
 const STATUS_ERROR = /(?<![A-Z_])([A-Z_]+) \(code (\d{3})\): (\P{Cc}+)/u;
+// agy_acp_server's local proxy writes an HTTP 5xx error response into an already-open 200 SSE stream.
+const INVALID_STREAM_CHUNK_GATEWAY_ERROR =
+  /\biterateResponseStream:\s*invalid stream chunk:\s*HTTP\/\d(?:\.\d)?\s+(502|503|504)(?:[ \t]+([^\r\n:]+))?/;
+const ZERO_STREAM_RECEIVES = /\bstream_receive_count:0\b/;
 // Newer Antigravity builds attach the HTTP JSON body (pretty-printed or compact) to the error step.
 const ERROR_JSON_START = /\{\s*"error"\s*:/g;
 const decodeVerificationError = Schema.decodeUnknownOption(
@@ -237,6 +241,20 @@ function statusError(text: string) {
   return match === null ? null : ([match[0], match[2], match[3], match[1]] as const);
 }
 
+function invalidStreamChunkGatewayError(text: string) {
+  const match = INVALID_STREAM_CHUNK_GATEWAY_ERROR.exec(text);
+  if (match === null) return null;
+  const httpStatus = match[1]!;
+  const reason = match[2]?.trim();
+  const status = reason ? `${httpStatus} ${reason}` : httpStatus;
+  return {
+    httpStatus,
+    status,
+    message: `${status}: Antigravity response stream was interrupted.`,
+    zeroStreamReceives: ZERO_STREAM_RECEIVES.test(text),
+  };
+}
+
 function balancedJsonObject(text: string, start: number): string | undefined {
   let depth = 0;
   let inString = false;
@@ -300,14 +318,26 @@ function turnFailure(
   if (options?.earlyCheck === true) {
     if (errorText === undefined) return undefined;
     const apiError = API_ERROR.exec(errorText) ?? statusError(errorText);
-    if (apiError === null) return undefined;
-    const [, httpStatus, message, status] = apiError;
-    if (Number(httpStatus) < 500) return undefined;
+    if (apiError !== null) {
+      const [, httpStatus, message, status] = apiError;
+      if (Number(httpStatus) < 500) return undefined;
+      return {
+        failure: makeProviderFailure({
+          class: "provider_error",
+          message: message!.trim(),
+          code: status ?? null,
+          retryable: true,
+        }),
+        threadDisposition: "reusable",
+      };
+    }
+    const streamChunkError = invalidStreamChunkGatewayError(errorText);
+    if (streamChunkError === null) return undefined;
     return {
       failure: makeProviderFailure({
         class: "provider_error",
-        message: message!.trim(),
-        code: status ?? null,
+        message: streamChunkError.message,
+        code: streamChunkError.status,
         retryable: true,
       }),
       threadDisposition: "reusable",
@@ -355,6 +385,25 @@ function turnFailure(
     );
   }
   if (apiError === null) {
+    const streamChunkError = invalidStreamChunkGatewayError(text);
+    if (streamChunkError !== null) {
+      const failure = makeProviderFailure({
+        class: "provider_error",
+        message: streamChunkError.message,
+        code: streamChunkError.status,
+        retryable: true,
+      });
+      if (options?.retired !== true && streamChunkError.zeroStreamReceives) {
+        return {
+          failure,
+          threadDisposition: "reusable",
+          resumeWith: "continue",
+          maxResumes: 2,
+          resumeDelay: "2 seconds",
+        };
+      }
+      return reusable(failure);
+    }
     return reusable(
       makeProviderFailure({
         class: "provider_error",

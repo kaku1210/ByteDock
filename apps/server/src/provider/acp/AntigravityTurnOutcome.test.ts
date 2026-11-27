@@ -470,6 +470,131 @@ describe("watchAntigravityPromptOutcome", () => {
         }
       }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect(
+    "classifies invalid stream chunk 502/503/504 errors, wires earlyCheck, and auto-resumes only on stream_receive_count:0",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped();
+        const sessionId = "e6aba774-5472-4277-b6ee-27b2e05570aa";
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        let nextIndex = 0;
+        const appendSteps = (steps: ReadonlyArray<readonly [number, Uint8Array]>) => {
+          const database = new NodeSqlite.DatabaseSync(path.join(conversations, `${sessionId}.db`));
+          try {
+            database.exec(
+              "CREATE TABLE IF NOT EXISTS steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)",
+            );
+            const insert = database.prepare("INSERT INTO steps VALUES (?, ?, ?)");
+            for (const [type, payload] of steps) insert.run(nextIndex++, type, payload);
+          } finally {
+            database.close();
+          }
+        };
+        const streamChunkPayload = (statusLine: string, tags?: string) =>
+          Buffer.concat([
+            errorPayload(
+              `iterateResponseStream: invalid stream chunk: HTTP/1.0 ${statusLine}\r\nServer: BaseHTTP/0.6 Python/3.14.7\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 20`,
+            ),
+            Buffer.from(tags === undefined ? "" : `\nWraps: (3) tags: ${tags}`),
+          ]);
+        const input = Buffer.from("Analyze logs.");
+
+        for (const statusLine of [
+          "502 Bad Gateway",
+          "503 Service Unavailable",
+          "504 Gateway Timeout",
+        ]) {
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          appendSteps([
+            [USER_INPUT, input],
+            [
+              ERROR_MESSAGE,
+              streamChunkPayload(statusLine, "map[stream_receive_count:0 streaming_duration:0s]"),
+            ],
+          ]);
+
+          const outcome = yield* check({ stopReason: "end_turn" });
+          assert.deepEqual(outcome, {
+            failure: {
+              class: "provider_error",
+              message: `${statusLine}: Antigravity response stream was interrupted.`,
+              code: statusLine,
+              retryable: true,
+            },
+            threadDisposition: "reusable",
+            resumeWith: "continue",
+            maxResumes: 2,
+            resumeDelay: "2 seconds",
+          });
+
+          const retired = yield* check({ stopReason: "end_turn" }, { retired: true });
+          assert.equal(retired?.failure.retryable, true);
+          assert.equal(retired?.failure.code, statusLine);
+          assert.isUndefined(retired?.resumeWith);
+          assert.isUndefined(retired?.maxResumes);
+
+          const early = yield* check({ stopReason: "end_turn" }, { earlyCheck: true });
+          assert.deepEqual(early, {
+            failure: {
+              class: "provider_error",
+              message: `${statusLine}: Antigravity response stream was interrupted.`,
+              code: statusLine,
+              retryable: true,
+            },
+            threadDisposition: "reusable",
+          });
+        }
+
+        // Non-zero stream_receive_count or missing tags stays retryable without auto-resume, while still triggering earlyCheck.
+        for (const tags of ["map[stream_receive_count:3 streaming_duration:4s]", undefined]) {
+          const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+          appendSteps([
+            [USER_INPUT, input],
+            [ERROR_MESSAGE, streamChunkPayload("502 Bad Gateway", tags)],
+          ]);
+
+          const outcome = yield* check({ stopReason: "end_turn" });
+          assert.deepEqual(outcome, {
+            failure: {
+              class: "provider_error",
+              message: "502 Bad Gateway: Antigravity response stream was interrupted.",
+              code: "502 Bad Gateway",
+              retryable: true,
+            },
+            threadDisposition: "reusable",
+          });
+
+          const early = yield* check({ stopReason: "end_turn" }, { earlyCheck: true });
+          assert.equal(early?.failure.retryable, true);
+          assert.equal(early?.failure.code, "502 Bad Gateway");
+          assert.isUndefined(early?.resumeWith);
+        }
+
+        // Other HTTP statuses in invalid stream chunks do not match the 502/503/504 gateway path.
+        const check500 = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
+        appendSteps([
+          [USER_INPUT, input],
+          [
+            ERROR_MESSAGE,
+            streamChunkPayload(
+              "500 Internal Server Error",
+              "map[stream_receive_count:0 streaming_duration:0s]",
+            ),
+          ],
+        ]);
+        assert.isUndefined(yield* check500({ stopReason: "end_turn" }, { earlyCheck: true }));
+        const outcome500 = yield* check500({ stopReason: "end_turn" });
+        assert.equal(
+          outcome500?.failure.message,
+          "Antigravity stopped this turn because of an error.",
+        );
+        assert.isUndefined(outcome500?.resumeWith);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("watchAntigravityActiveWait", () => {
