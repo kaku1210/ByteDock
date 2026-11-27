@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "T3 Code Plus",
-  "short_name": "T3 Code Plus",
+  "name": "ByteDock",
+  "short_name": "ByteDock",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

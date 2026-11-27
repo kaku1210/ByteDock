@@ -134,6 +134,7 @@ import Migration0120 from "./Migrations/120_SharedWorktreeCoordination.ts";
 import Migration0121 from "./Migrations/121_SubtaskSummaryCache.ts";
 import Migration0122 from "./Migrations/122_ProjectionProjectsParentProject.ts";
 import Migration0123 from "./Migrations/123_WorkflowMailSender.ts";
+import Migration0124 from "./Migrations/124_PluginKv.ts"; // bytedock-seam-import:plugin-kv-migration
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -260,6 +261,9 @@ const migrationEntries = [
   [121, "SubtaskSummaryCache", Migration0121],
   [122, "ProjectionProjectsParentProject", Migration0122],
   [123, "WorkflowMailSender", Migration0123],
+  // bytedock-seam:plugin-kv-migration
+  [124, "PluginKv", Migration0124],
+  // end-bytedock-seam:plugin-kv-migration
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

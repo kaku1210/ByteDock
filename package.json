@@ -30,6 +30,8 @@
     "typecheck": "vp run -r --cache --concurrency-limit 4 typecheck",
     "tc": "vp run -r --cache --concurrency-limit 4 typecheck",
     "check:changed": "node scripts/check-changed.ts",
+    "check:seams": "node scripts/check-seams.ts",
+    "check:telemetry": "node scripts/check-zero-telemetry.ts",
     "report:renders": "node scripts/render-metrics.ts",
     "report:server": "node scripts/server-metrics.ts",
     "lint": "vp lint --report-unused-disable-directives",

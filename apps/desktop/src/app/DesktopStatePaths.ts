@@ -16,8 +16,8 @@ export function resolveDesktopBaseDir(input: {
   readonly t3Home: Option.Option<string>;
 }): string {
   return Option.getOrElse(normalizeConfiguredBaseDir(input.t3Home), () =>
-    // Separate from the official app's ~/.t3 so both can be installed side by side.
-    input.joinPath(input.homeDirectory, ".t3-plus"),
+    // Isolated from ~/.t3 and ~/.t3-plus so ByteDock can run side by side without touching existing T3 data.
+    input.joinPath(input.homeDirectory, ".bytedock"),
   );
 }
 

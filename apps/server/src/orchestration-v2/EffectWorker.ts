@@ -1140,3 +1140,41 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
   );
 
 export const runDaemon = runDaemonWithOptions();
+
+// bytedock-seam:outbox-notify
+export interface PluginOutboxNotification {
+  readonly pluginId: string;
+  readonly notificationId: string;
+  readonly severity: "info" | "warning" | "error";
+  readonly title: string;
+  readonly body: string;
+  readonly threadId?: string | undefined;
+}
+
+export interface PluginNotificationHubShape {
+  readonly enqueue: (notification: PluginOutboxNotification) => Effect.Effect<void>;
+  readonly drainPending: () => Effect.Effect<ReadonlyArray<PluginOutboxNotification>>;
+}
+
+/**
+ * Host outbox notification bridge for plugins (Seam 16 / Decision Gate cross-surface delivery).
+ */
+export class PluginNotificationHub extends Context.Service<
+  PluginNotificationHub,
+  PluginNotificationHubShape
+>()("t3/orchestration-v2/EffectWorker/PluginNotificationHub") {}
+
+export const layerPluginNotificationHub = Layer.sync(PluginNotificationHub, () => {
+  const queue: Array<PluginOutboxNotification> = [];
+  return PluginNotificationHub.of({
+    enqueue: Effect.fn("PluginNotificationHub.enqueue")((notification) =>
+      Effect.sync(() => {
+        queue.push(notification);
+      }),
+    ),
+    drainPending: Effect.fn("PluginNotificationHub.drainPending")(() =>
+      Effect.sync(() => queue.splice(0, queue.length)),
+    ),
+  });
+});
+// end-bytedock-seam:outbox-notify

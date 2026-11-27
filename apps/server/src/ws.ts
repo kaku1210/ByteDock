@@ -313,6 +313,8 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { requestUrl } from "./requestUrl.ts";
+import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:plugins-rpc-handlers
+import { PluginRpcError } from "@t3tools/contracts"; // bytedock-seam-import:plugins-rpc-handlers
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1655,6 +1657,12 @@ export const layerWsRpc = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const relayClient = yield* RelayClient.RelayClient;
+      // bytedock-seam:plugins-rpc-handlers
+      const maybePluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+      const pluginKernel = Option.isSome(maybePluginKernel)
+        ? maybePluginKernel.value
+        : yield* PluginKernel.makePluginKernel();
+      // end-bytedock-seam:plugins-rpc-handlers
       // Webhook URLs start agents; expose them only to operate-scoped sessions while keeping tasks readable.
       const withVisibleWebhookUrls = (result: ScheduledTaskListResult): ScheduledTaskListResult =>
         currentSession.scopes.includes(AuthOrchestrationOperateScope)
@@ -3892,6 +3900,76 @@ export const layerWsRpc = (
           externalTunnel.exportBundle(input),
         [WS_METHODS.serverExternalTunnelImportBundle]: (input) =>
           externalTunnel.importBundle(input),
+        // bytedock-seam:plugins-rpc-handlers
+        [WS_METHODS.pluginsList]: (_input) =>
+          Effect.all({
+            active: pluginKernel.revisions.active(),
+            plugins: pluginKernel.listDescriptors(),
+          }).pipe(
+            Effect.map(({ active, plugins }) => ({
+              activeRevision: active.rev,
+              plugins,
+            })),
+          ),
+        [WS_METHODS.pluginsReload]: Effect.fn("ws.plugins.reload")(function* (_input) {
+          const prev = yield* pluginKernel.revisions.active();
+          const next = yield* pluginKernel.revisions.installRevision({
+            manifests: prev.manifests,
+          });
+          const plugins = yield* pluginKernel.listDescriptors();
+          return {
+            previousRevision: prev.rev,
+            activeRevision: next.rev,
+            plugins,
+          };
+        }),
+        [WS_METHODS.pluginsInvoke]: Effect.fn("ws.plugins.invoke")(function* (input) {
+          const verdict = yield* pluginKernel.broker.authorize({
+            caller: { kind: "host-client", sessionHash: currentSessionId },
+            callerScopes: currentSession.scopes,
+            pluginId: input.pluginId,
+            method: input.method,
+          });
+          if (!verdict.allowed) {
+            return yield* new PluginRpcError({
+              code:
+                verdict.reason._tag === "UnknownNamespace" ? "unknown_namespace" : "unauthorized",
+              message: `Plugin RPC ${input.pluginId}.${input.method} denied (${verdict.reason._tag}).`,
+              pluginId: input.pluginId,
+            });
+          }
+          const active = yield* pluginKernel.revisions.active();
+          return {
+            revision: active.rev,
+            auditId: verdict.auditId,
+            result: null,
+          };
+        }),
+        [WS_METHODS.pluginsSubscribe]: (input) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const verdict = yield* pluginKernel.broker.authorize({
+                caller: { kind: "host-client", sessionHash: currentSessionId },
+                callerScopes: currentSession.scopes,
+                pluginId: input.pluginId,
+                method: input.topic,
+              });
+              if (!verdict.allowed) {
+                return Stream.fail(
+                  new PluginRpcError({
+                    code:
+                      verdict.reason._tag === "UnknownNamespace"
+                        ? "unknown_namespace"
+                        : "unauthorized",
+                    message: `Plugin stream ${input.pluginId}.${input.topic} denied (${verdict.reason._tag}).`,
+                    pluginId: input.pluginId,
+                  }),
+                );
+              }
+              return Stream.empty;
+            }),
+          ),
+        // end-bytedock-seam:plugins-rpc-handlers
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
       const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
@@ -3926,6 +4004,9 @@ export const layer = Layer.unwrap(
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
     const sql = yield* SqlClient.SqlClient;
+    // bytedock-seam:plugins-rpc-handlers
+    const maybeServerPluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+    // end-bytedock-seam:plugins-rpc-handlers
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -4006,6 +4087,14 @@ export const layer = Layer.unwrap(
               Layer.provide(DefectReporter.layer),
               Layer.provide(AcpRegistrySessions.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              // bytedock-seam:plugins-rpc-handlers
+              Layer.provide(
+                Option.match(maybeServerPluginKernel, {
+                  onNone: () => Layer.empty,
+                  onSome: (kernel) => Layer.succeed(PluginKernel.PluginKernel, kernel),
+                }),
+              ),
+              // end-bytedock-seam:plugins-rpc-handlers
               // Installs outlive the connection that started them and lock across clients.
               Layer.provide(
                 Layer.succeed(

@@ -32,6 +32,8 @@
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
+        "check-seams.ts",
+        "check-zero-telemetry.ts",
         "knip-schemas.ts",
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",
@@ -109,7 +111,11 @@
     "apps/web": {
       // Worktree setup (scripts/setup-worktree.ts) runs this directly, and evidence
       // fixtures run under node.
-      "entry": ["scripts/warm-dep-cache.ts", "test/fixtures/**/*.mjs"],
+      "entry": [
+        "scripts/warm-dep-cache.ts",
+        "test/fixtures/**/*.mjs",
+        "src/components/plugin/PluginNodeRenderer.tsx",
+      ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
@@ -185,6 +191,38 @@
       // graphqlgen reads its config; the generated operations export every selection's class.
       "entry": ["graphql.config.ts", "scripts/measure-pr-preview.ts"],
       "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
+    },
+    "packages/plugin-sdk": {
+      "entry": [
+        "src/index.ts",
+        "src/manifest.ts",
+        "src/bridge.ts",
+        "src/cacheGuard.ts",
+        "src/server.ts",
+      ],
+      "includeEntryExports": true,
+    },
+    "packages/plugin-ui-renderer": {
+      "entry": ["src/index.ts", "src/protocol.ts", "src/sandboxBridge.ts"],
+      "includeEntryExports": true,
+    },
+    "packages/plugin-kernel": {
+      "entry": [
+        "src/index.ts",
+        "src/hostModules.ts",
+        "src/revision.ts",
+        "src/sessionGate.ts",
+        "src/broker.ts",
+        "src/storage.ts",
+        "src/configService.ts",
+        "src/compiler.ts",
+        "src/layer.ts",
+      ],
+      "includeEntryExports": true,
+    },
+    "plugins/*": {
+      "entry": ["src/*.ts"],
+      "includeEntryExports": true,
     },
   },
 }

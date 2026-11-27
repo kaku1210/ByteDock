@@ -1,12 +1,13 @@
+<h1 align="center">ByteDock</h1>
+
 <p align="center">
-  <a href="https://t3.codes">
-    <img src="./assets/prod/t3-black-web-icon-192x192.png" width="80" height="80" alt="T3 Code logo" />
-  </a>
+  <strong>Your open, zero-telemetry, hot-reloadable multi-agent engineering dock</strong><br />
+  <a href="https://byte.didyou.eat">byte.didyou.eat</a>
 </p>
 
-<h1 align="center">T3 Code Plus</h1>
+> **Independent Open-Source Notice**: ByteDock is an independent open-source project evolved from MIT-licensed source code and is **not affiliated with, endorsed by, or sponsored by T3 Tools, Inc.** All local runtime data is isolated under `~/.bytedock/` (never modifying `~/.t3/` or `~/.t3-plus/`), and all outbound commercial telemetry / crash reporting is stripped and statically gated in CI (`scripts/check-zero-telemetry.ts`).
 
-## T3 Code Plus TODO
+## ByteDock Roadmap & Heritage TODO
 
 - [x] 优化侧栏分组与折叠体验（已随上游原生能力覆盖）：支持按仓库 / 路径 / 独立分组与 `Boring sidebar` 按项目折叠、折叠态四态圆点提示（等待审批 / 失败 / 未读 / 运行中）及计数、项目与会话置顶排序、`Cmd/Ctrl+K` 跨环境定位与 `Settle` / `Archive` 分离。
 - [x] 优化会话内模型切换与任务交接（主体已由上游 + Plus Phase 1–3 覆盖）：已具备 `ModelSwitchRow` / `HandoffRow` 切换与交接展示、`ProviderStatusBanner` 失效/未登录处理入口，以及统一子会话与协作总览交接闭环。

@@ -1,0 +1,60 @@
+{
+  "name": "@bytedock/plugin-kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./hostModules": {
+      "types": "./src/hostModules.ts",
+      "import": "./src/hostModules.ts"
+    },
+    "./revision": {
+      "types": "./src/revision.ts",
+      "import": "./src/revision.ts"
+    },
+    "./sessionGate": {
+      "types": "./src/sessionGate.ts",
+      "import": "./src/sessionGate.ts"
+    },
+    "./broker": {
+      "types": "./src/broker.ts",
+      "import": "./src/broker.ts"
+    },
+    "./storage": {
+      "types": "./src/storage.ts",
+      "import": "./src/storage.ts"
+    },
+    "./configService": {
+      "types": "./src/configService.ts",
+      "import": "./src/configService.ts"
+    },
+    "./compiler": {
+      "types": "./src/compiler.ts",
+      "import": "./src/compiler.ts"
+    },
+    "./layer": {
+      "types": "./src/layer.ts",
+      "import": "./src/layer.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "effect-tsgo tsrs --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@bytedock/plugin-sdk": "workspace:*",
+    "@bytedock/plugin-ui-renderer": "workspace:*",
+    "effect": "catalog:",
+    "esbuild": "0.28.2",
+    "yaml": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

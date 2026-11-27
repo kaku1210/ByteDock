@@ -231,7 +231,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3codeplus.dev" : "com.t3tools.t3codeplus",
+      isDevelopment ? "dev.bytedock.desktop.dev" : "dev.bytedock.desktop",
     ),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
     linuxApplicationsDir,

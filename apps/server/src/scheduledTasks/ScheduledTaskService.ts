@@ -49,6 +49,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Scope from "effect/Scope"; // bytedock-seam-import:schedule-bridge
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -2708,3 +2709,24 @@ export const layer = Layer.effect(
     });
   }),
 );
+
+// bytedock-seam:schedule-bridge
+export interface PluginScheduledJobSpec {
+  readonly pluginId: string;
+  readonly jobId: string;
+  readonly run: Effect.Effect<void>;
+}
+
+/**
+ * Exposes the host Scheduler to plugins bound to a plugin revision Scope (Seam 15).
+ * Jobs register under a namespaced `plugin:<pluginId>:<jobId>` handle and unregister on revision close.
+ */
+export const registerPluginScheduledJob = Effect.fn("ScheduledTaskService.registerPluginJob")(
+  function* (spec: PluginScheduledJobSpec, pluginScope: Scope.Scope) {
+    const scheduler = yield* Scheduler.Scheduler;
+    const key = `plugin:${spec.pluginId}:${spec.jobId}`;
+    yield* scheduler.register(key, spec.run).pipe(Scope.provide(pluginScope));
+    return key;
+  },
+);
+// end-bytedock-seam:schedule-bridge

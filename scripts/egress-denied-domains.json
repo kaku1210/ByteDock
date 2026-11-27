@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "description": "Single source of truth for ByteDock zero-telemetry static CI gate, Upstream Radar Stage 1 D-class demotion, and Egress Guard L1 default deny-list.",
+  "deniedDomains": [
+    "posthog.com",
+    "us.i.posthog.com",
+    "eu.i.posthog.com",
+    "app.posthog.com",
+    "sentry.io",
+    "ingest.sentry.io",
+    "ingest.t3.codes",
+    "telemetry.t3.codes",
+    "events.t3.codes",
+    "api.segment.io",
+    "api.mixpanel.com",
+    "api.amplitude.com",
+    "datadoghq.com"
+  ],
+  "deniedPackages": [
+    "posthog-js",
+    "posthog-node",
+    "@sentry/node",
+    "@sentry/browser",
+    "@sentry/electron",
+    "@sentry/react",
+    "@sentry/react-native"
+  ],
+  "deniedCredentialReads": [".claude.json", ".codex/auth.json"]
+}

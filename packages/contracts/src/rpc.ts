@@ -538,6 +538,17 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  PluginRpcError,
+  PluginsInvokeInput,
+  PluginsInvokeResult,
+  PluginsListInput,
+  PluginsListResult,
+  PluginsReloadInput,
+  PluginsReloadResult,
+  PluginsStreamEvent,
+  PluginsSubscribeInput,
+} from "./plugins.ts"; // bytedock-seam-import:rpc-plugins
 
 export const WS_METHODS = {
   projectsListEntries: "projects.listEntries",
@@ -814,6 +825,12 @@ export const WS_METHODS = {
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+  // bytedock-seam:rpc-plugins
+  pluginsList: "plugins.list",
+  pluginsReload: "plugins.reload",
+  pluginsInvoke: "plugins.invoke",
+  pluginsSubscribe: "plugins.subscribe",
+  // end-bytedock-seam:rpc-plugins
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -2701,6 +2718,35 @@ const WsServerExternalTunnelImportBundleRpc = Rpc.make(
   },
 );
 
+// bytedock-seam:rpc-plugins
+const PluginMetaRpcError = Schema.Union([PluginRpcError, EnvironmentAuthorizationError]);
+
+const WsPluginsListRpc = Rpc.make(WS_METHODS.pluginsList, {
+  payload: PluginsListInput,
+  success: PluginsListResult,
+  error: PluginMetaRpcError,
+});
+
+const WsPluginsReloadRpc = Rpc.make(WS_METHODS.pluginsReload, {
+  payload: PluginsReloadInput,
+  success: PluginsReloadResult,
+  error: PluginMetaRpcError,
+});
+
+const WsPluginsInvokeRpc = Rpc.make(WS_METHODS.pluginsInvoke, {
+  payload: PluginsInvokeInput,
+  success: PluginsInvokeResult,
+  error: PluginMetaRpcError,
+});
+
+const WsPluginsSubscribeRpc = Rpc.make(WS_METHODS.pluginsSubscribe, {
+  payload: PluginsSubscribeInput,
+  success: PluginsStreamEvent,
+  error: PluginMetaRpcError,
+  stream: true,
+});
+// end-bytedock-seam:rpc-plugins
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2985,4 +3031,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
   WsOrchestrationV2SubscribePromptSuggestionRpc,
+  // bytedock-seam:rpc-plugins
+  WsPluginsListRpc,
+  WsPluginsReloadRpc,
+  WsPluginsInvokeRpc,
+  WsPluginsSubscribeRpc,
+  // end-bytedock-seam:rpc-plugins
 ).middleware(RpcScopeAuthorization);

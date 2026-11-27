@@ -719,6 +719,10 @@
     "./assistantInsights": {
       "types": "./src/assistantInsights.ts",
       "import": "./src/assistantInsights.ts"
+    },
+    "./bytedockPaths": {
+      "types": "./src/bytedockPaths.ts",
+      "import": "./src/bytedockPaths.ts"
     }
   },
   "scripts": {

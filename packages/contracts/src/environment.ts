@@ -9,6 +9,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
+import { PluginRuntimeDescriptorSchema } from "./plugins.ts"; // bytedock-seam-import:capability-plugins
 
 export const ORCHESTRATION_PROTOCOL_VERSION = 2;
 export const ORCHESTRATION_PROTOCOL_VERSION_TEXT = "2";
@@ -232,6 +233,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   issueLinkedThreads: Schema.optionalKey(Schema.Boolean),
   /** Keeps more than one account per standalone issue tracker; older servers keep one. */
   issueTrackerAccounts: Schema.optionalKey(Schema.Boolean),
+  // bytedock-seam:capability-plugins
+  /** Active ByteDock plugins and their current revision numbers (ADR-05: kept out of ServerSettings). */
+  plugins: Schema.optionalKey(Schema.Array(PluginRuntimeDescriptorSchema)),
+  // end-bytedock-seam:capability-plugins
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

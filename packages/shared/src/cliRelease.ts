@@ -1,9 +1,10 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { BYTEDOCK_GITHUB_REPOSITORY } from "./bytedockPaths.ts";
 import { compareSemverVersions } from "./semver.ts";
 
-const CLI_RELEASE_REPOSITORY = "kaku1210/t3code";
+const CLI_RELEASE_REPOSITORY = BYTEDOCK_GITHUB_REPOSITORY;
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";

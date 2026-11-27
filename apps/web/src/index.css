@@ -263,6 +263,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--contrast-accent-foreground);
   --color-accent: var(--accent);
+  --color-brand-accent: #f97316;
   --color-muted-foreground: var(--contrast-muted-foreground);
   --color-muted: var(--muted);
   --color-placeholder: var(--contrast-placeholder);

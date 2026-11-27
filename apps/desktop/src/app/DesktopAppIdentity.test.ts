@@ -154,7 +154,7 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         const userDataPath = yield* identity.resolveUserDataPath;
 
-        assert.equal(userDataPath, "/Users/alice/Library/Application Support/t3code-plus");
+        assert.equal(userDataPath, "/Users/alice/Library/Application Support/bytedock");
       }),
       { legacyPathExists: true },
     ),
@@ -179,20 +179,20 @@ describe("DesktopAppIdentity", () => {
   it.effect.each([
     {
       stage: "Beta",
-      displayName: "T3 Code Plus",
-      runtimeName: "T3 Code Plus",
+      displayName: "ByteDock",
+      runtimeName: "ByteDock",
       environment: {},
     },
     {
       stage: "Nightly",
-      displayName: "T3 Code Plus (Nightly)",
-      runtimeName: "T3 Code Plus Nightly",
+      displayName: "ByteDock (Nightly)",
+      runtimeName: "ByteDock Nightly",
       environment: { appVersion: "0.0.43-nightly.20260929.2428" },
     },
     {
       stage: "Dev",
-      displayName: "T3 Code Plus (Dev)",
-      runtimeName: "T3 Code Plus Dev",
+      displayName: "ByteDock (Dev)",
+      runtimeName: "ByteDock Dev",
       environment: { env: { VITE_DEV_SERVER_URL: "http://localhost:5173" } },
     },
   ])(

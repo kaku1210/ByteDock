@@ -290,6 +290,12 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverExternalTunnelImportBundle]: "server",
   [WS_METHODS.serverExternalTunnelSubscribe]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  // bytedock-seam:rpc-auth
+  [WS_METHODS.pluginsList]: "plugins",
+  [WS_METHODS.pluginsReload]: "plugins",
+  [WS_METHODS.pluginsInvoke]: "plugins",
+  [WS_METHODS.pluginsSubscribe]: "plugins",
+  // end-bytedock-seam:rpc-auth
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

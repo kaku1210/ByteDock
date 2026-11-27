@@ -260,6 +260,7 @@ import {
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
+import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:kernel-mount
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
 const HTTP_ROUTER_CONFIG = {
@@ -901,6 +902,9 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   // GitVcsDriver.layer is memoized and some of its build sites live outside this file, so the
   // fetch interval goes in context here, before the first build captures it.
   Layer.provideMerge(VcsAutomaticFetchInterval.layer.pipe(Layer.provide(layerServerSettings))),
+  // bytedock-seam:kernel-mount
+  Layer.provideMerge(PluginKernel.PluginKernelLive),
+  // end-bytedock-seam:kernel-mount
   Layer.provide(NetService.layer),
 );
 

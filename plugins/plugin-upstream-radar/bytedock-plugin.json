@@ -1,0 +1,27 @@
+{
+  "id": "builtin.upstream-radar",
+  "name": "Upstream Radar",
+  "version": "0.1.0",
+  "apiVersion": "0.1.0",
+  "execution": "declarative",
+  "trust": "builtin",
+  "entry": {
+    "server": "src/radar.ts"
+  },
+  "permissions": {
+    "rpcScopes": ["orchestration:read"],
+    "networkHosts": ["api.github.com"],
+    "storage": "kv"
+  },
+  "contributes": {
+    "panels": [
+      {
+        "id": "upstream-radar",
+        "titleI18n": "radar.panel.title",
+        "icon": "radar",
+        "mode": "declarative",
+        "defaultArea": "right"
+      }
+    ]
+  }
+}
