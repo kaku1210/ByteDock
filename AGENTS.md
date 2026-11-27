@@ -1,4 +1,78 @@
-# T3 Code
+# ByteDock 专属开发规范与门禁
+
+> 本仓库为独立开源项目 **ByteDock**（演化自 MIT 协议源码，保持上游同构微内核与自主插件生态）。下方保留了上游基础工程指南供参考；**遇到冲突时，一律优先遵守本章节 ByteDock 规范**。
+
+## 1. 数据目录与仓库隔离红线
+
+- ByteDock 本地运行时数据统一位于 `~/.bytedock/`：
+  - 插件声明式配置文件：`~/.bytedock/userdata/plugins.yml`
+  - 默认本地插件目录：`~/.bytedock/plugins/`
+  - 审批与哈希链审计日志：`~/.bytedock/userdata/plugin-approvals.json`、`~/.bytedock/userdata/logs/control-plane-audit.jsonl`
+- **严禁读写、修改或清理 `~/.t3/`、`~/.t3-plus/` 以及同工作区中的原 `t3code` 仓库**；历史数据迁移仅允许通过只读导入器 `apps/server/src/plugins/LegacyT3Importer.ts` 复制进入 `~/.bytedock/`。
+
+## 2. 上游缝隙保护与零遥测门禁（提交前必过）
+
+- **14 处缝隙台账**：上游保护区文件的修改必须严格落在 [seam-ledger.json](seam-ledger.json) 已注册的 14 处缝隙内，并用 `// bytedock-seam:<id>` / `// end-bytedock-seam:<id>` 或 `// bytedock-seam-import:<id>` 标记；不要无故新增上游缝隙。
+- **缝隙校验命令**：
+  ```bash
+  node scripts/check-seams.ts --base upstream-t3code-base
+  ```
+- **零遥测硬门禁**：禁止引入商业遥测/崩溃上报域名、SDK 或外部 CLI 凭据直读，所有源码改动必须通过：
+  ```bash
+  node scripts/check-zero-telemetry.ts
+  ```
+- 同时保持 `vp fmt`、`vp lint --quiet`、`vp run knip:check` 与相关包 `effect-tsgo tsrs --noEmit` 零报错。
+
+## 3. MCP 工具注册与上下文预算约束
+
+- 所有 ByteDock 内置 MCP 工具（`apps/server/src/mcp/toolkits/bytedockControl/`）必须通过 `apps/server/src/mcp/McpHttpServer.ts` 既有的 `// bytedock-seam:mcp-dynamic-bridge` 缝隙挂载，并经 `tool_search` 按需延迟发现。
+- **禁止向 `McpHttpServer.layerTools` 添加 ByteDock 工具**，以免挤占常规会话上下文预算。
+- 涉及 MCP 工具或桥接修改后，必须验证：
+  - `vp test run apps/server/src/provider/AgentContextBudget.test.ts`
+  - `vp test run apps/server/src/mcp/McpHttpServer.test.ts`
+  - `vp test run apps/server/src/plugins.controlPlane.test.ts apps/server/src/plugins.fullControl.test.ts`
+
+## 4. AI 控制面分级权限与密钥安全底线
+
+- **低风险直通**：只读查询、普通插件启停/参数热更、常规低风险 `ServerSettings`、快捷键增删、安全前端 UI 指令（站内 `/` 路径导航、开关 Control Center / Dock 面板、通知横幅）、`open_editor` 及 `~/.bytedock/plugins/` 禁用态本地脚手架可直接热生效。
+- **高风险强门禁**：防火墙规则变更（`builtin.egress-guard`）、未审批本地插件启用、高风险设置键（含 fail-safe 关键词兜底）、Provider 实例增删改、T3 历史数据导入、存储清理、数据库离线回收、外部隧道操作与宿主终端控制：
+  1. **仅限本机活跃主会话发起**（子代理、linked 远端环境、外部非线程客户端、只读客户端一律直接拒绝且不建审批单）；
+  2. 必须写入统一 `PluginApprovalStore` 队列，由人工在 ByteDock Control Center 批准后经 `hostMutationExecutor` 原子执行；
+  3. 全流程写入防篡改哈希链审计日志。
+- **密钥零明文红线**：
+  - 严禁接受或落盘明文密钥（经 `findPlaintextSecretViolation` 拦截，引导使用 `request_secret` / `secretRef`）；
+  - 读取宿主设置必须经过 `ServerSettings.redactServerSettingsForClient(...)` 与 `Schema.encodeSync(ServerSettings)` 纯 JSON 序列化（避免 `Duration` `BigInt` 序列化失败及凭据泄露）。
+
+## 5. 上游同步规范（`t3code-plus` / `pingdotgg/t3code`）
+
+- 同步前先执行 `git fetch`、核对改动文件与 [seam-ledger.json](seam-ledger.json) 是否重叠，并用 `git merge-tree --merge-base=<base> main <target>` 预演无冲突。
+- 同步 `t3code-plus/develop` 或吸收上游 PR 后：
+  1. 审计新增代码无 `.t3` / `.t3-plus` 写死路径且无商业遥测；
+  2. 将 `upstream-t3code-base` 标签推进到最新同步基线并同步远端；
+  3. 复验 `check-seams.ts --base upstream-t3code-base`、`check-zero-telemetry.ts`、类型检查与定向回归。
+- 完整分诊机制见 [docs/bytedock/05-upstream-radar-workflow.md](docs/bytedock/05-upstream-radar-workflow.md)。
+
+## 6. Windows 桌面端打包与发布约定
+
+- 标准打包命令（无需手工改写 `apps/desktop/package.json` 版本号，脚本会自动临时注入并还原）：
+  ```powershell
+  node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version <ver> --output-dir release
+  ```
+- **Windows 本机环境常见复用项**：
+  - 如已编译好 `native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe` 且环境缺少 MSVC Spectre 库，可设 `$env:T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR = "true"` 复用预编译二进制；
+  - 如 `PATH` 中缺少全局 `pnpm` 导致 staging `vp install --prod` 失败，可在短路径临时目录（如 `D:\bytedock-build-tmp\shim`）提供 `pnpm.cmd`（`@echo off` + `corepack pnpm %*`），并将 `TEMP` / `TMP` 指向短路径目录以规避 Windows 260 字符路径限制；
+  - 打包中断或结束后检查 `.desktop-build.lock` 与 `git status`，确保临时修改的 `package.json` 已恢复干净。
+- 发布版本与安装包上传需由开发者明确授权（不自动在每次合并 `main` 时静默发布）。
+
+## 7. ByteDock 文档与进度入口
+
+- 核心架构设计总索引：[docs/bytedock/README.md](docs/bytedock/README.md)
+- 开发进度与发布总账：[docs/bytedock/DEVELOPMENT_STATUS.md](docs/bytedock/DEVELOPMENT_STATUS.md)
+- OpenSpec 变更规格与验收证据：[openspec/changes/](openspec/changes/)
+
+---
+
+# T3 Code (Upstream Base Guide)
 
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity, Kiro, Pi, Muse Code, fx) and serves web, desktop, and mobile clients.
 
