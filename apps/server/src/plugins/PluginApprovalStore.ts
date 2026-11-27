@@ -14,7 +14,46 @@ import { openHashChainedAuditLog, type HashChainedAuditWriter } from "@bytedock/
 const DEFAULT_APPROVAL_TTL_MS = 10 * 60_000;
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired";
-export type ApprovalKind = "plugin-toggle" | "plugin-config-patch" | "local-plugin-enable";
+export type ApprovalKind =
+  | "plugin-toggle"
+  | "plugin-config-patch"
+  | "local-plugin-enable"
+  | "host-settings-patch"
+  | "provider-mutation"
+  | "legacy-import"
+  | "system-action";
+
+export type HostSystemActionKind =
+  | "storage_cleanup"
+  | "database_reclaim"
+  | "tunnel_action"
+  | "terminal_open"
+  | "terminal_write"
+  | "terminal_close";
+
+export type HostApprovalMutation =
+  | {
+      readonly kind: "host-settings-patch";
+      readonly patch: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly kind: "provider-mutation";
+      readonly mutation: Readonly<Record<string, unknown>>;
+      readonly patch?: Readonly<Record<string, unknown>> | undefined;
+    }
+  | {
+      readonly kind: "legacy-import";
+      readonly sourceBaseDir: string;
+      readonly sourceBrand?: "t3-plus" | "t3" | "custom" | undefined;
+      readonly categories: ReadonlyArray<string>;
+      readonly overwrite: boolean;
+      readonly deferLockedStateDb: boolean;
+    }
+  | {
+      readonly kind: "system-action";
+      readonly action: HostSystemActionKind;
+      readonly payload: Readonly<Record<string, unknown>>;
+    };
 
 export type ApprovalMutation =
   | {
@@ -27,7 +66,8 @@ export type ApprovalMutation =
       readonly kind: "patch-config";
       readonly pluginId: string;
       readonly nextConfig: Readonly<Record<string, unknown>>;
-    };
+    }
+  | HostApprovalMutation;
 
 export interface ControlPlaneApprovalRequest {
   readonly requestId: string;

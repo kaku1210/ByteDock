@@ -684,7 +684,12 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
                         className="flex flex-col gap-1.5 rounded-md border border-border bg-background/80 p-2.5 text-xs"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-foreground">{item.summary}</span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-3xs text-primary">
+                              {item.kind}
+                            </span>
+                            <span className="font-medium text-foreground">{item.summary}</span>
+                          </div>
                           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs uppercase text-muted-foreground">
                             {item.status}
                           </span>

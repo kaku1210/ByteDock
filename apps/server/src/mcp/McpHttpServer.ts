@@ -58,6 +58,14 @@ import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolExposure from "./McpToolExposure.ts";
 import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:mcp-dynamic-bridge
 import * as PluginControlPlane from "../plugins/PluginControlPlane.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as HostControlService from "../plugins/HostControlService.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as Keybindings from "../keybindings.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as HostResources from "../resourceTelemetry/HostResources.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as StorageCleanup from "../storageCleanup.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as DatabaseStorage from "../persistence/DatabaseStorage.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as ExternalTunnelService from "../tunnel/ExternalTunnelService.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as ExternalLauncher from "../process/externalLauncher.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as TerminalManager from "../terminal/Manager.ts"; // bytedock-seam-import:mcp-dynamic-bridge
 import { ByteDockControlToolkit } from "./toolkits/bytedockControl/tools.ts"; // bytedock-seam-import:mcp-dynamic-bridge
 import * as ByteDockControlHandlers from "./toolkits/bytedockControl/handlers.ts"; // bytedock-seam-import:mcp-dynamic-bridge
 import * as McpWebhookTransport from "./McpWebhookTransport.ts";
@@ -1541,15 +1549,50 @@ const layerToolExposure = Layer.effect(
         ThreadManagementService.ThreadManagementService,
       );
       if (Option.isSome(maybeThreads)) {
+        const existingHostControl = yield* Effect.serviceOption(
+          HostControlService.HostControlService,
+        );
+        const hostControl = Option.isSome(existingHostControl)
+          ? existingHostControl.value
+          : HostControlService.makeHostControlService({
+              controlPlane: maybeControlPlane.value,
+              serverSettings: Option.getOrUndefined(
+                yield* Effect.serviceOption(ServerSettings.ServerSettingsService),
+              ),
+              keybindings: Option.getOrUndefined(
+                yield* Effect.serviceOption(Keybindings.Keybindings),
+              ),
+              hostResources: Option.getOrUndefined(
+                yield* Effect.serviceOption(HostResources.HostResources),
+              ),
+              storageCleanup: Option.getOrUndefined(
+                yield* Effect.serviceOption(StorageCleanup.StorageCleanup),
+              ),
+              databaseStorage: Option.getOrUndefined(
+                yield* Effect.serviceOption(DatabaseStorage.DatabaseStorage),
+              ),
+              externalTunnel: Option.getOrUndefined(
+                yield* Effect.serviceOption(ExternalTunnelService.ExternalTunnelService),
+              ),
+              externalLauncher: Option.getOrUndefined(
+                yield* Effect.serviceOption(ExternalLauncher.ExternalLauncher),
+              ),
+              terminalManager: Option.getOrUndefined(
+                yield* Effect.serviceOption(TerminalManager.TerminalManager),
+              ),
+            });
         const controlPlaneLayer = Layer.mergeAll(
           provideRegistrationServices<
-            PluginControlPlane.PluginControlPlane | ThreadManagementService.ThreadManagementService
+            | PluginControlPlane.PluginControlPlane
+            | HostControlService.HostControlService
+            | ThreadManagementService.ThreadManagementService
           >().layer,
           McpToolAccess.HandlersLayer.layer(ByteDockControlHandlers.layer),
         ).pipe(
           Layer.provideMerge(
             Layer.mergeAll(
               Layer.succeed(PluginControlPlane.PluginControlPlane, maybeControlPlane.value),
+              Layer.succeed(HostControlService.HostControlService, hostControl),
               Layer.succeed(ThreadManagementService.ThreadManagementService, maybeThreads.value),
               Layer.succeed(McpServer.McpServer, server),
             ),

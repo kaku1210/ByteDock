@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Control plane scans default ~/.bytedock/plugins and watches plugins.yml on disk.
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -26,7 +27,9 @@ import * as ServerConfig from "../config.ts";
 import { BUILTIN_METHODS, BUILTIN_PLUGIN_MANIFESTS } from "./BuiltinPluginManifests.ts";
 import {
   makePluginApprovalStore,
+  type ApprovalKind,
   type ControlPlaneApprovalRequest,
+  type HostApprovalMutation,
   type PluginApprovalStoreService,
 } from "./PluginApprovalStore.ts";
 
@@ -46,6 +49,8 @@ export class ControlPlaneError extends Schema.TaggedError<ControlPlaneError>()(
       "approval_not_found",
       "approval_expired",
       "approval_already_resolved",
+      "service_unavailable",
+      "action_failed",
       "io_error",
     ]),
     message: Schema.String,
@@ -53,6 +58,31 @@ export class ControlPlaneError extends Schema.TaggedError<ControlPlaneError>()(
     requestId: Schema.optionalKey(Schema.String),
   },
 ) {}
+
+export interface UiControlCommand {
+  readonly commandId: string;
+  readonly action:
+    | "open_control_center"
+    | "close_control_center"
+    | "open_dock_panel"
+    | "close_dock_panel"
+    | "navigate"
+    | "notify";
+  readonly tab?: "plugins" | "import" | undefined;
+  readonly pluginId?: string | undefined;
+  readonly node?: unknown;
+  readonly path?: string | undefined;
+  readonly message?: string | undefined;
+  readonly level?: "info" | "success" | "warning" | "error" | undefined;
+  readonly issuedAt: string;
+  readonly actor: string;
+}
+
+export type HostMutationExecutor = (input: {
+  readonly request: ControlPlaneApprovalRequest;
+  readonly mutation: HostApprovalMutation;
+  readonly actorId: string;
+}) => Effect.Effect<unknown, ControlPlaneError>;
 
 export type ControlPlaneActor =
   | { readonly kind: "host-client"; readonly actorId: string }
@@ -131,6 +161,7 @@ export interface ControlPlaneApprovalResolution {
   readonly applied?:
     | Extract<ControlPlaneMutationOutcome, { readonly status: "applied" }>
     | undefined;
+  readonly hostResult?: unknown;
 }
 
 interface DiscoveredLocalPlugin {
@@ -154,6 +185,7 @@ interface InternalRuntimeState {
 export interface PluginControlPlaneService {
   readonly kernel: PluginKernel.PluginKernelService;
   readonly approvals: PluginApprovalStoreService;
+  readonly stateDir: string;
   readonly pluginConfigPath: string;
   readonly pluginsDir: string;
   readonly getState: () => Effect.Effect<ControlPlaneStateSnapshot>;
@@ -172,6 +204,20 @@ export interface PluginControlPlaneService {
     readonly expectedMtimeMs?: number | undefined;
     readonly actor: ControlPlaneActor;
   }) => Effect.Effect<ControlPlaneMutationOutcome, ControlPlaneError>;
+  readonly setHostMutationExecutor: (executor: HostMutationExecutor) => void;
+  readonly createHostApproval: (input: {
+    readonly kind: ApprovalKind;
+    readonly targetId: string;
+    readonly reasons: ReadonlyArray<string>;
+    readonly summary: string;
+    readonly diffPreview: { readonly before: unknown; readonly after: unknown };
+    readonly requestedBy: ControlPlaneApprovalRequest["requestedBy"];
+    readonly mutation: HostApprovalMutation;
+  }) => Effect.Effect<ControlPlaneApprovalRequest>;
+  readonly emitUiCommand: (
+    command: Omit<UiControlCommand, "commandId" | "issuedAt">,
+  ) => Effect.Effect<UiControlCommand>;
+  readonly getLastUiCommand: () => Effect.Effect<UiControlCommand | undefined>;
   readonly resolveApproval: (input: {
     readonly requestId: string;
     readonly decision: "approve" | "reject";
@@ -368,7 +414,9 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
   });
   const stateRef = yield* Ref.make<InternalRuntimeState>(buildDefaultState());
   const lastWrittenMtimeRef = yield* Ref.make<number | undefined>(undefined);
+  const lastUiCommandRef = yield* Ref.make<UiControlCommand | undefined>(undefined);
   const eventsPubSub = yield* PubSub.unbounded<PluginsStreamEvent>();
+  let hostMutationExecutor: HostMutationExecutor | undefined;
 
   // Ensure builtin manifests and broker methods are registered once on the shared kernel.
   const registerBuiltinsOnce = Effect.gen(function* () {
@@ -1022,21 +1070,54 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
           return { request: rejected } satisfies ControlPlaneApprovalResolution;
         }
 
-        const applied =
-          pending.mutation.kind === "set-enabled"
-            ? yield* applyPersistedMutationUnlocked({
-                pluginId: pending.mutation.pluginId,
-                expectedMtimeMs: pending.expectedMtimeMs,
-                enabled: pending.mutation.enabled,
-                approvedLocalFingerprint: pending.mutation.permissionsFingerprint,
-                actorSummary: `host-approved:${input.actor.actorId}`,
-              })
-            : yield* applyPersistedMutationUnlocked({
-                pluginId: pending.mutation.pluginId,
-                expectedMtimeMs: pending.expectedMtimeMs,
-                config: pending.mutation.nextConfig,
-                actorSummary: `host-approved:${input.actor.actorId}`,
-              });
+        let applied:
+          | Extract<ControlPlaneMutationOutcome, { readonly status: "applied" }>
+          | undefined;
+        let hostResult: unknown;
+
+        if (pending.mutation.kind === "set-enabled") {
+          applied = yield* applyPersistedMutationUnlocked({
+            pluginId: pending.mutation.pluginId,
+            expectedMtimeMs: pending.expectedMtimeMs,
+            enabled: pending.mutation.enabled,
+            approvedLocalFingerprint: pending.mutation.permissionsFingerprint,
+            actorSummary: `host-approved:${input.actor.actorId}`,
+          });
+        } else if (pending.mutation.kind === "patch-config") {
+          applied = yield* applyPersistedMutationUnlocked({
+            pluginId: pending.mutation.pluginId,
+            expectedMtimeMs: pending.expectedMtimeMs,
+            config: pending.mutation.nextConfig,
+            actorSummary: `host-approved:${input.actor.actorId}`,
+          });
+        } else {
+          const hostActorId = input.actor.actorId;
+          const executor = hostMutationExecutor;
+          if (!executor) {
+            return yield* new ControlPlaneError({
+              code: "service_unavailable",
+              requestId: pending.requestId,
+              message: `Host mutation executor is unavailable for approval "${pending.kind}".`,
+            });
+          }
+          hostResult = yield* executor({
+            request: pending,
+            mutation: pending.mutation,
+            actorId: hostActorId,
+          }).pipe(
+            Effect.tapError((err) =>
+              approvals.recordAudit({
+                event: "host_mutation_failed",
+                requestId: pending.requestId,
+                kind: pending.kind,
+                pluginId: pending.pluginId,
+                actorId: hostActorId,
+                code: err.code,
+                message: err.message,
+              }),
+            ),
+          );
+        }
 
         const approved = yield* approvals
           .finalizeResolution({
@@ -1058,8 +1139,13 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
         yield* emitControlEvent("approval-resolved", {
           requestId: approved.requestId,
           decision: "approved",
+          kind: approved.kind,
         });
-        return { request: approved, applied } satisfies ControlPlaneApprovalResolution;
+        return {
+          request: approved,
+          ...(applied !== undefined ? { applied } : {}),
+          ...(hostResult !== undefined ? { hostResult } : {}),
+        } satisfies ControlPlaneApprovalResolution;
       }),
     );
 
@@ -1123,6 +1209,59 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
         (st) => st.configByPlugin[pluginId] ?? PluginKernel.getDefaultPluginConfig(pluginId),
       ),
     );
+
+  const setHostMutationExecutor: PluginControlPlaneService["setHostMutationExecutor"] = (
+    executor,
+  ) => {
+    hostMutationExecutor = executor;
+  };
+
+  const createHostApproval: PluginControlPlaneService["createHostApproval"] = Effect.fn(
+    "PluginControlPlane.createHostApproval",
+  )(function* (input) {
+    const st = yield* Ref.get(stateRef);
+    const req = yield* approvals.createApproval({
+      kind: input.kind,
+      pluginId: input.targetId,
+      reasons: input.reasons,
+      summary: input.summary,
+      diffPreview: input.diffPreview,
+      requestedBy: input.requestedBy,
+      expectedMtimeMs: st.mtimeMs,
+      mutation: input.mutation,
+    });
+    yield* emitControlEvent("approval-created", {
+      requestId: req.requestId,
+      kind: req.kind,
+      targetId: req.pluginId,
+    });
+    return req;
+  });
+
+  const emitUiCommand: PluginControlPlaneService["emitUiCommand"] = Effect.fn(
+    "PluginControlPlane.emitUiCommand",
+  )(function* (command) {
+    const nowMs = yield* Clock.currentTimeMillis;
+    const fullCommand: UiControlCommand = {
+      ...command,
+      commandId: NodeCrypto.randomUUID(),
+      issuedAt: isoFromMs(nowMs),
+    };
+    yield* Ref.set(lastUiCommandRef, fullCommand);
+    yield* approvals.recordAudit({
+      event: "ui_command_emitted",
+      commandId: fullCommand.commandId,
+      action: fullCommand.action,
+      actor: fullCommand.actor,
+      ...(fullCommand.path !== undefined ? { path: fullCommand.path } : {}),
+      ...(fullCommand.pluginId !== undefined ? { pluginId: fullCommand.pluginId } : {}),
+    });
+    yield* emitControlEvent("ui-command", { command: fullCommand });
+    return fullCommand;
+  });
+
+  const getLastUiCommand: PluginControlPlaneService["getLastUiCommand"] = () =>
+    Ref.get(lastUiCommandRef);
 
   const subscribeEvents: PluginControlPlaneService["subscribeEvents"] = () =>
     Stream.fromPubSub(eventsPubSub);
@@ -1194,6 +1333,7 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
   return {
     kernel: options.kernel,
     approvals,
+    stateDir: options.stateDir,
     pluginConfigPath: options.pluginConfigPath,
     pluginsDir: options.pluginsDir,
     getState,
@@ -1202,6 +1342,10 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
     getPluginConfig,
     setPluginEnabled,
     patchPluginConfig,
+    setHostMutationExecutor,
+    createHostApproval,
+    emitUiCommand,
+    getLastUiCommand,
     resolveApproval,
     reloadFromDisk,
     subscribeEvents,
