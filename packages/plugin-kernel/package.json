@@ -36,6 +36,18 @@
       "types": "./src/compiler.ts",
       "import": "./src/compiler.ts"
     },
+    "./hooks": {
+      "types": "./src/hooks.ts",
+      "import": "./src/hooks.ts"
+    },
+    "./egressGuard": {
+      "types": "./src/egressGuard.ts",
+      "import": "./src/egressGuard.ts"
+    },
+    "./hotReload": {
+      "types": "./src/hotReload.ts",
+      "import": "./src/hotReload.ts"
+    },
     "./layer": {
       "types": "./src/layer.ts",
       "import": "./src/layer.ts"

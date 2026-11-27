@@ -7,6 +7,14 @@
 
 > **Independent Open-Source Notice**: ByteDock is an independent open-source project evolved from MIT-licensed source code and is **not affiliated with, endorsed by, or sponsored by T3 Tools, Inc.** All local runtime data is isolated under `~/.bytedock/` (never modifying `~/.t3/` or `~/.t3-plus/`), and all outbound commercial telemetry / crash reporting is stripped and statically gated in CI (`scripts/check-zero-telemetry.ts`).
 
+## Egress Security Boundary (Honest Disclosures)
+
+ByteDock ships with a first-party **Egress Guard** (`plugins/plugin-egress-guard`) whose security boundaries are documented identically in code (`EGRESS_HONEST_DISCLOSURES`), the UI panel, and this README:
+
+- **Coverage Scope (L1)**: L1 宿主 100% 网络拦截覆盖宿主进程的 JS 层出站路径：undici/全局 http/net/tls/dgram/node:dns 与 Chromium session.setProxy 全量渲染器流量。JS 层之外——原生 N-API addon（ffi-rs、node-pty、transcribe-cpp 等既有依赖）与第三方子进程内部的原生 TLS/socket——不在 L1 保证域内，按设计归 L2（loopback 代理 + NODE_USE_ENV_PROXY，best-effort 封锁全审计）或 L3（OS 防火墙硬模式，opt-in 全量保证）。
+- **Verifiable Promise (`EgressProof`)**: EgressProof 双段自证：① 活宿主 60s 归因不变量（loopback/pipe 证明式排除，非全禁自反）；② 独立离线全禁探针 runner（空白名单环境零出站断言）。任何未覆盖路径的出站尝试将出现在 L2/L3 审计日志中并标记 origin: "uncovered-native"，我们承诺可发现而非可拦截（对 JS 层外路径）。
+- **Tier Matrix (L1 / L2 / L3)**: L1 = 宿主 JS 层 100% + 诚实边界声明；L2 = 子进程 CLI 全审计、封锁 best-effort；L3 = OS 级全路径保证（用户 opt-in 安装防火墙规则后才可宣称）。ByteDock 的默认安全叙事 = L1 + L2，L3 是用户的升级选项而非我们的默认口径。入站具名管道（kind: "pipe"，net.connect(path)）在 L1 外，审计计数但不拦截。
+
 ## ByteDock Roadmap & Heritage TODO
 
 - [x] 优化侧栏分组与折叠体验（已随上游原生能力覆盖）：支持按仓库 / 路径 / 独立分组与 `Boring sidebar` 按项目折叠、折叠态四态圆点提示（等待审批 / 失败 / 未读 / 运行中）及计数、项目与会话置顶排序、`Cmd/Ctrl+K` 跨环境定位与 `Settle` / `Archive` 分离。

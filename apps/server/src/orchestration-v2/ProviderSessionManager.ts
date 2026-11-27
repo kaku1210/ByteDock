@@ -58,6 +58,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerConfig from "../config.ts";
+import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:open-session-rev-pin
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -483,6 +484,9 @@ export const layerWithOptions = (
       /** Unreadable settings must preserve explicit browser-access opt-outs. */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
+      // bytedock-seam:open-session-rev-pin
+      const pluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+      // end-bytedock-seam:open-session-rev-pin
       const eventSink = yield* EventSink.EventSinkV2;
       const commandOutput = yield* CommandOutputHub.CommandOutputHub;
       const promptSuggestionStore = yield* SubscriptionRef.make<
@@ -3308,6 +3312,16 @@ export const layerWithOptions = (
                 ),
               );
               const openedWithLinkedEnvironments = yield* readLinkedEnvironments;
+              // bytedock-seam:open-session-rev-pin
+              if (Option.isSome(pluginKernel)) {
+                const activeRev = yield* pluginKernel.value.revisions.active();
+                yield* pluginKernel.value.hooks.runOpenPrepare({
+                  threadId: input.threadId,
+                  revision: activeRev.rev,
+                  modelId: input.modelSelection.model,
+                });
+              }
+              // end-bytedock-seam:open-session-rev-pin
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
@@ -3324,6 +3338,23 @@ export const layerWithOptions = (
               // Added before the adapter's finalizers so it runs after them: the pump drains shutdown events first.
               const sessionClosed = yield* Deferred.make<void>();
               yield* Scope.addFinalizer(sessionScope, Deferred.done(sessionClosed, Exit.void));
+              // bytedock-seam:open-session-rev-pin
+              if (Option.isSome(pluginKernel)) {
+                const kernel = pluginKernel.value;
+                const pinnedRev = yield* kernel.sessionGate.withGate(input.threadId, () =>
+                  kernel.revisions.pin(input.providerSessionId),
+                );
+                yield* Scope.addFinalizer(
+                  sessionScope,
+                  kernel.revisions.unpin(input.providerSessionId, "closed").pipe(Effect.ignore),
+                );
+                yield* kernel.hooks.runOpenAfterPrepare({
+                  threadId: input.threadId,
+                  providerSessionId: input.providerSessionId,
+                  revision: pinnedRev,
+                });
+              }
+              // end-bytedock-seam:open-session-rev-pin
               yield* agentScope.clear(input.threadId);
               const runtime = yield* installationGate
                 .execute(

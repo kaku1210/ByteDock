@@ -97,8 +97,8 @@
     {
       "id": "open-session-rev-pin",
       "file": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
-      "anchor": "block",
-      "tagCount": 1,
+      "anchor": "both",
+      "tagCount": 3,
       "mode": "strict",
       "driftThresholdPct": 3,
       "review": "manual",
@@ -108,8 +108,8 @@
     {
       "id": "run-turn-contrib",
       "file": "apps/server/src/orchestration-v2/RunExecutionService.ts",
-      "anchor": "block",
-      "tagCount": 1,
+      "anchor": "both",
+      "tagCount": 2,
       "mode": "strict",
       "driftThresholdPct": 3,
       "review": "manual",
@@ -118,14 +118,14 @@
     },
     {
       "id": "egress-guard-mount",
-      "file": "apps/server/src/outboundHttp.ts",
-      "anchor": "block",
-      "tagCount": 1,
+      "file": "apps/{server/src/outboundHttp.ts,desktop/src/main.ts}",
+      "anchor": "both",
+      "tagCount": 2,
       "mode": "strict",
       "driftThresholdPct": 3,
       "review": "manual",
       "cutOrder": "W4",
-      "note": "Desktop main.ts session.setProxy(bypassRules:[]) 同卡联审"
+      "note": "Desktop main.ts session.setProxy(proxyBypassRules:'') 同卡联审"
     },
     {
       "id": "mcp-dynamic-bridge",

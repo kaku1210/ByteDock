@@ -2,6 +2,13 @@ import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 
 import type * as Undici from "undici";
+import {
+  createEgressGuard,
+  DEFAULT_DENIED_DOMAINS,
+  type EgressGuardController,
+  type EgressPolicy,
+  type UndiciModuleLike,
+} from "@bytedock/plugin-kernel/egressGuard"; // bytedock-seam-import:egress-guard-mount
 
 // undici is external to the CLI bundle; Node single-executables can load it from disk only with require.
 const requireUndici = NodeModule.createRequire(import.meta.url);
@@ -66,3 +73,34 @@ export function extendConnectionAttemptTimeout(): void {
     Math.max(NodeNet.getDefaultAutoSelectFamilyAttemptTimeout(), 1_000),
   );
 }
+
+// bytedock-seam:egress-guard-mount
+let installedEgressGuard: EgressGuardController | undefined;
+
+/**
+ * Dual-gate Egress Guard installation (Seam 8 / Blueprint Ch. 5.1):
+ * Preserves installHttp1FetchDispatcher() semantics, wraps global dispatcher, and hijacks future swaps.
+ */
+export function installEgressGuardedFetchDispatcher(
+  policyOverrides?: Partial<EgressPolicy>,
+): EgressGuardController {
+  installHttp1FetchDispatcher();
+  const undici = requireUndici("undici") as unknown as UndiciModuleLike;
+  const guard = createEgressGuard({
+    policy: {
+      mode: policyOverrides?.mode ?? "strict",
+      deniedDomains: policyOverrides?.deniedDomains ?? DEFAULT_DENIED_DOMAINS,
+      allowedHosts: policyOverrides?.allowedHosts ?? ["*"],
+      allowLoopbackHosts: policyOverrides?.allowLoopbackHosts ?? ["127.0.0.1", "localhost", "::1"],
+      allowUdp: policyOverrides?.allowUdp ?? false,
+    },
+  });
+  guard.hijackUndiciSetGlobalDispatcher(undici);
+  installedEgressGuard = guard;
+  return guard;
+}
+
+export function getInstalledEgressGuard(): EgressGuardController | undefined {
+  return installedEgressGuard;
+}
+// end-bytedock-seam:egress-guard-mount

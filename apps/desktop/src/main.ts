@@ -261,3 +261,16 @@ const layerDesktopRuntime = layerDesktopClerk.pipe(
 );
 
 DesktopApp.program.pipe(Effect.provide(layerDesktopRuntime), NodeRuntime.runMain);
+
+// bytedock-seam:egress-guard-mount
+// Route all Chromium renderer traffic through Egress Guard loopback proxy with empty bypass rules.
+const desktopEgressProxyUrl = process.env.BYTEDOCK_EGRESS_PROXY_URL?.trim();
+if (desktopEgressProxyUrl) {
+  void Electron.app.whenReady().then(() =>
+    Electron.session.defaultSession.setProxy({
+      proxyRules: desktopEgressProxyUrl,
+      proxyBypassRules: "",
+    }),
+  );
+}
+// end-bytedock-seam:egress-guard-mount

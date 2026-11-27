@@ -4,7 +4,14 @@ import * as Layer from "effect/Layer";
 
 import type { PluginRuntimeDescriptor } from "@bytedock/plugin-sdk/manifest";
 import { makePluginScopeBroker, type PluginScopeBrokerAdmin } from "./broker.ts";
+import {
+  createEgressGuard,
+  DEFAULT_DENIED_DOMAINS,
+  type EgressGuardController,
+} from "./egressGuard.ts";
+import { makeHookRegistry, type HookRegistryService } from "./hooks.ts";
 import { makeHostModuleRegistry, type HostModuleRegistryService } from "./hostModules.ts";
+import { makeHotReloadController, type HotReloadController } from "./hotReload.ts";
 import { makeRevisionManager, type RevisionManagerService } from "./revision.ts";
 import { makeThreadSessionGate, type ThreadSessionGateService } from "./sessionGate.ts";
 
@@ -13,6 +20,9 @@ export interface PluginKernelService {
   readonly revisions: RevisionManagerService;
   readonly sessionGate: ThreadSessionGateService;
   readonly broker: PluginScopeBrokerAdmin;
+  readonly hooks: HookRegistryService;
+  readonly egress: EgressGuardController;
+  readonly hotReload: HotReloadController;
   readonly listDescriptors: () => Effect.Effect<ReadonlyArray<PluginRuntimeDescriptor>>;
 }
 
@@ -25,6 +35,17 @@ export const makePluginKernel = Effect.fn("pluginKernel.make")(function* () {
   const revisions = yield* makeRevisionManager();
   const sessionGate = yield* makeThreadSessionGate();
   const broker = yield* makePluginScopeBroker();
+  const hooks = yield* makeHookRegistry();
+  const egress = createEgressGuard({
+    policy: {
+      mode: "audit-only",
+      deniedDomains: DEFAULT_DENIED_DOMAINS,
+      allowedHosts: ["*"],
+      allowLoopbackHosts: ["127.0.0.1", "localhost", "::1"],
+      allowUdp: false,
+    },
+  });
+  const hotReload = yield* makeHotReloadController({ hostModules, revisions });
 
   const listDescriptors = () =>
     revisions.active().pipe(
@@ -46,6 +67,9 @@ export const makePluginKernel = Effect.fn("pluginKernel.make")(function* () {
     revisions,
     sessionGate,
     broker,
+    hooks,
+    egress,
+    hotReload,
     listDescriptors,
   } satisfies PluginKernelService;
 });

@@ -43,6 +43,7 @@ import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:run-turn-contrib
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -735,6 +736,9 @@ export const layer: Layer.Layer<
     const sharedWorktreeCoordination = yield* Effect.serviceOption(
       SharedWorktreeCoordinationService.SharedWorktreeCoordinationService,
     );
+    // bytedock-seam:run-turn-contrib
+    const pluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+    // end-bytedock-seam:run-turn-contrib
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -2307,6 +2311,40 @@ export const layer: Layer.Layer<
           mcpAppModelContext,
           input.run.threadId,
         );
+        // bytedock-seam:run-turn-contrib
+        if (Option.isSome(pluginKernel)) {
+          const activeRev = yield* pluginKernel.value.revisions.active();
+          const isPluginCompact =
+            input.message.attachments.length === 0 &&
+            input.message.text.trim().toLowerCase() === "/compact";
+          if (isPluginCompact) {
+            const compactResult = yield* pluginKernel.value.hooks.runCompactBefore({
+              threadId: input.run.threadId,
+              revision: activeRev.rev,
+            });
+            for (const item of compactResult.handoffSummaries) {
+              appContext.push({
+                key: `plugin_compact_${item.pluginId.replace(/[^\w.-]/g, "_")}`,
+                text: item.summary,
+              });
+            }
+          } else {
+            const turnResult = yield* pluginKernel.value.hooks.runTurnBefore({
+              threadId: input.run.threadId,
+              revision: activeRev.rev,
+              projectedMessage: input.message.text,
+            });
+            for (const entry of turnResult.contributions) {
+              if (entry.contribution.appendContext) {
+                appContext.push({
+                  key: `plugin_${entry.pluginId.replace(/[^\w.-]/g, "_")}`,
+                  text: entry.contribution.appendContext,
+                });
+              }
+            }
+          }
+        }
+        // end-bytedock-seam:run-turn-contrib
         const turnInput = {
           appThread: input.appThread,
           threadId: input.run.threadId,

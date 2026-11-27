@@ -1,0 +1,36 @@
+{
+  "id": "builtin.token-optimizer",
+  "name": "Token Optimizer & CacheGuard",
+  "version": "0.1.0",
+  "apiVersion": "0.1.0",
+  "execution": "trusted-worker",
+  "trust": "builtin",
+  "entry": {
+    "server": "src/index.ts"
+  },
+  "permissions": {
+    "rpcScopes": ["orchestration:read", "diagnostics:read"],
+    "storage": "isolated-sqlite",
+    "hooks": [
+      { "name": "agent.open.before", "onError": "pass", "timeoutMs": 2000 },
+      { "name": "agent.turn.before", "onError": "pass" },
+      { "name": "agent.compact.before", "onError": "pass", "timeoutMs": 2000 },
+      { "name": "agent.tool.after", "onError": "pass" }
+    ]
+  },
+  "contributes": {
+    "statusBarItems": [
+      {
+        "id": "ttft-tps-cache",
+        "align": "right",
+        "priority": 90
+      }
+    ],
+    "timelineRenderers": [
+      {
+        "id": "xray-bill",
+        "matchType": "plugin-card"
+      }
+    ]
+  }
+}

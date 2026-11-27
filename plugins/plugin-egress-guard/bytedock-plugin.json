@@ -1,0 +1,45 @@
+{
+  "id": "builtin.egress-guard",
+  "name": "Egress Guard",
+  "version": "0.1.0",
+  "apiVersion": "0.1.0",
+  "execution": "trusted-worker",
+  "trust": "builtin",
+  "entry": {
+    "server": "src/index.ts"
+  },
+  "permissions": {
+    "rpcScopes": ["orchestration:read", "diagnostics:read"],
+    "networkHosts": ["**"],
+    "secretNamespaces": ["bytedock.egress"],
+    "storage": "kv",
+    "hooks": [
+      { "name": "egress.request.before", "onError": "deny", "timeoutMs": 2000 },
+      { "name": "worktree.create.before", "onError": "deny" }
+    ]
+  },
+  "contributes": {
+    "panels": [
+      {
+        "id": "egress-guard",
+        "titleI18n": "egress.panel.title",
+        "icon": "shield",
+        "mode": "declarative",
+        "defaultArea": "right"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "egress-shield",
+        "align": "right",
+        "priority": 100
+      }
+    ],
+    "timelineRenderers": [
+      {
+        "id": "egress-block-card",
+        "matchType": "plugin-card"
+      }
+    ]
+  }
+}

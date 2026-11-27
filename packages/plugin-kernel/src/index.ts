@@ -5,4 +5,7 @@ export * from "./sessionGate.ts";
 export * from "./broker.ts";
 export * from "./storage.ts";
 export * from "./configService.ts";
+export * from "./hooks.ts";
+export * from "./egressGuard.ts";
+export * from "./hotReload.ts";
 export * from "./layer.ts";
