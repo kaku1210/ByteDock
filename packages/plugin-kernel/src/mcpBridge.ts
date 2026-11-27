@@ -37,6 +37,7 @@ interface SessionToolSnapshot {
 
 export interface PluginMcpBridgeService {
   readonly registerTool: (tool: PluginMcpToolDefinition) => Effect.Effect<void, never, Scope.Scope>;
+  readonly setPluginEnabled: (pluginId: string, enabled: boolean) => void;
   readonly listTools: () => ReadonlyArray<PluginMcpToolDefinition>;
   readonly listSearchableTools: () => ReadonlyArray<SearchablePluginTool>;
   readonly subscribeSession: (providerSessionId: string, onListChanged?: () => void) => () => void;
@@ -73,11 +74,15 @@ export function makePluginMcpBridge(options?: {
 }): PluginMcpBridgeService {
   const toolsByName = new Map<string, PluginMcpToolDefinition>();
   const sessions = new Map<string, SessionToolSnapshot>();
+  const disabledPlugins = new Set<string>();
+
+  const isToolActive = (tool: PluginMcpToolDefinition): boolean =>
+    !disabledPlugins.has(tool.pluginId);
 
   const computeDirectToolSet = (): Set<string> => {
     const direct = new Set<string>();
     for (const tool of toolsByName.values()) {
-      if (tool.direct === true) direct.add(tool.name);
+      if (tool.direct === true && isToolActive(tool)) direct.add(tool.name);
     }
     return direct;
   };
@@ -91,7 +96,8 @@ export function makePluginMcpBridge(options?: {
       } else {
         const nextVisible = new Set<string>(direct);
         for (const existing of snap.visibleTools) {
-          if (toolsByName.has(existing)) nextVisible.add(existing);
+          const def = toolsByName.get(existing);
+          if (def && isToolActive(def)) nextVisible.add(existing);
         }
         sessions.set(sessionId, {
           ...snap,
@@ -101,6 +107,12 @@ export function makePluginMcpBridge(options?: {
         snap.onListChanged?.();
       }
     }
+  };
+
+  const setPluginEnabled = (pluginId: string, enabled: boolean) => {
+    const changed = enabled ? disabledPlugins.delete(pluginId) : !disabledPlugins.has(pluginId);
+    if (!enabled) disabledPlugins.add(pluginId);
+    if (changed) notifyAllSessionsOfCatalogChange();
   };
 
   const registerTool = Effect.fn("PluginMcpBridge.registerTool")(function* (
@@ -152,7 +164,8 @@ export function makePluginMcpBridge(options?: {
     const hadPending = snap.pendingListChanged;
     const nextVisible = new Set<string>(computeDirectToolSet());
     for (const name of snap.visibleTools) {
-      if (toolsByName.has(name)) nextVisible.add(name);
+      const def = toolsByName.get(name);
+      if (def && isToolActive(def)) nextVisible.add(name);
     }
     sessions.set(providerSessionId, {
       ...snap,
@@ -178,7 +191,8 @@ export function makePluginMcpBridge(options?: {
     const nextVisible = new Set(snap.visibleTools);
     let added = false;
     for (const name of names) {
-      if (toolsByName.has(name) && !nextVisible.has(name)) {
+      const def = toolsByName.get(name);
+      if (def && isToolActive(def) && !nextVisible.has(name)) {
         nextVisible.add(name);
         added = true;
       }
@@ -202,12 +216,13 @@ export function makePluginMcpBridge(options?: {
   };
 
   const isVisibleForSession = (providerSessionId: string, toolName: string): boolean => {
+    const def = toolsByName.get(toolName);
+    if (!def || !isToolActive(def)) return false;
     const snap = sessions.get(providerSessionId);
     if (snap) {
       return snap.visibleTools.has(toolName);
     }
-    const def = toolsByName.get(toolName);
-    return def?.direct === true;
+    return def.direct === true;
   };
 
   const invokeTool: PluginMcpBridgeService["invokeTool"] = Effect.fn("PluginMcpBridge.invokeTool")(
@@ -215,6 +230,11 @@ export function makePluginMcpBridge(options?: {
       const tool = toolsByName.get(input.name);
       if (!tool) {
         return yield* new PluginMcpToolError({ message: `Unknown plugin MCP tool: ${input.name}` });
+      }
+      if (!isToolActive(tool)) {
+        return yield* new PluginMcpToolError({
+          message: `Plugin "${tool.pluginId}" is disabled; tool "${input.name}" is unavailable.`,
+        });
       }
       const result = yield* tool.handler({
         threadId: input.threadId,
@@ -244,9 +264,12 @@ export function makePluginMcpBridge(options?: {
 
   return {
     registerTool,
-    listTools: () => [...toolsByName.values()],
+    setPluginEnabled,
+    listTools: () => [...toolsByName.values()].filter(isToolActive),
     listSearchableTools: () =>
-      [...toolsByName.values()].map((t) => ({ name: t.name, description: t.description })),
+      [...toolsByName.values()]
+        .filter(isToolActive)
+        .map((t) => ({ name: t.name, description: t.description })),
     subscribeSession,
     markTurnStarted,
     flushAtTurnBoundary,

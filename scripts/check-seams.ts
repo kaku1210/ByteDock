@@ -252,6 +252,7 @@ export function checkSeams(
   ledger: SeamLedger,
   options?: {
     readonly readFileLines?: (repoRelPath: string) => ReadonlyArray<string> | undefined;
+    readonly readOldFileLines?: (repoRelPath: string) => ReadonlyArray<string> | undefined;
   },
 ): SeamCheckResult {
   const fileIndex = new Map<string, Array<SeamLedgerEntry>>();
@@ -293,6 +294,8 @@ export function checkSeams(
 
     const fullLines = options?.readFileLines?.(diff.path);
     const ranges = fullLines ? scanTaggedRanges(fullLines) : undefined;
+    const oldLines = options?.readOldFileLines?.(diff.path);
+    const oldRanges = oldLines ? scanTaggedRanges(oldLines) : ranges;
 
     // Track in-diff seam block & idea-sync state as fallback when full file lines are not supplied (pure diff fixtures).
     let diffOpenSeamId: string | null = null;
@@ -400,16 +403,18 @@ export function checkSeams(
           SEAM_END_RE.test(change.text) ||
           SEAM_IMPORT_RE.test(change.text);
         const isReplacementInsideExistingSeam =
-          ranges !== undefined &&
+          oldRanges !== undefined &&
           change.oldLine !== null &&
-          (isInsideSeamRange(ranges, change.oldLine) !== undefined ||
-            (addedLineNumbers.has(change.oldLine) &&
+          (isInsideSeamRange(oldRanges, change.oldLine) !== undefined ||
+            oldRanges.seamImportLines.has(change.oldLine) ||
+            (ranges !== undefined &&
+              addedLineNumbers.has(change.oldLine) &&
               isInsideSeamRange(ranges, change.oldLine) !== undefined));
         const isIdeaSyncedDel =
           diffHasIdeaSync ||
-          (ranges !== undefined &&
+          (oldRanges !== undefined &&
             change.oldLine !== null &&
-            isCoveredByIdeaSync(ranges, change.oldLine, change.text));
+            isCoveredByIdeaSync(oldRanges, change.oldLine, change.text));
 
         if (isTaggedSeamLine || isReplacementInsideExistingSeam || isIdeaSyncedDel) {
           if (isIdeaSyncedDel && !emittedIdeaNotice) {
@@ -482,6 +487,15 @@ function runCli(): void {
       const abs = NodePath.join(repoRoot, relPath);
       if (!NodeFS.existsSync(abs)) return undefined;
       return NodeFS.readFileSync(abs, "utf8").split(/\r?\n/);
+    },
+    readOldFileLines: (relPath) => {
+      const shown = NodeChildProcess.spawnSync("git", ["show", `${diffTarget}:${relPath}`], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      if (shown.status !== 0) return undefined;
+      return shown.stdout.split(/\r?\n/);
     },
   });
 

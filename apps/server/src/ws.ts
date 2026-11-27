@@ -316,6 +316,7 @@ import { requestUrl } from "./requestUrl.ts";
 import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:plugins-rpc-handlers
 import { PluginRpcError } from "@t3tools/contracts"; // bytedock-seam-import:plugins-rpc-handlers
 import * as BuiltinPluginRuntime from "./plugins/BuiltinPluginRuntime.ts"; // bytedock-seam-import:plugins-rpc-handlers
+import * as PluginControlPlane from "./plugins/PluginControlPlane.ts"; // bytedock-seam-import:plugins-rpc-handlers
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1659,11 +1660,17 @@ export const layerWsRpc = (
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const relayClient = yield* RelayClient.RelayClient;
       // bytedock-seam:plugins-rpc-handlers
+      const maybeControlPlane = yield* Effect.serviceOption(PluginControlPlane.PluginControlPlane);
+      const controlPlane = Option.getOrUndefined(maybeControlPlane);
       const maybePluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
-      const pluginKernel = Option.isSome(maybePluginKernel)
-        ? maybePluginKernel.value
-        : yield* PluginKernel.makePluginKernel();
-      yield* BuiltinPluginRuntime.ensureBuiltinPluginsRegistered(pluginKernel);
+      const pluginKernel = controlPlane
+        ? controlPlane.kernel
+        : Option.isSome(maybePluginKernel)
+          ? maybePluginKernel.value
+          : yield* PluginKernel.makePluginKernel();
+      if (!controlPlane) {
+        yield* BuiltinPluginRuntime.ensureBuiltinPluginsRegistered(pluginKernel);
+      }
       // end-bytedock-seam:plugins-rpc-handlers
       // Webhook URLs start agents; expose them only to operate-scoped sessions while keeping tasks readable.
       const withVisibleWebhookUrls = (result: ScheduledTaskListResult): ScheduledTaskListResult =>
@@ -3906,7 +3913,7 @@ export const layerWsRpc = (
         [WS_METHODS.pluginsList]: (_input) =>
           Effect.all({
             active: pluginKernel.revisions.active(),
-            plugins: pluginKernel.listDescriptors(),
+            plugins: controlPlane ? controlPlane.listDescriptors() : pluginKernel.listDescriptors(),
           }).pipe(
             Effect.map(({ active, plugins }) => ({
               activeRevision: active.rev,
@@ -3914,6 +3921,15 @@ export const layerWsRpc = (
             })),
           ),
         [WS_METHODS.pluginsReload]: Effect.fn("ws.plugins.reload")(function* (_input) {
+          if (controlPlane) {
+            const outcome = yield* controlPlane.reloadFromDisk({ reason: "ws-reload" });
+            const plugins = yield* controlPlane.listDescriptors();
+            return {
+              previousRevision: outcome.previousRevision,
+              activeRevision: outcome.activeRevision,
+              plugins,
+            };
+          }
           const prev = yield* pluginKernel.revisions.active();
           const next = yield* pluginKernel.revisions.installRevision({
             manifests: prev.manifests,
@@ -3943,10 +3959,12 @@ export const layerWsRpc = (
           const active = yield* pluginKernel.revisions.active();
           const result = yield* BuiltinPluginRuntime.invokeBuiltinPluginMethod({
             kernel: pluginKernel,
+            controlPlane,
             targetStateDir: config.stateDir,
             pluginId: input.pluginId,
             method: input.method,
             payload: input.payload,
+            hostActorId: currentSessionId,
           });
           return {
             revision: active.rev,
@@ -3974,6 +3992,13 @@ export const layerWsRpc = (
                     pluginId: input.pluginId,
                   }),
                 );
+              }
+              if (
+                controlPlane &&
+                input.pluginId === PluginControlPlane.CONTROL_PLANE_PLUGIN_ID &&
+                input.topic === PluginControlPlane.CONTROL_PLANE_EVENTS_TOPIC
+              ) {
+                return controlPlane.subscribeEvents();
               }
               return Stream.empty;
             }),
@@ -4015,6 +4040,9 @@ export const layer = Layer.unwrap(
     const sql = yield* SqlClient.SqlClient;
     // bytedock-seam:plugins-rpc-handlers
     const maybeServerPluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
+    const maybeServerControlPlane = yield* Effect.serviceOption(
+      PluginControlPlane.PluginControlPlane,
+    );
     // end-bytedock-seam:plugins-rpc-handlers
     return HttpRouter.add(
       "GET",
@@ -4098,10 +4126,16 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               // bytedock-seam:plugins-rpc-handlers
               Layer.provide(
-                Option.match(maybeServerPluginKernel, {
-                  onNone: () => Layer.empty,
-                  onSome: (kernel) => Layer.succeed(PluginKernel.PluginKernel, kernel),
-                }),
+                Layer.mergeAll(
+                  Option.match(maybeServerPluginKernel, {
+                    onNone: () => Layer.empty,
+                    onSome: (kernel) => Layer.succeed(PluginKernel.PluginKernel, kernel),
+                  }),
+                  Option.match(maybeServerControlPlane, {
+                    onNone: () => Layer.empty,
+                    onSome: (cp) => Layer.succeed(PluginControlPlane.PluginControlPlane, cp),
+                  }),
+                ),
               ),
               // end-bytedock-seam:plugins-rpc-handlers
               // Installs outlive the connection that started them and lock across clients.

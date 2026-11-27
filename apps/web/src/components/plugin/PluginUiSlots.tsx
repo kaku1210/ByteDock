@@ -53,6 +53,7 @@ export function PluginSettingsSidebarGroup({
 }: {
   readonly compactSearchOpen: boolean;
 }) {
+  const { pendingApprovalCount } = usePluginSlotState();
   return (
     <div
       data-bytedock-slot="settingsSection"
@@ -76,6 +77,11 @@ export function PluginSettingsSidebarGroup({
             <span className={cn("truncate", !compactSearchOpen && "max-md:sr-only")}>
               <T>Plugins &amp; Guard</T>
             </span>
+            {pendingApprovalCount > 0 ? (
+              <span className="ml-auto rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning">
+                {pendingApprovalCount}
+              </span>
+            ) : null}
           </SidebarMenuButton>
         </SidebarMenuItem>
         <SidebarMenuItem>
@@ -120,6 +126,7 @@ export function PluginTimelineCardHost({ rowId }: { readonly rowId: string }) {
  * Compact bottom status strip exposing Egress Guard shield, Plugins, and Legacy Import trigger.
  */
 export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }) {
+  const { pendingApprovalCount } = usePluginSlotState();
   return (
     <div
       data-bytedock-slot="statusBarItem"
@@ -135,6 +142,14 @@ export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }
         <span>
           <T>ByteDock Guard</T>
         </span>
+        {pendingApprovalCount > 0 ? (
+          <span
+            data-bytedock-pending-approvals={pendingApprovalCount}
+            className="rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning"
+          >
+            {pendingApprovalCount}
+          </span>
+        ) : null}
       </button>
       <button
         type="button"

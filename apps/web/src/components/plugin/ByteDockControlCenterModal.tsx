@@ -3,8 +3,18 @@ import { WS_METHODS, type EnvironmentId } from "@t3tools/contracts";
 import { createEnvironmentRpcCommand } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { T, useGT, Var } from "gt-react";
-import { DownloadIcon, PuzzleIcon, RefreshCwIcon, ShieldCheckIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import {
+  AlertTriangleIcon,
+  CheckIcon,
+  DownloadIcon,
+  PuzzleIcon,
+  RefreshCwIcon,
+  ShieldAlertIcon,
+  ShieldCheckIcon,
+  SlidersHorizontalIcon,
+  XIcon,
+} from "lucide-react";
+import { useEffect, useState } from "react";
 import type { JsonNode } from "@bytedock/plugin-ui-renderer/protocol";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
@@ -13,7 +23,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { PluginNodeRenderer } from "./PluginNodeRenderer";
 import { PluginSandboxFrame } from "./PluginSandboxFrame";
-import { closeByteDockModal, setByteDockModalTab, usePluginSlotState } from "./PluginSlotStore";
+import {
+  closeByteDockModal,
+  setByteDockModalTab,
+  setPendingApprovalCount,
+  usePluginSlotState,
+} from "./PluginSlotStore";
 
 const pluginsListCommand = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "bytedock:plugins:list",
@@ -37,7 +52,48 @@ interface PluginListItem {
   readonly revision: number;
   readonly execution: string;
   readonly trust: string;
-  readonly status: string;
+  readonly status: "active" | "degraded" | "disabled";
+  readonly enabled?: boolean;
+  readonly approved?: boolean;
+  readonly config?: Readonly<Record<string, unknown>>;
+}
+
+interface ControlPlaneApprovalItem {
+  readonly requestId: string;
+  readonly kind: string;
+  readonly pluginId: string;
+  readonly riskLevel: string;
+  readonly reasons: ReadonlyArray<string>;
+  readonly summary: string;
+  readonly diffPreview: {
+    readonly before: unknown;
+    readonly after: unknown;
+  };
+  readonly status: "pending" | "approved" | "rejected" | "expired";
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
+interface ControlPlaneStatePayload {
+  readonly pluginConfigPath?: string;
+  readonly pluginsDir?: string;
+  readonly mtimeMs?: number;
+  readonly activeRevision?: number;
+  readonly plugins?: ReadonlyArray<PluginListItem>;
+  readonly lastConfigDiagnostic?: {
+    readonly filePath: string;
+    readonly pluginId?: string;
+    readonly message: string;
+    readonly observedAt: string;
+  };
+  readonly lastReloadDiagnostic?: {
+    readonly pluginId: string;
+    readonly file: string;
+    readonly line: number;
+    readonly column: number;
+    readonly message: string;
+  };
+  readonly approvals?: ReadonlyArray<ControlPlaneApprovalItem>;
 }
 
 interface EgressStatusPayload {
@@ -168,7 +224,17 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
   const [busy, setBusy] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [activeRevision, setActiveRevision] = useState<number | null>(null);
+  const [configMtimeMs, setConfigMtimeMs] = useState<number | undefined>(undefined);
+  const [pluginConfigPath, setPluginConfigPath] = useState<string>("");
+  const [pluginsDir, setPluginsDir] = useState<string>("");
   const [plugins, setPlugins] = useState<ReadonlyArray<PluginListItem>>([]);
+  const [approvals, setApprovals] = useState<ReadonlyArray<ControlPlaneApprovalItem>>([]);
+  const [configDiagnostic, setConfigDiagnostic] =
+    useState<ControlPlaneStatePayload["lastConfigDiagnostic"]>(undefined);
+  const [reloadDiagnostic, setReloadDiagnostic] =
+    useState<ControlPlaneStatePayload["lastReloadDiagnostic"]>(undefined);
+  const [editingPluginId, setEditingPluginId] = useState<string | null>(null);
+  const [configDraft, setConfigDraft] = useState<string>("{}");
   const [egressStatus, setEgressStatus] = useState<EgressStatusPayload | null>(null);
   const [egressProof, setEgressProof] = useState<EgressProofSummary | null>(null);
   const [showSandboxDemo, setShowSandboxDemo] = useState(false);
@@ -183,7 +249,7 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
   );
   const [importResult, setImportResult] = useState<LegacyImportResultPayload | null>(null);
 
-  if (!slotState.modalOpen || slotState.modalHost !== host) return null;
+  const isVisible = slotState.modalOpen && slotState.modalHost === host;
 
   const requireEnvId = (): EnvironmentId | null => {
     if (!environmentId) {
@@ -193,18 +259,33 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
     return environmentId;
   };
 
-  const handleLoadPlugins = async () => {
-    const envId = requireEnvId();
-    if (!envId) return;
-    setBusy(true);
-    setErrorText(null);
-    const listRes = await runList({ environmentId: envId, input: {} });
-    if (AsyncResult.isSuccess(listRes)) {
-      setActiveRevision(listRes.value.activeRevision);
-      setPlugins(listRes.value.plugins);
+  const refreshControlPlane = async (envId: EnvironmentId) => {
+    const cpRes = await runInvoke({
+      environmentId: envId,
+      input: { pluginId: "builtin.control-plane", method: "getState", payload: {} },
+    });
+    if (AsyncResult.isSuccess(cpRes) && cpRes.value.result) {
+      const payload = cpRes.value.result as ControlPlaneStatePayload;
+      setActiveRevision(payload.activeRevision ?? cpRes.value.revision);
+      setConfigMtimeMs(payload.mtimeMs);
+      setPluginConfigPath(payload.pluginConfigPath ?? "");
+      setPluginsDir(payload.pluginsDir ?? "");
+      setPlugins(payload.plugins ?? []);
+      setConfigDiagnostic(payload.lastConfigDiagnostic);
+      setReloadDiagnostic(payload.lastReloadDiagnostic);
+      const nextApprovals = payload.approvals ?? [];
+      setApprovals(nextApprovals);
+      setPendingApprovalCount(nextApprovals.filter((a) => a.status === "pending").length);
     } else {
-      setErrorText(gt("Failed to load ByteDock plugin registry."));
+      const listRes = await runList({ environmentId: envId, input: {} });
+      if (AsyncResult.isSuccess(listRes)) {
+        setActiveRevision(listRes.value.activeRevision);
+        setPlugins(listRes.value.plugins as ReadonlyArray<PluginListItem>);
+      } else {
+        setErrorText(gt("Failed to load ByteDock plugin registry."));
+      }
     }
+
     const egressRes = await runInvoke({
       environmentId: envId,
       input: { pluginId: "builtin.egress-guard", method: "status", payload: {} },
@@ -212,6 +293,59 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
     if (AsyncResult.isSuccess(egressRes) && egressRes.value.result) {
       setEgressStatus(egressRes.value.result as EgressStatusPayload);
     }
+  };
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches live ByteDock control-plane state from the server when the modal opens
+  useEffect(() => {
+    if (!isVisible || !environmentId) return;
+    let cancelled = false;
+    void (async () => {
+      const cpRes = await runInvoke({
+        environmentId,
+        input: { pluginId: "builtin.control-plane", method: "getState", payload: {} },
+      });
+      if (cancelled) return;
+      if (AsyncResult.isSuccess(cpRes) && cpRes.value.result) {
+        const payload = cpRes.value.result as ControlPlaneStatePayload;
+        setActiveRevision(payload.activeRevision ?? cpRes.value.revision);
+        setConfigMtimeMs(payload.mtimeMs);
+        setPluginConfigPath(payload.pluginConfigPath ?? "");
+        setPluginsDir(payload.pluginsDir ?? "");
+        setPlugins(payload.plugins ?? []);
+        setConfigDiagnostic(payload.lastConfigDiagnostic);
+        setReloadDiagnostic(payload.lastReloadDiagnostic);
+        const nextApprovals = payload.approvals ?? [];
+        setApprovals(nextApprovals);
+        setPendingApprovalCount(nextApprovals.filter((a) => a.status === "pending").length);
+      } else {
+        const listRes = await runList({ environmentId, input: {} });
+        if (cancelled) return;
+        if (AsyncResult.isSuccess(listRes)) {
+          setActiveRevision(listRes.value.activeRevision);
+          setPlugins(listRes.value.plugins as ReadonlyArray<PluginListItem>);
+        }
+      }
+      const egressRes = await runInvoke({
+        environmentId,
+        input: { pluginId: "builtin.egress-guard", method: "status", payload: {} },
+      });
+      if (!cancelled && AsyncResult.isSuccess(egressRes) && egressRes.value.result) {
+        setEgressStatus(egressRes.value.result as EgressStatusPayload);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isVisible, environmentId, runInvoke, runList]);
+
+  if (!isVisible) return null;
+
+  const handleLoadPlugins = async () => {
+    const envId = requireEnvId();
+    if (!envId) return;
+    setBusy(true);
+    setErrorText(null);
+    await refreshControlPlane(envId);
     setBusy(false);
   };
 
@@ -222,11 +356,101 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
     setErrorText(null);
     const res = await runReload({ environmentId: envId, input: {} });
     if (AsyncResult.isSuccess(res)) {
-      setActiveRevision(res.value.activeRevision);
-      setPlugins(res.value.plugins);
+      await refreshControlPlane(envId);
     } else {
       setErrorText(gt("Plugin reload failed."));
     }
+    setBusy(false);
+  };
+
+  const handleTogglePlugin = async (plugin: PluginListItem) => {
+    const envId = requireEnvId();
+    if (!envId) return;
+    setBusy(true);
+    setErrorText(null);
+    const nextEnabled = !(plugin.enabled ?? plugin.status === "active");
+    const res = await runInvoke({
+      environmentId: envId,
+      input: {
+        pluginId: "builtin.control-plane",
+        method: "setEnabled",
+        payload: {
+          pluginId: plugin.id,
+          enabled: nextEnabled,
+          ...(configMtimeMs !== undefined ? { expectedMtimeMs: configMtimeMs } : {}),
+        },
+      },
+    });
+    if (!AsyncResult.isSuccess(res)) {
+      setErrorText(gt("Failed to update plugin enabled state."));
+    }
+    await refreshControlPlane(envId);
+    setBusy(false);
+  };
+
+  const handleOpenConfigEditor = (plugin: PluginListItem) => {
+    if (editingPluginId === plugin.id) {
+      setEditingPluginId(null);
+      return;
+    }
+    setEditingPluginId(plugin.id);
+    setConfigDraft(JSON.stringify(plugin.config ?? {}, null, 2));
+  };
+
+  const handleSavePluginConfig = async (pluginId: string) => {
+    const envId = requireEnvId();
+    if (!envId) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(configDraft);
+    } catch {
+      setErrorText(gt("Invalid JSON in plugin config editor."));
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setErrorText(gt("Plugin config must be a JSON object."));
+      return;
+    }
+    setBusy(true);
+    setErrorText(null);
+    const res = await runInvoke({
+      environmentId: envId,
+      input: {
+        pluginId: "builtin.control-plane",
+        method: "patchConfig",
+        payload: {
+          pluginId,
+          patch: parsed,
+          ...(configMtimeMs !== undefined ? { expectedMtimeMs: configMtimeMs } : {}),
+        },
+      },
+    });
+    if (AsyncResult.isSuccess(res)) {
+      setEditingPluginId(null);
+    } else {
+      setErrorText(gt("Failed to save plugin config (validation or concurrent edit conflict)."));
+    }
+    await refreshControlPlane(envId);
+    setBusy(false);
+  };
+
+  const handleResolveApproval = async (requestId: string, decision: "approve" | "reject") => {
+    const envId = requireEnvId();
+    if (!envId) return;
+    setBusy(true);
+    setErrorText(null);
+    const res = await runInvoke({
+      environmentId: envId,
+      input: {
+        pluginId: "builtin.control-plane",
+        method: "resolveApproval",
+        payload: { requestId, decision },
+      },
+    });
+    if (!AsyncResult.isSuccess(res)) {
+      setErrorText(gt("Failed to resolve approval request."));
+    }
+    await refreshControlPlane(envId);
     setBusy(false);
   };
 
@@ -314,6 +538,7 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
   };
 
   const activeSource = scanSources.find((s) => s.baseDir === selectedSourceDir) ?? null;
+  const pendingApprovals = approvals.filter((item) => item.status === "pending");
 
   return (
     <div
@@ -351,6 +576,11 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
           >
             <PuzzleIcon className="size-3.5" />
             <T>Plugins &amp; Egress Guard</T>
+            {pendingApprovals.length > 0 ? (
+              <span className="ml-1 rounded-full bg-warning/20 px-1.5 font-mono text-3xs text-warning">
+                {pendingApprovals.length}
+              </span>
+            ) : null}
           </Button>
           <Button
             type="button"
@@ -373,10 +603,16 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
           {slotState.modalTab === "plugins" ? (
             <>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs text-muted-foreground">
-                  <T>
-                    Active revision: <Var>{activeRevision ?? "-"}</Var>
-                  </T>
+                <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                  <span>
+                    <T>
+                      Active revision: <Var>{activeRevision ?? "-"}</Var>
+                    </T>
+                  </span>
+                  {pluginConfigPath ? (
+                    <span className="font-mono text-2xs">{pluginConfigPath}</span>
+                  ) : null}
+                  {pluginsDir ? <span className="font-mono text-2xs">{pluginsDir}</span> : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -410,6 +646,84 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
                 </div>
               </div>
 
+              {configDiagnostic || reloadDiagnostic ? (
+                <section className="flex flex-col gap-1.5 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
+                  <div className="flex items-center gap-1.5 font-medium text-warning">
+                    <AlertTriangleIcon className="size-3.5" />
+                    <T>Hot-Reload Diagnostic (Previous Valid State Kept)</T>
+                  </div>
+                  {configDiagnostic ? (
+                    <div className="font-mono text-2xs text-foreground">
+                      {`${configDiagnostic.pluginId ?? "plugins.yml"}: ${configDiagnostic.message}`}
+                    </div>
+                  ) : null}
+                  {reloadDiagnostic ? (
+                    <div className="font-mono text-2xs text-foreground">
+                      {`${reloadDiagnostic.pluginId} (${reloadDiagnostic.file}:${reloadDiagnostic.line}:${reloadDiagnostic.column}): ${reloadDiagnostic.message}`}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {approvals.length > 0 ? (
+                <section
+                  data-bytedock-approvals-section="true"
+                  className="flex flex-col gap-2 rounded-lg border border-warning/40 bg-muted/20 p-3"
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                    <ShieldAlertIcon className="size-4 text-warning" />
+                    <T>
+                      Privileged Permission Approvals (<Var>{pendingApprovals.length}</Var> pending)
+                    </T>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {approvals.map((item) => (
+                      <div
+                        key={item.requestId}
+                        data-bytedock-approval-id={item.requestId}
+                        className="flex flex-col gap-1.5 rounded-md border border-border bg-background/80 p-2.5 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-foreground">{item.summary}</span>
+                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs uppercase text-muted-foreground">
+                            {item.status}
+                          </span>
+                        </div>
+                        <div className="font-mono text-2xs text-muted-foreground">
+                          {`${item.pluginId} · ${item.reasons.join(", ")}`}
+                        </div>
+                        <pre className="max-h-28 overflow-auto rounded bg-muted/40 p-2 font-mono text-3xs text-foreground">
+                          {JSON.stringify(item.diffPreview, null, 2)}
+                        </pre>
+                        {item.status === "pending" ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => void handleResolveApproval(item.requestId, "reject")}
+                            >
+                              <T>Reject</T>
+                            </Button>
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="default"
+                              disabled={busy}
+                              onClick={() => void handleResolveApproval(item.requestId, "approve")}
+                            >
+                              <CheckIcon className="size-3.5" />
+                              <T>Approve &amp; Apply</T>
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
               <PluginNodeRenderer node={buildEgressKpiNode(egressStatus, egressProof)} />
 
               {egressStatus?.disclosures ? (
@@ -433,22 +747,91 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
                   </p>
                 ) : (
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {plugins.map((plugin) => (
-                      <div
-                        key={plugin.id}
-                        className="flex flex-col gap-1 rounded-md border border-border bg-background/60 p-2.5 text-xs"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-foreground">{plugin.name}</span>
-                          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
-                            {`r${plugin.revision}`}
-                          </span>
+                    {plugins.map((plugin) => {
+                      const isEnabled = plugin.enabled ?? plugin.status === "active";
+                      const isEditing = editingPluginId === plugin.id;
+                      return (
+                        <div
+                          key={plugin.id}
+                          data-bytedock-plugin-card={plugin.id}
+                          className="flex flex-col gap-2 rounded-md border border-border bg-background/60 p-2.5 text-xs"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-foreground">{plugin.name}</span>
+                            <div className="flex items-center gap-1">
+                              <span
+                                className={
+                                  plugin.status === "active"
+                                    ? "rounded bg-success/15 px-1.5 py-0.5 font-mono text-3xs text-success"
+                                    : plugin.status === "degraded"
+                                      ? "rounded bg-warning/15 px-1.5 py-0.5 font-mono text-3xs text-warning"
+                                      : "rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground"
+                                }
+                              >
+                                {plugin.status}
+                              </span>
+                              <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-3xs text-muted-foreground">
+                                {`r${plugin.revision}`}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="font-mono text-2xs text-muted-foreground">
+                            {`${plugin.id} · ${plugin.trust} · ${plugin.execution}`}
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant={isEnabled ? "outline" : "default"}
+                              disabled={busy}
+                              onClick={() => void handleTogglePlugin(plugin)}
+                            >
+                              {isEnabled ? gt("Disable") : gt("Enable")}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() => handleOpenConfigEditor(plugin)}
+                            >
+                              <SlidersHorizontalIcon className="size-3" />
+                              <T>Config</T>
+                            </Button>
+                          </div>
+                          {isEditing ? (
+                            <div className="flex flex-col gap-1.5 border-t border-border pt-2">
+                              <textarea
+                                value={configDraft}
+                                onChange={(e) => setConfigDraft(e.currentTarget.value)}
+                                rows={5}
+                                aria-label={gt("Plugin JSON configuration")}
+                                className="w-full rounded border border-border bg-background p-2 font-mono text-3xs text-foreground"
+                              />
+                              <div className="flex justify-end gap-1.5">
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => setEditingPluginId(null)}
+                                >
+                                  <T>Cancel</T>
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="xs"
+                                  variant="default"
+                                  disabled={busy}
+                                  onClick={() => void handleSavePluginConfig(plugin.id)}
+                                >
+                                  <T>Save &amp; Hot Reload</T>
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
-                        <div className="font-mono text-2xs text-muted-foreground">
-                          {`${plugin.id} · ${plugin.trust} · ${plugin.execution}`}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>

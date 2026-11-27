@@ -57,6 +57,9 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolExposure from "./McpToolExposure.ts";
 import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as PluginControlPlane from "../plugins/PluginControlPlane.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import { ByteDockControlToolkit } from "./toolkits/bytedockControl/tools.ts"; // bytedock-seam-import:mcp-dynamic-bridge
+import * as ByteDockControlHandlers from "./toolkits/bytedockControl/handlers.ts"; // bytedock-seam-import:mcp-dynamic-bridge
 import * as McpWebhookTransport from "./McpWebhookTransport.ts";
 import { HTML_RENDER_TOOL_NAME } from "@t3tools/shared/htmlRender";
 import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
@@ -1532,6 +1535,38 @@ const layerToolExposure = Layer.effect(
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     // bytedock-seam:mcp-dynamic-bridge
+    const maybeControlPlane = yield* Effect.serviceOption(PluginControlPlane.PluginControlPlane);
+    if (Option.isSome(maybeControlPlane)) {
+      const maybeThreads = yield* Effect.serviceOption(
+        ThreadManagementService.ThreadManagementService,
+      );
+      if (Option.isSome(maybeThreads)) {
+        const controlPlaneLayer = Layer.mergeAll(
+          provideRegistrationServices<
+            PluginControlPlane.PluginControlPlane | ThreadManagementService.ThreadManagementService
+          >().layer,
+          McpToolAccess.HandlersLayer.layer(ByteDockControlHandlers.layer),
+        ).pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              Layer.succeed(PluginControlPlane.PluginControlPlane, maybeControlPlane.value),
+              Layer.succeed(ThreadManagementService.ThreadManagementService, maybeThreads.value),
+              Layer.succeed(McpServer.McpServer, server),
+            ),
+          ),
+        );
+        yield* withToolAnalytics(
+          withToolResultCapture(
+            withToolSpans(
+              withAdvertisedSchemas(
+                ByteDockControlToolkit,
+                McpServer.registerToolkit(decodeAsAdvertised(ByteDockControlToolkit)),
+              ),
+            ),
+          ),
+        ).pipe(Effect.provide(controlPlaneLayer));
+      }
+    }
     const pluginKernel = yield* Effect.serviceOption(PluginKernel.PluginKernel);
     if (Option.isSome(pluginKernel)) {
       const mcpBridge = pluginKernel.value.mcpBridge;

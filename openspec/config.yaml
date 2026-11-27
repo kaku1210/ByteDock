@@ -1,0 +1,24 @@
+schema: spec-driven
+context: |
+  项目：ByteDock（基于 T3 Code 底座构建的独立插件化桌面与 Web Agent 工作台，仓库位于 D:\Project\AgentLearn\bytedock-repo）。
+  项目事实与技术栈：TypeScript + Effect 4 + Vite/React + Electron + pnpm workspace（vp 工具链），运行数据隔离在 ~/.bytedock（绝不写入 ~/.t3 或 ~/.t3-plus）。
+  权威入口：项目根 AGENTS.md、seam-ledger.json（scripts/check-seams.ts 强制上游缝隙纪律）、scripts/check-zero-telemetry.ts、apps/server/src/provider/AgentContextBudget.test.ts。
+  验证入口：vp test run <files>、vp run typecheck、vp run check:changed、node scripts/check-seams.ts、node scripts/check-zero-telemetry.ts。
+  人工可读正文使用简体中文；机器字段、API、命令、路径、schema 字段和固定解析标记保留原文。
+  先按全局任务分流判断：明确、局部、低风险的小修复及工具/规则维护直接实施和验证，不强制创建 change。
+  已批准范围内的修复复用原任务；仅正式变更先形成完整规划包，合并确认一次后连续实施、修复和验证。
+rules:
+  proposal:
+    - 明确目标、非目标、受影响范围、风险和可判定的验收标准。
+    - 按真实行为契约区分新增和修改的 capability，保留既有路径。
+  specs:
+    - 用外部可观察行为描述要求，保留 Purpose、ADDED/MODIFIED Requirements、Requirement、Scenario 和 SHALL/MUST 等固定解析标记。
+    - 每项要求包含可验证场景，覆盖本次相关成功路径与失败或边界语义，不绑定内部实现类名。
+  design:
+    - 说明真实方案、缝隙边界（seam-ledger.json）、状态所有者、失败语义、取舍与迁移兼容性。
+    - 复用当前实现，不为假设需求新增抽象，不以假数据或静默降级掩盖错误。
+  tasks:
+    - 按依赖拆分可审查或可验证任务，写明改动范围和验证方式。
+    - 保留 - [ ] 编号格式；实际完成并取得对应证据后才勾选。
+    - 区分结构、类型检查、单元测试、集成验证与真实 Electron 体验验证证据；未执行写 NOT_RUN，阻塞写 BLOCKED，失败写 FAIL。
+    - 收尾包含适用检查、文档同步与残余风险，不将未经授权的 Git 提交/推送/发布列为默认任务。

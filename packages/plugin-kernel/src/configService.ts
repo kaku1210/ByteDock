@@ -41,8 +41,19 @@ export interface PluginConfigSnapshot {
   readonly document: PluginsYamlDocument;
 }
 
+export type SafePluginConfigReadResult =
+  | { readonly ok: true; readonly snapshot: PluginConfigSnapshot }
+  | {
+      readonly ok: false;
+      readonly filePath: string;
+      readonly mtimeMs: number;
+      readonly message: string;
+    };
+
 export interface PluginConfigServiceHandle {
+  readonly filePath: string;
   readonly read: () => Effect.Effect<PluginConfigSnapshot>;
+  readonly readSafe: () => Effect.Effect<SafePluginConfigReadResult>;
   readonly updatePluginConfig: (input: {
     readonly pluginId: string;
     readonly expectedMtimeMs: number;
@@ -57,20 +68,65 @@ function defaultDocument(): PluginsYamlDocument {
   return { schemaVersion: 1, plugins: {} };
 }
 
-function readYamlDisk(filePath: string): PluginConfigSnapshot {
+function readYamlDiskSafe(filePath: string): SafePluginConfigReadResult {
   if (!NodeFS.existsSync(filePath)) {
-    return { mtimeMs: 0, document: defaultDocument() };
+    return { ok: true, snapshot: { mtimeMs: 0, document: defaultDocument() } };
   }
   const stat = NodeFS.statSync(filePath);
-  const raw = NodeFS.readFileSync(filePath, "utf8");
-  const parsed = (YAML.parse(raw) ?? {}) as Partial<PluginsYamlDocument>;
-  return {
-    mtimeMs: Math.trunc(stat.mtimeMs),
-    document: {
-      schemaVersion: 1,
-      plugins: parsed.plugins && typeof parsed.plugins === "object" ? parsed.plugins : {},
-    },
-  };
+  const mtimeMs = Math.trunc(stat.mtimeMs);
+  try {
+    const raw = NodeFS.readFileSync(filePath, "utf8");
+    const parsed = YAML.parse(raw) as unknown;
+    if (
+      parsed !== null &&
+      parsed !== undefined &&
+      (typeof parsed !== "object" || Array.isArray(parsed))
+    ) {
+      return {
+        ok: false,
+        filePath,
+        mtimeMs,
+        message: "plugins.yml root document must be a YAML mapping object.",
+      };
+    }
+    const obj = (parsed ?? {}) as Partial<PluginsYamlDocument>;
+    if (
+      obj.plugins !== undefined &&
+      (obj.plugins === null || typeof obj.plugins !== "object" || Array.isArray(obj.plugins))
+    ) {
+      return {
+        ok: false,
+        filePath,
+        mtimeMs,
+        message: "plugins.yml 'plugins' field must be a mapping keyed by pluginId.",
+      };
+    }
+    return {
+      ok: true,
+      snapshot: {
+        mtimeMs,
+        document: {
+          schemaVersion: 1,
+          plugins: obj.plugins && typeof obj.plugins === "object" ? obj.plugins : {},
+        },
+      },
+    };
+  } catch (cause) {
+    return {
+      ok: false,
+      filePath,
+      mtimeMs,
+      message: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+}
+
+function readYamlDisk(filePath: string): PluginConfigSnapshot {
+  const res = readYamlDiskSafe(filePath);
+  if (!res.ok) {
+    throw new Error(`Failed to parse ${filePath}: ${res.message}`);
+  }
+  return res.snapshot;
 }
 
 function writeTmpAndRenameOnce(
@@ -131,11 +187,19 @@ export const makePluginConfigService = Effect.fn("pluginKernel.makePluginConfigS
   filePath: string,
 ) {
   const writeLane = yield* Semaphore.make(1);
-  const snapshotRef = yield* Ref.make<PluginConfigSnapshot>(readYamlDisk(filePath));
+  const initialRead = readYamlDiskSafe(filePath);
+  const snapshotRef = yield* Ref.make<PluginConfigSnapshot>(
+    initialRead.ok ? initialRead.snapshot : { mtimeMs: 0, document: defaultDocument() },
+  );
 
   const read = () =>
     Effect.sync(() => readYamlDisk(filePath)).pipe(
       Effect.tap((snap) => Ref.set(snapshotRef, snap)),
+    );
+
+  const readSafe = () =>
+    Effect.sync(() => readYamlDiskSafe(filePath)).pipe(
+      Effect.tap((res) => (res.ok ? Ref.set(snapshotRef, res.snapshot) : Effect.void)),
     );
 
   const updatePluginConfig: PluginConfigServiceHandle["updatePluginConfig"] = (input) =>
@@ -182,7 +246,9 @@ export const makePluginConfigService = Effect.fn("pluginKernel.makePluginConfigS
     );
 
   return {
+    filePath,
     read,
+    readSafe,
     updatePluginConfig,
   } satisfies PluginConfigServiceHandle;
 });

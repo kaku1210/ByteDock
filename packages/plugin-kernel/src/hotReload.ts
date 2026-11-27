@@ -50,7 +50,10 @@ export type HotReloadOutcome =
 export interface HotReloadController {
   readonly reloadFromSources: (
     sources: ReadonlyArray<HotReloadPluginSource>,
-    options?: { readonly nowMs?: number | undefined },
+    options?: {
+      readonly nowMs?: number | undefined;
+      readonly extraManifests?: ReadonlyArray<ByteDockPluginManifest> | undefined;
+    },
   ) => Effect.Effect<HotReloadOutcome>;
   readonly lastError: () => Effect.Effect<HotReloadErrorDiagnostic | undefined>;
 }
@@ -217,7 +220,7 @@ export const makeHotReloadController = Effect.fn("pluginKernel.makeHotReloadCont
 
           // Only freeze old revision AFTER every plugin compiled and passed boot probes cleanly.
           const installed = yield* deps.revisions.installRevision({
-            manifests,
+            manifests: [...(options?.extraManifests ?? []), ...manifests],
             modules: compiledModules,
             nowMs: options?.nowMs,
           });

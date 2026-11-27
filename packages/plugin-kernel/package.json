@@ -33,6 +33,10 @@
       "types": "./src/configService.ts",
       "import": "./src/configService.ts"
     },
+    "./pluginConfigSchemas": {
+      "types": "./src/pluginConfigSchemas.ts",
+      "import": "./src/pluginConfigSchemas.ts"
+    },
     "./compiler": {
       "types": "./src/compiler.ts",
       "import": "./src/compiler.ts"

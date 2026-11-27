@@ -16,6 +16,7 @@ export interface PluginSlotState {
   readonly activeDockPluginId: string | null;
   readonly activeDockTree: JsonNode | null;
   readonly timelineCards: Readonly<Record<string, PluginTimelineCardEntry>>;
+  readonly pendingApprovalCount: number;
 }
 
 let state: PluginSlotState = {
@@ -25,6 +26,7 @@ let state: PluginSlotState = {
   activeDockPluginId: null,
   activeDockTree: null,
   timelineCards: {},
+  pendingApprovalCount: 0,
 };
 
 const listeners = new Set<() => void>();
@@ -69,6 +71,13 @@ export function setByteDockModalTab(tab: ByteDockModalTab) {
 export function clearActivePluginDockPanel() {
   if (state.activeDockPluginId === null) return;
   state = { ...state, activeDockPluginId: null, activeDockTree: null };
+  emit();
+}
+
+export function setPendingApprovalCount(count: number) {
+  const normalized = Math.max(0, Math.trunc(count));
+  if (state.pendingApprovalCount === normalized) return;
+  state = { ...state, pendingApprovalCount: normalized };
   emit();
 }
 

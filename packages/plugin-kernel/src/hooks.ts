@@ -56,6 +56,8 @@ export interface HookRegistryService {
   readonly register: (
     entry: Omit<RegisteredHookEntry, "id">,
   ) => Effect.Effect<string, never, Scope.Scope>;
+  readonly setPluginEnabled: (pluginId: string, enabled: boolean) => Effect.Effect<void>;
+  readonly isPluginEnabled: (pluginId: string) => Effect.Effect<boolean>;
   readonly listByHook: (name: PluginHookName) => Effect.Effect<ReadonlyArray<RegisteredHookEntry>>;
   readonly runOpenPrepare: (input: {
     readonly threadId: string;
@@ -112,7 +114,19 @@ function hashStableBlocks(
  */
 export const makeHookRegistry = Effect.fn("pluginKernel.makeHookRegistry")(function* () {
   const entriesRef = yield* Ref.make<ReadonlyArray<RegisteredHookEntry>>([]);
+  const disabledPluginsRef = yield* Ref.make<ReadonlySet<string>>(new Set());
   let nextSeq = 1;
+
+  const setPluginEnabled = (pluginId: string, enabled: boolean) =>
+    Ref.update(disabledPluginsRef, (set) => {
+      const next = new Set(set);
+      if (enabled) next.delete(pluginId);
+      else next.add(pluginId);
+      return next;
+    });
+
+  const isPluginEnabled = (pluginId: string) =>
+    Ref.get(disabledPluginsRef).pipe(Effect.map((set) => !set.has(pluginId)));
 
   const register = Effect.fn("HookRegistry.register")(function* (
     entry: Omit<RegisteredHookEntry, "id">,
@@ -131,7 +145,11 @@ export const makeHookRegistry = Effect.fn("pluginKernel.makeHookRegistry")(funct
   });
 
   const listByHook = (name: PluginHookName) =>
-    Ref.get(entriesRef).pipe(Effect.map((list) => list.filter((e) => e.name === name)));
+    Effect.all([Ref.get(entriesRef), Ref.get(disabledPluginsRef)]).pipe(
+      Effect.map(([list, disabled]) =>
+        list.filter((e) => e.name === name && !disabled.has(e.pluginId)),
+      ),
+    );
 
   const invokeSingle = Effect.fn("HookRegistry.invokeSingle")(function* (
     entry: RegisteredHookEntry,
@@ -402,6 +420,8 @@ export const makeHookRegistry = Effect.fn("pluginKernel.makeHookRegistry")(funct
 
   return {
     register,
+    setPluginEnabled,
+    isPluginEnabled,
     listByHook,
     runOpenPrepare,
     runOpenAfterPrepare,

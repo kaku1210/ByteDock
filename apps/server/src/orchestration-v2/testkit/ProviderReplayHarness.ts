@@ -109,6 +109,7 @@ export function makeReplayServerConfig(
     const attachmentsDir = path.join(stateDir, "attachments");
     const environmentThemesDir = path.join(stateDir, "themes");
     const worktreesDir = path.join(baseDir, "worktrees");
+    const pluginsDir = path.join(baseDir, "plugins");
     const providerStatusCacheDir = path.join(baseDir, "caches");
 
     for (const directory of [
@@ -119,6 +120,7 @@ export function makeReplayServerConfig(
       attachmentsDir,
       environmentThemesDir,
       worktreesDir,
+      pluginsDir,
       providerStatusCacheDir,
     ]) {
       yield* fs.makeDirectory(directory, { recursive: true });
@@ -158,6 +160,8 @@ export function makeReplayServerConfig(
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
+      pluginConfigPath: path.join(stateDir, "plugins.yml"),
+      pluginsDir,
       providerStatusCacheDir,
       worktreesDir,
       worktreeCheckoutCacheDir: path.join(providerStatusCacheDir, "worktree-checkouts"),
