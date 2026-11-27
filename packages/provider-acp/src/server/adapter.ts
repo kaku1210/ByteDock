@@ -716,14 +716,28 @@ export interface AcpAdapterV2Flavor {
     readonly appendOutput: string;
   }>;
   readonly isPersistentBackgroundTool?: (toolCall: AcpToolCallState) => boolean;
+  /** Prefer session/resume over session/load when activating an existing session. */
+  readonly resumeMethod?: "load" | "resume";
+  /**
+   * Optional live output tailer for active `command_execution` tools whose provider withholds
+   * stdout until completion (e.g., Antigravity background `task-<idx>.log` files).
+   */
+  readonly tailCommandOutput?: (input: {
+    readonly sessionId: string;
+    readonly toolCallId: string;
+    readonly stop: Deferred.Deferred<void>;
+    readonly onChunk: (chunk: string) => Effect.Effect<void>;
+  }) => Effect.Effect<void>;
   /**
    * A tool the agent goes on running after its prompt ends, and reports on by itself when the
    * tool ends. With `deferFinalizeForBackgroundWork`, the turn stays open until then.
    */
   readonly toolOutlivesPrompt?: (toolCall: AcpToolCallState) => boolean;
   /**
-   * Finalize a settled turn held only by running commands after `timeout` of silence, and
-   * optionally reconcile finished commands via `reconcileFinishedCommands` every `reconcileInterval`.
+   * Finalize a settled turn held only by running commands after `timeout` of silence,
+   * optionally reconcile finished commands via `reconcileFinishedCommands` every
+   * `reconcileInterval`, and optionally wake a runtime whose ACP stream detached after
+   * `session/prompt` settled when `watchSilentProgress` observes unreported native activity.
    */
   readonly postSettleCommandHold?: {
     readonly timeout: Duration.Input;
@@ -738,6 +752,15 @@ export interface AcpAdapterV2Flavor {
         readonly status: "completed" | "failed";
       }>
     >;
+    readonly watchSilentProgress?: (sessionId: string) => Effect.Effect<{
+      readonly check: (input: {
+        readonly ignoreToolCallIds: ReadonlyArray<string>;
+      }) => Effect.Effect<boolean>;
+      readonly acknowledge: () => Effect.Effect<void>;
+    }>;
+    readonly wakePrompt?: string;
+    readonly wakeGrace?: Duration.Input;
+    readonly maxWakes?: number;
   };
   readonly isProviderWakeNotification?: (
     notification: EffectAcpSchema.SessionNotification,
@@ -1856,6 +1879,7 @@ interface ActiveAcpTurn {
   promptUsage: EffectAcpSchema.Usage | undefined;
   backgroundFinalizeGeneration: number;
   postSettleHoldGeneration: number;
+  postSettleWakeAttempts: number;
   /** `replyEndsWithUsageUpdate`: output arrived and its closing `usage_update` has not. */
   replyOpen: boolean;
   /** The agent's own id for this turn's prompt, from `forkFromTurn.nativeTurnId`. */
@@ -2579,6 +2603,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           >(),
         );
         const pendingRuntimeRequests = yield* Ref.make(new Map<string, PendingRuntimeRequest>());
+        const commandOutputTails = new Map<
+          string,
+          { readonly fiber: Fiber.Fiber<void>; readonly stop: Deferred.Deferred<void> }
+        >();
+        const stopCommandOutputTail = (nativeItemId: string) =>
+          Effect.suspend(() => {
+            const tail = commandOutputTails.get(nativeItemId);
+            if (tail === undefined) return Effect.void;
+            commandOutputTails.delete(nativeItemId);
+            return Deferred.succeed(tail.stop, undefined).pipe(
+              Effect.andThen(Fiber.await(tail.fiber)),
+              Effect.asVoid,
+            );
+          });
+        const stopAllCommandOutputTails = Effect.suspend(() => {
+          const entries = [...commandOutputTails.keys()];
+          return Effect.forEach(entries, stopCommandOutputTail, { discard: true });
+        });
         const emitNativeResponseLifecycle =
           options.testHooks?.onNativeResponseLifecycle ?? (() => Effect.void);
         const nextElicitationOrdinal = yield* Ref.make(0);
@@ -5399,7 +5441,38 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 }
             }
           }
+          if (
+            turnItem.type === "command_execution" &&
+            status !== "running" &&
+            status !== "pending"
+          ) {
+            yield* stopCommandOutputTail(nativeItemId);
+          }
           yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
+          if (
+            turnItem.type === "command_execution" &&
+            (status === "running" || status === "pending") &&
+            flavor.tailCommandOutput !== undefined &&
+            !commandOutputTails.has(nativeItemId)
+          ) {
+            const stop = yield* Deferred.make<void>();
+            const tailFiber = yield* flavor
+              .tailCommandOutput({
+                sessionId: context.nativeThreadId,
+                toolCallId: toolCall.toolCallId,
+                stop,
+                onChunk: (chunk) =>
+                  emitProviderEvent({
+                    type: "command_output.delta",
+                    driver,
+                    threadId: context.input.threadId,
+                    itemId: turnItemId,
+                    chunk,
+                  }),
+              })
+              .pipe(Effect.ignoreCause, Effect.forkIn(sessionScope));
+            commandOutputTails.set(nativeItemId, { fiber: tailFiber, stop });
+          }
           yield* rearmDeferredFinalize(context);
         });
 
@@ -8552,7 +8625,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               });
             }
             yield* reportStartupPhase("resume");
-            return canLoadSession
+            const preferResume = flavor.resumeMethod === "resume" && canResumeSession;
+            return !preferResume && canLoadSession
               ? yield* runtime.loadSession(sessionId, activationOptions)
               : yield* runtime.resumeSession(sessionId, activationOptions);
           }).pipe(
@@ -9201,6 +9275,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               },
             });
           }
+          yield* stopAllCommandOutputTails;
           yield* reportAgentModeChanges(context.input.threadId);
           const turn = providerTurnPayload(context, settledStatus, now);
           yield* emitProviderEvent({
@@ -9344,15 +9419,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const hold = flavor.postSettleCommandHold;
             if (hold === undefined) return;
             const allowOpenPrompt = holdOptions?.allowOpenPrompt === true;
-            if ((!context.promptSettled && !allowOpenPrompt) || context.finalized) return;
+            if (
+              (!context.promptSettled && !allowOpenPrompt) ||
+              context.finalized ||
+              context.interrupted
+            )
+              return;
             const holdRuntimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
             context.postSettleHoldGeneration += 1;
             const holdGeneration = context.postSettleHoldGeneration;
             const timeoutMillis = Duration.toMillis(hold.timeout);
-            const reconcileIntervalMillis =
-              hold.reconcileFinishedCommands === undefined
-                ? undefined
-                : Math.max(1_000, Duration.toMillis(hold.reconcileInterval ?? "20 seconds"));
+            const hasPoller =
+              hold.reconcileFinishedCommands !== undefined ||
+              hold.watchSilentProgress !== undefined;
+            const reconcileIntervalMillis = !hasPoller
+              ? undefined
+              : Math.max(1_000, Duration.toMillis(hold.reconcileInterval ?? "20 seconds"));
+            const wakeGraceMillis = Math.max(0, Duration.toMillis(hold.wakeGrace ?? "2 seconds"));
+            const maxWakes = Math.max(1, hold.maxWakes ?? 8);
             const isRunningCommand = (tool: AcpToolCallState) =>
               toolStatus(tool.status) === "running" && hold.isCommand(tool);
             const hasInFlightWirePrompt = () =>
@@ -9373,58 +9457,166 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               }
               return true;
             });
-            let quietSince = yield* Clock.currentTimeMillis;
-            let lastReconcileAt = quietSince;
             const holdStillCurrent = () =>
               !context.finalized &&
               !context.interrupted &&
               (context.promptSettled || allowOpenPrompt) &&
               context.postSettleHoldGeneration === holdGeneration;
-            // Armed even without a command yet: a pending reply can still start one.
+            const silentWatcher =
+              hold.watchSilentProgress === undefined
+                ? undefined
+                : yield* hold.watchSilentProgress(context.nativeThreadId).pipe(
+                    Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
+                    Effect.map(Option.getOrUndefined),
+                    Effect.orElseSucceed(() => undefined),
+                  );
+            if (!holdStillCurrent()) return;
+            let quietSince = yield* Clock.currentTimeMillis;
+            let lastReconcileAt = quietSince;
+            let baselineProgressAt = context.lastProgressAt;
+            let stalledSince: number | undefined;
+            // Armed even without a command yet: a pending reply or timer can still need waking.
             yield* Effect.gen(function* () {
               while (holdStillCurrent()) {
                 quietSince = Math.max(quietSince, context.lastProgressAt);
                 const now = yield* Clock.currentTimeMillis;
                 const remaining = quietSince + timeoutMillis - now;
                 if (remaining > 0) {
-                  if (
-                    reconcileIntervalMillis !== undefined &&
-                    hold.reconcileFinishedCommands !== undefined
-                  ) {
+                  if (reconcileIntervalMillis !== undefined) {
+                    if (context.lastProgressAt > baselineProgressAt) {
+                      baselineProgressAt = context.lastProgressAt;
+                      stalledSince = undefined;
+                      if (silentWatcher !== undefined) {
+                        yield* silentWatcher
+                          .acknowledge()
+                          .pipe(Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT), Effect.ignore);
+                      }
+                    }
                     const runningToolIds = [...context.tools.values()]
                       .filter(isRunningCommand)
                       .map((tool) => tool.toolCallId);
-                    if (runningToolIds.length === 0) {
+                    if (runningToolIds.length === 0 && silentWatcher === undefined) {
                       lastReconcileAt = now;
+                      stalledSince = undefined;
                       yield* Effect.sleep(
                         Duration.millis(Math.min(remaining, reconcileIntervalMillis)),
                       );
                       continue;
                     }
-                    const nextReconcileAt =
-                      Math.max(quietSince, lastReconcileAt) + reconcileIntervalMillis;
-                    const untilReconcile = nextReconcileAt - now;
-                    if (untilReconcile > 0) {
-                      yield* Effect.sleep(Duration.millis(Math.min(remaining, untilReconcile)));
+                    const nextCheckAt =
+                      stalledSince !== undefined
+                        ? stalledSince + wakeGraceMillis
+                        : Math.max(quietSince, lastReconcileAt) + reconcileIntervalMillis;
+                    const untilCheck = nextCheckAt - now;
+                    if (untilCheck > 0) {
+                      yield* Effect.sleep(Duration.millis(Math.min(remaining, untilCheck)));
                       continue;
                     }
                     lastReconcileAt = now;
-                    const finished = yield* hold
-                      .reconcileFinishedCommands({
-                        sessionId: context.nativeThreadId,
-                        toolCallIds: runningToolIds,
-                      })
-                      .pipe(
-                        Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
-                        Effect.map((result) => Option.getOrElse(result, () => [])),
-                        Effect.orElseSucceed(() => []),
+                    if (
+                      openAgentRequests.size > 0 ||
+                      activeInteractionRequests.size > 0 ||
+                      (yield* Ref.get(pendingRuntimeRequests)).size > 0
+                    ) {
+                      stalledSince = undefined;
+                      continue;
+                    }
+                    const knownToolCallIds = [...context.tools.keys()];
+                    const hasSilentActivity =
+                      !context.promptSettled || silentWatcher === undefined
+                        ? false
+                        : yield* silentWatcher.check({ ignoreToolCallIds: knownToolCallIds }).pipe(
+                            Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
+                            Effect.map((result) => Option.getOrElse(result, () => false)),
+                            Effect.orElseSucceed(() => false),
+                          );
+                    const finished =
+                      runningToolIds.length === 0 || hold.reconcileFinishedCommands === undefined
+                        ? []
+                        : yield* hold
+                            .reconcileFinishedCommands({
+                              sessionId: context.nativeThreadId,
+                              toolCallIds: runningToolIds,
+                            })
+                            .pipe(
+                              Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT),
+                              Effect.map((result) => Option.getOrElse(result, () => [])),
+                              Effect.orElseSucceed(() => []),
+                            );
+                    if (!holdStillCurrent()) return;
+                    if (context.lastProgressAt > baselineProgressAt) {
+                      baselineProgressAt = context.lastProgressAt;
+                      stalledSince = undefined;
+                      if (silentWatcher !== undefined) {
+                        yield* silentWatcher
+                          .acknowledge()
+                          .pipe(Effect.timeoutOption(PROMPT_OUTCOME_CHECK_TIMEOUT), Effect.ignore);
+                      }
+                      continue;
+                    }
+                    if (!hasSilentActivity && finished.length === 0) {
+                      stalledSince = undefined;
+                      continue;
+                    }
+                    if (
+                      context.promptSettled &&
+                      stalledSince === undefined &&
+                      silentWatcher !== undefined &&
+                      wakeGraceMillis > 0
+                    ) {
+                      stalledSince = now;
+                      continue;
+                    }
+                    stalledSince = undefined;
+                    if (
+                      context.promptSettled &&
+                      hasSilentActivity &&
+                      hold.wakePrompt !== undefined &&
+                      steersWithPrompt &&
+                      context.postSettleWakeAttempts < maxWakes
+                    ) {
+                      const wakePrompt = hold.wakePrompt;
+                      const wakeAttempt = context.postSettleWakeAttempts + 1;
+                      const woken = yield* steerWithPrompt(
+                        {
+                          threadId: context.input.threadId,
+                          runId: context.input.runId,
+                          providerThread: context.input.providerThread,
+                          providerTurnId: context.providerTurnId,
+                          message: { ...context.input.message, text: wakePrompt, attachments: [] },
+                        },
+                        {
+                          onlyIfSettledHoldGeneration: holdGeneration,
+                          expectedLastProgressAt: baselineProgressAt,
+                          isPostSettleWake: true,
+                        },
+                      ).pipe(
+                        Effect.tap(() =>
+                          Effect.logDebug("orchestration-v2.acp-post-settle-wake", {
+                            driver,
+                            threadId: context.input.threadId,
+                            sessionId: context.nativeThreadId,
+                            attempt: wakeAttempt,
+                          }),
+                        ),
+                        Effect.as(true),
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning("orchestration-v2.acp-post-settle-wake-failed", {
+                            driver,
+                            threadId: context.input.threadId,
+                            sessionId: context.nativeThreadId,
+                            attempt: wakeAttempt,
+                            cause: Cause.pretty(cause),
+                          }).pipe(Effect.as(false)),
+                        ),
                       );
+                      if (woken) return;
+                      if (!holdStillCurrent()) return;
+                    }
                     if (finished.length > 0 && holdStillCurrent()) {
                       yield* runtimeCallbackPermit.withPermit(
                         Effect.gen(function* () {
-                          if (!holdStillCurrent()) {
-                            return;
-                          }
+                          if (!holdStillCurrent()) return;
                           let reconciledAny = false;
                           for (const entry of finished) {
                             const tool = context.tools.get(entry.toolCallId);
@@ -10495,6 +10687,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               promptUsage: undefined,
               backgroundFinalizeGeneration: 0,
               postSettleHoldGeneration: 0,
+              postSettleWakeAttempts: 0,
               replyOpen: false,
               nativePromptId: undefined,
               lastProgressAt: 0,
@@ -10728,6 +10921,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
 
         const steerWithPrompt = Effect.fn("AcpAdapterV2.steerWithPrompt")(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2SteerInput,
+          steerOptions?: {
+            readonly onlyIfSettledHoldGeneration?: number;
+            readonly expectedLastProgressAt?: number;
+            readonly isPostSettleWake?: boolean;
+          },
         ) {
           const isNativeSlashCommand = turnInput.message.text.trimStart().startsWith("/");
           const text = yield* providerMessageTextWithAttachmentPaths({
@@ -10772,6 +10970,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 generation,
                 Effect.gen(function* () {
                   if (context.finalized || context.interrupted) return false;
+                  if (
+                    steerOptions?.onlyIfSettledHoldGeneration !== undefined &&
+                    (!context.promptSettled ||
+                      context.postSettleHoldGeneration !==
+                        steerOptions.onlyIfSettledHoldGeneration ||
+                      (steerOptions.expectedLastProgressAt !== undefined &&
+                        context.lastProgressAt !== steerOptions.expectedLastProgressAt) ||
+                      openAgentRequests.size > 0)
+                  ) {
+                    return false;
+                  }
                   const compactionMarker = (yield* Ref.get(compactionMarkers)).get(
                     context.nativeThreadId,
                   );
@@ -10826,8 +11035,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   }
                   context.promptSettled = false;
                   context.promptSettledStatus = null;
+                  context.replyOpen = false;
                   context.backgroundFinalizeGeneration += 1;
                   context.postSettleHoldGeneration += 1;
+                  if (steerOptions?.isPostSettleWake === true) {
+                    context.postSettleWakeAttempts += 1;
+                  } else {
+                    context.postSettleWakeAttempts = 0;
+                  }
                   context.promptSentAt = yield* Clock.currentTimeMillis;
                   context.lastProgressAt = context.promptSentAt;
                   const watchdog = context.inactivityWatchdog;

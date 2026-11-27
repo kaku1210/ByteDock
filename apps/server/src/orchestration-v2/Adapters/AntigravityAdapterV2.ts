@@ -38,8 +38,10 @@ import {
   readAntigravityPendingReply,
 } from "../../provider/acp/AntigravityChildWork.ts";
 import { readAntigravityClientTextFile } from "../../provider/acp/AntigravityClientFiles.ts";
+import { tailAntigravityCommandOutput } from "../../provider/acp/AntigravityTaskOutputTail.ts";
 import {
   watchAntigravityActiveWait,
+  watchAntigravityPostSettleActivity,
   watchAntigravityPromptOutcome,
 } from "../../provider/acp/AntigravityTurnOutcome.ts";
 import {
@@ -67,6 +69,8 @@ import {
 } from "@t3tools/provider-acp/server/adapter";
 
 const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
+const ANTIGRAVITY_POST_SETTLE_WAKE_PROMPT =
+  "[System notice: background task progress occurred while the ACP stream was detached. Continue any pending work, wait without polling if a background task is still running, and do not repeat work that is already complete and reported.]";
 
 const AntigravityProviderCapabilitiesV2 = {
   ...AcpProviderCapabilitiesV2,
@@ -254,6 +258,7 @@ export function makeAntigravityAcpAdapterFlavor(
         Effect.provideService(Path.Path, options.path),
       ),
     // Loading history replays tool calls; resume avoids replay.
+    resumeMethod: "resume",
     subagentsIdleOnTurnCompletion: true,
     // A finished background command or timer wakes the agent with no prompt open: it streams a
     // reply and asks for permissions, and no prompt response ever ends that reply.
@@ -262,17 +267,21 @@ export function makeAntigravityAcpAdapterFlavor(
     wakeOnDetachedRequest: true,
     replyEndsWithUsageUpdate: true,
     toolOutlivesPrompt: antigravityToolOutlivesPrompt,
-    // agy sometimes loses the terminal update or leaves a silent background command running
-    // after the assistant finishes replying, which would hold the turn in Working indefinitely.
-    // Poll native step completion every 20s and bound silent post-settle holds to 5 minutes
-    // (late completions still wake via enablePostSettleContinuation).
+    // agy 1.5.x sometimes stops forwarding updates/prompts once session/prompt settles or leaves
+    // a silent background command open. Poll native state every 5s to wake the detached stream or
+    // reconcile terminal commands, and bound silent holds to 5 minutes.
     postSettleCommandHold: {
       timeout: "5 minutes",
       isCommand: antigravityCommandOutlivesPrompt,
       ...(profileDirectory === undefined
         ? {}
         : {
-            reconcileInterval: "20 seconds",
+            reconcileInterval: "5 seconds",
+            wakeGrace: "2 seconds",
+            maxWakes: 8,
+            wakePrompt: ANTIGRAVITY_POST_SETTLE_WAKE_PROMPT,
+            watchSilentProgress: (sessionId) =>
+              watchAntigravityPostSettleActivity(profileDirectory, sessionId),
             reconcileFinishedCommands: ({ sessionId, toolCallIds }) =>
               readAntigravityFinishedCommands({
                 profileDirectory,
@@ -353,6 +362,14 @@ export function makeAntigravityAcpAdapterFlavor(
             readAntigravityPendingReply({
               profileDirectory,
               sessionId,
+            }),
+          tailCommandOutput: ({ sessionId, toolCallId, stop, onChunk }) =>
+            tailAntigravityCommandOutput({
+              profileDirectory,
+              sessionId,
+              toolCallId,
+              stop,
+              onChunk,
             }),
         }),
   };

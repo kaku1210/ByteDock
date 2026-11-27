@@ -10,6 +10,7 @@ import type { OrchestrationV2ProviderFailure } from "@t3tools/contracts";
 
 import {
   watchAntigravityActiveWait,
+  watchAntigravityPostSettleActivity,
   watchAntigravityPromptOutcome,
 } from "./AntigravityTurnOutcome.ts";
 
@@ -128,7 +129,7 @@ describe("watchAntigravityPromptOutcome", () => {
       const turn = (
         steps: ReadonlyArray<readonly [number, Uint8Array]>,
         result: EffectAcpSchema.PromptResponse = { stopReason: "end_turn" },
-        options?: { readonly retired?: boolean },
+        options?: { readonly retired?: boolean; readonly earlyCheck?: boolean },
       ) =>
         Effect.gen(function* () {
           const check = yield* watchAntigravityPromptOutcome(profileDirectory, sessionId);
@@ -334,6 +335,85 @@ describe("watchAntigravityPromptOutcome", () => {
           retryable: true,
         }),
       );
+      // Stream interruptions and Go transport/TLS timeouts are transient and retryable.
+      const streamInterruptedPayload = new TextEncoder().encode(
+        "The stream was interrupted. Please continue the task you were working on.",
+      );
+      assert.deepEqual(
+        yield* turn([
+          [USER_INPUT, input],
+          [ERROR_MESSAGE, streamInterruptedPayload],
+        ]),
+        {
+          ...reusable({
+            class: "provider_error",
+            message: "The Antigravity response stream was interrupted.",
+            code: "STREAM_INTERRUPTED",
+            retryable: true,
+          }),
+          resumeWith: "continue",
+          maxResumes: 2,
+          resumeDelay: "2 seconds",
+        },
+      );
+      for (const payloadText of [
+        'There was a network issue connecting to the server, please try again. Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": net/http: TLS handshake timeout',
+        'API error (attempt 2): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": dial tcp 172.217.112.4:443: i/o timeout',
+        "read tcp 198.18.0.1:58759->198.18.0.56:443: wsarecv: An established connection was aborted by the software in your host machine.",
+      ]) {
+        const payload = new TextEncoder().encode(payloadText);
+        assert.deepEqual(
+          yield* turn([
+            [USER_INPUT, input],
+            [ERROR_MESSAGE, payload],
+          ]),
+          {
+            ...reusable({
+              class: "provider_error",
+              message: "There was a network issue connecting to Antigravity.",
+              code: "NETWORK_ERROR",
+              retryable: true,
+            }),
+            resumeWith: "continue",
+            maxResumes: 2,
+            resumeDelay: "2 seconds",
+          },
+        );
+        // Retired turns keep retryable=true but do not schedule another resume.
+        assert.deepEqual(
+          yield* turn(
+            [
+              [USER_INPUT, input],
+              [ERROR_MESSAGE, payload],
+            ],
+            undefined,
+            { retired: true },
+          ),
+          reusable({
+            class: "provider_error",
+            message: "There was a network issue connecting to Antigravity.",
+            code: "NETWORK_ERROR",
+            retryable: true,
+          }),
+        );
+        // Early inactivity checks also surface transient network failures.
+        assert.deepEqual(
+          yield* turn(
+            [
+              [USER_INPUT, input],
+              [ERROR_MESSAGE, payload],
+            ],
+            undefined,
+            { earlyCheck: true },
+          ),
+          reusable({
+            class: "provider_error",
+            message: "There was a network issue connecting to Antigravity.",
+            code: "NETWORK_ERROR",
+            retryable: true,
+          }),
+        );
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -681,6 +761,90 @@ describe("watchAntigravityActiveWait", () => {
           assert.isTrue(yield* checkWait());
           updateStatus.run(3, 5);
           assert.isFalse(yield* checkWait());
+
+          // agy 1.5+ records run_command as GENERIC (step_type=132); daemon commands stay ignored.
+          insert.run(
+            6,
+            132,
+            2,
+            metadataFor("call_daemon_cmd", "run_command", {
+              CommandLine: "vite",
+              IsDaemon: true,
+            }),
+            null,
+          );
+          assert.isFalse(yield* checkWait());
+          insert.run(
+            7,
+            132,
+            2,
+            metadataFor("call_generic_build", "run_command", { CommandLine: "dotnet test" }),
+            null,
+          );
+          assert.isTrue(yield* checkWait());
+          updateStatus.run(3, 7);
+          assert.isFalse(yield* checkWait());
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+describe("watchAntigravityPostSettleActivity", () => {
+  it.effect(
+    "detects unreported post-settle wakes and follow-up tools while ignoring pre-settle commands",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped();
+        const sessionId = "f7bcb885-6583-4388-a7ff-38c3f16681b0";
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, `${sessionId}.db`);
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const metadataFor = (id: string, name: string) =>
+          proto(field(4, proto(field(1, id), field(2, name))));
+
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec(
+          "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+        );
+        const insert = db.prepare(
+          "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+        );
+        try {
+          insert.run(1, 132, 2, metadataFor("call_bg", "run_command"), null);
+          insert.run(2, 15, 3, null, null);
+          const watcher = yield* watchAntigravityPostSettleActivity(profileDirectory, sessionId);
+
+          assert.isFalse(yield* watcher.check({ ignoreToolCallIds: ["call_bg"] }));
+
+          // A silent SYSTEM_MESSAGE wake after settle triggers detection.
+          insert.run(3, 101, 3, null, null);
+          assert.isTrue(yield* watcher.check({ ignoreToolCallIds: ["call_bg"] }));
+
+          // Acknowledging live ACP progress advances the watermark.
+          yield* watcher.acknowledge();
+          assert.isFalse(yield* watcher.check({ ignoreToolCallIds: ["call_bg"] }));
+
+          // A newly spawned follow-up command (not in ignoreToolCallIds) triggers detection.
+          insert.run(4, 132, 1, metadataFor("call_commit", "run_command"), null);
+          assert.isTrue(yield* watcher.check({ ignoreToolCallIds: ["call_bg"] }));
+          assert.isFalse(yield* watcher.check({ ignoreToolCallIds: ["call_bg", "call_commit"] }));
         } finally {
           db.close();
         }

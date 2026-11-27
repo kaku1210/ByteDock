@@ -13215,5 +13215,7 @@
   "27d76249d09eb69f": "Review-Leitfaden bereit",
   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
   "b7df38b7d8792d78": "Leitfaden öffnen",
-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
+  "effde45eb45f3c7e": "seit {duration} keine neue Ausgabe",
+  "1a6ad987dcf3a605": "Seit {duration} keine Ausgabe"
 }

@@ -1480,6 +1480,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
   const usage = { sessionUpdate: "usage_update", used: 9000, size: 1048576 } as const;
   const offers: Array<ProviderContinuationRequests.ProviderContinuationRequest> = [];
   const scheduledFinalizes = yield* Queue.unbounded<Duration.Input>();
+  const settledWithBackgroundWork = yield* Queue.unbounded<void>();
   const instanceId = ProviderInstanceId.make("antigravity-wake-test");
   const threadId = ThreadId.make("thread-antigravity-wake");
   const selfInvocation = yield* resolveSelfInvocation();
@@ -1596,6 +1597,8 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
             : { continuationRequests: adapterOptions.continuationRequests }),
           testHooks: {
             onDeferredFinalizeScheduled: (debounce) => Queue.offer(scheduledFinalizes, debounce),
+            afterPromptSettledWithBackgroundWork: () =>
+              Queue.offer(settledWithBackgroundWork, undefined),
           },
         });
   const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
@@ -1692,6 +1695,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
         event.turnItem.type === "assistant_message" &&
         event.turnItem.status === "completed",
     ),
+    throughHoldArmed: Queue.take(settledWithBackgroundWork),
     requestPermission: (...args: Parameters<NonNullable<typeof requestPermission>>) =>
       requestPermission === undefined
         ? Effect.die("the adapter must handle permission requests")
@@ -1700,6 +1704,7 @@ const openSessionWithRunningCommand = Effect.fn("openSessionWithRunningCommand")
     runtimeCount: () => runtimeCount,
     prompts,
     releaseFirstPrompt: Deferred.succeed(releaseFirstPrompt, undefined),
+    steered: Deferred.await(steered),
     releaseSteer: Deferred.succeed(releaseSteer, undefined),
     runtimeDies: Effect.suspend(
       () =>
@@ -1981,6 +1986,227 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
         assert.isTrue(
           commandItem?.type === "turn_item.updated" && commandItem.turnItem.status === "completed",
         );
+      }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "wakes a detached agy 1.5 stream when native DB records silent post-settle progress",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-agy-silent-wake-",
+        });
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, "mock-session-1.db");
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const metadataFor = (id: string, name: string) =>
+          proto(field(4, proto(field(1, id), field(2, name))));
+
+        const writeSteps = (run: (db: NodeSqlite.DatabaseSync) => void) => {
+          const db = new NodeSqlite.DatabaseSync(dbPath);
+          try {
+            run(db);
+          } finally {
+            db.close();
+          }
+        };
+
+        // Pre-settle steps: background command running (step_type=132) + assistant status reply.
+        writeSteps((db) => {
+          db.exec(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+          );
+          const insert = db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          );
+          insert.run(1, 132, 2, metadataFor("call_fetch", "run_command"), null);
+          insert.run(2, 15, 3, null, null);
+        });
+
+        const {
+          command,
+          prompts,
+          steered,
+          releaseSteer,
+          usage,
+          offers,
+          send,
+          startTurn,
+          until,
+          throughPromptSettled,
+          throughHoldArmed,
+        } = yield* openSessionWithRunningCommand(
+          { WaitMsBeforeAsync: 10000 },
+          undefined,
+          { agentVersion: "1.5.9", holdsFirstPrompt: false },
+          { profileDirectory },
+        );
+        yield* startTurn(1, false);
+        yield* throughPromptSettled;
+        yield* throughHoldArmed;
+
+        // While the background command is still running with no new steps, no wake prompt is sent.
+        yield* TestClock.adjust("10 seconds");
+        assert.lengthOf(prompts, 1);
+
+        // Command finishes in SQLite and agy wakes internally + stalls a follow-up command without ACP updates.
+        writeSteps((db) => {
+          db.prepare("UPDATE steps SET status = ? WHERE idx = ?").run(3, 1);
+          const insert = db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          );
+          insert.run(3, 101, 3, null, null);
+          insert.run(4, 15, 3, null, null);
+          insert.run(5, 132, 1, metadataFor("call_commit", "run_command"), null);
+        });
+
+        // One 5s poll detects silent native activity; 2s grace confirms ACP is silent, then wakes via prompt.
+        yield* TestClock.adjust("5 seconds");
+        assert.lengthOf(prompts, 1);
+        yield* TestClock.adjust("2 seconds");
+        yield* steered;
+        assert.lengthOf(prompts, 2);
+
+        // Receiving the wake prompt lets agy flush the stalled updates and complete the follow-up command.
+        yield* send({
+          sessionUpdate: "tool_call_update",
+          ...command,
+          status: "completed",
+          rawOutput: { output: "Tests passed.", exit_code: 0 },
+        });
+        yield* send({
+          sessionUpdate: "tool_call",
+          toolCallId: "call_commit",
+          kind: "execute",
+          title: "git commit",
+          status: "completed",
+          rawInput: { CommandLine: "git commit" },
+        });
+        yield* send({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Committed and synced." },
+        });
+        yield* send(usage);
+        yield* releaseSteer;
+
+        const run = yield* until((event) => event.type === "turn.terminal");
+        const terminal = run.at(-1);
+        assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");
+        assert.include(JSON.stringify(run), "Committed and synced.");
+        assert.lengthOf(offers, 0);
+      }).pipe(Effect.provide(layerSession)),
+  );
+
+  it.effect(
+    "skips waking when agy streams post-settle updates natively during the grace window",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const profileDirectory = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-agy-native-stream-",
+        });
+        const conversations = path.join(profileDirectory, "antigravity-acp", "conversations");
+        yield* fs.makeDirectory(conversations, { recursive: true });
+        const dbPath = path.join(conversations, "mock-session-1.db");
+        const varint = (value: number): number[] => {
+          const bytes: number[] = [];
+          while (value >= 0x80) {
+            bytes.push((value & 0x7f) | 0x80);
+            value = Math.floor(value / 0x80);
+          }
+          return [...bytes, value];
+        };
+        const field = (number: number, value: string | Uint8Array) => {
+          const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+          return [...varint(number * 8 + 2), ...varint(bytes.length), ...bytes];
+        };
+        const proto = (...parts: number[][]) => Uint8Array.from(parts.flat());
+        const metadataFor = (id: string, name: string) =>
+          proto(field(4, proto(field(1, id), field(2, name))));
+
+        const writeSteps = (run: (db: NodeSqlite.DatabaseSync) => void) => {
+          const db = new NodeSqlite.DatabaseSync(dbPath);
+          try {
+            run(db);
+          } finally {
+            db.close();
+          }
+        };
+
+        writeSteps((db) => {
+          db.exec(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, status INTEGER NOT NULL, metadata BLOB, step_payload BLOB)",
+          );
+          const insert = db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          );
+          insert.run(1, 132, 2, metadataFor("call_fetch", "run_command"), null);
+          insert.run(2, 15, 3, null, null);
+        });
+
+        const {
+          command,
+          prompts,
+          usage,
+          send,
+          startTurn,
+          until,
+          throughPromptSettled,
+          throughHoldArmed,
+        } = yield* openSessionWithRunningCommand(
+          { WaitMsBeforeAsync: 10000 },
+          undefined,
+          { agentVersion: "1.5.9", holdsFirstPrompt: false },
+          { profileDirectory },
+        );
+        yield* startTurn(1, false);
+        yield* throughPromptSettled;
+        yield* throughHoldArmed;
+
+        // Native DB records completion and wake, then ACP streams natively within the 2s grace period.
+        writeSteps((db) => {
+          db.prepare("UPDATE steps SET status = ? WHERE idx = ?").run(3, 1);
+          const insert = db.prepare(
+            "INSERT INTO steps (idx, step_type, status, metadata, step_payload) VALUES (?, ?, ?, ?, ?)",
+          );
+          insert.run(3, 101, 3, null, null);
+          insert.run(4, 15, 3, null, null);
+        });
+
+        yield* TestClock.adjust("5 seconds");
+        yield* send({
+          sessionUpdate: "tool_call_update",
+          ...command,
+          status: "completed",
+          rawOutput: { output: "Done.", exit_code: 0 },
+        });
+        yield* send({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Streamed natively." },
+        });
+        yield* send(usage);
+
+        yield* TestClock.adjust("3 seconds");
+        const run = yield* until((event) => event.type === "turn.terminal");
+        const terminal = run.at(-1);
+        assert.equal(terminal?.type === "turn.terminal" && terminal.status, "completed");
+        assert.lengthOf(prompts, 1);
       }).pipe(Effect.provide(layerSession)),
   );
 
@@ -3901,5 +4127,425 @@ describe("AntigravityAdapterV2 update_steps checklist", () => {
           ],
         );
       }).pipe(Effect.provide(layerSession)),
+  );
+});
+
+describe("AntigravityAdapterV2 session reactivation", () => {
+  it.live(
+    "uses session/resume instead of session/load when reactivating after a failed turn restarts the runtime",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const crypto = yield* SecureRandom.SecureRandom;
+        const profileDirectory = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-antigravity-resume-restart-",
+        });
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const instanceId = ProviderInstanceId.make("antigravity-resume-after-restart-test");
+        const threadId = ThreadId.make("thread-antigravity-resume-after-restart");
+        const loadCalls: Array<string> = [];
+        const resumeCalls: Array<string> = [];
+        let runtimeCount = 0;
+        let firstSessionId = "";
+        const adapter = yield* makeAntigravityAdapterV2({
+          instanceId,
+          profileDirectory,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: (input) => {
+            const runtimeOrdinal = ++runtimeCount;
+            return makeAntigravityAcpRuntime({
+              ...input,
+              childProcessSpawner,
+              spawn: {
+                command: process.execPath,
+                args: [mockAgentPath],
+                cwd: input.cwd,
+                env: { T3_ACP_ANTIGRAVITY: "1" },
+              },
+            }).pipe(
+              Effect.provideService(SecureRandom.SecureRandom, crypto),
+              Effect.map((runtime) => {
+                const startWithResume = () =>
+                  runtime.start().pipe(
+                    Effect.map((started) => {
+                      const nextStarted = {
+                        ...started,
+                        initializeResult: {
+                          ...started.initializeResult,
+                          agentCapabilities: {
+                            ...started.initializeResult.agentCapabilities,
+                            loadSession: true,
+                            sessionCapabilities: {
+                              ...started.initializeResult.agentCapabilities?.sessionCapabilities,
+                              resume: {},
+                            },
+                          },
+                        },
+                      };
+                      if (runtimeOrdinal === 1) firstSessionId = nextStarted.sessionId;
+                      return nextStarted;
+                    }),
+                  );
+                return {
+                  ...runtime,
+                  start: startWithResume,
+                  loadSession: (sessionId, activationOptions) =>
+                    Effect.sync(() => {
+                      loadCalls.push(sessionId);
+                    }).pipe(Effect.andThen(runtime.loadSession(sessionId, activationOptions))),
+                  resumeSession: (sessionId) =>
+                    Effect.sync(() => {
+                      resumeCalls.push(sessionId);
+                    }).pipe(
+                      Effect.andThen(startWithResume()),
+                      Effect.map((started) => ({ ...started, sessionId })),
+                    ),
+                  prompt: (payload, promptOptions) =>
+                    runtimeOrdinal === 1
+                      ? Effect.succeed({ stopReason: "refusal" as const })
+                      : runtime.prompt(payload, promptOptions),
+                };
+              }),
+            );
+          },
+          withProcess: (_stop, task) => task,
+          defaultModel: Effect.undefined,
+        });
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+        const session = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-antigravity-resume-restart"),
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = yield* session.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        const appThread = {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project-antigravity-resume-restart"),
+          title: "Antigravity resume after restart",
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+          activeProviderThreadId: providerThread.id,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        } as const;
+
+        yield* session.startTurn({
+          appThread,
+          threadId,
+          runId: RunId.make("run-antigravity-resume-restart-1"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("attempt-antigravity-resume-restart-1"),
+          rootNodeId: NodeId.make("node-antigravity-resume-restart-1"),
+          providerThread,
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-antigravity-resume-restart-1"),
+            text: "first turn fails",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const firstTerminal = Array.from(
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(firstTerminal?.status, "failed");
+
+        yield* session.startTurn({
+          appThread,
+          threadId,
+          runId: RunId.make("run-antigravity-resume-restart-2"),
+          runOrdinal: 2,
+          providerTurnOrdinal: 2,
+          attemptId: RunAttemptId.make("attempt-antigravity-resume-restart-2"),
+          rootNodeId: NodeId.make("node-antigravity-resume-restart-2"),
+          providerThread,
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-antigravity-resume-restart-2"),
+            text: "continue",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const secondTerminal = Array.from(
+          yield* session.events.pipe(
+            Stream.takeUntil((event) => event.type === "turn.terminal"),
+            Stream.runCollect,
+          ),
+        ).find((event) => event.type === "turn.terminal");
+        assert.equal(secondTerminal?.status, "completed");
+        assert.equal(runtimeCount, 2);
+        assert.deepEqual(loadCalls, []);
+        assert.deepEqual(resumeCalls, [firstSessionId]);
+      }).pipe(Effect.provide(layerSession)),
+  );
+});
+
+describe("AntigravityAdapterV2 command output tailing", () => {
+  it.live("streams command_output.delta from task-<idx>.log while an execute tool runs", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* SecureRandom.SecureRandom;
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const profileDirectory = yield* fs.makeTempDirectoryScoped({
+        prefix: "antigravity-cmd-tail-",
+      });
+      const instanceId = ProviderInstanceId.make("antigravity-cmd-tail-test");
+      const threadId = ThreadId.make("thread-antigravity-cmd-tail");
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let sessionUpdate: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      let activeSessionId = "mock-session-1";
+      const firstDeltaReceived = yield* Deferred.make<void>();
+      const releasePrompt = yield* Deferred.make<void>();
+
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        profileDirectory,
+        makeRuntime: (input) =>
+          makeAntigravityAcpRuntime({
+            ...input,
+            childProcessSpawner,
+            spawn: {
+              command: process.execPath,
+              args: [mockAgentPath],
+              cwd: input.cwd,
+              env: { T3_ACP_ANTIGRAVITY: "1" },
+            },
+          }).pipe(
+            Effect.provideService(SecureRandom.SecureRandom, crypto),
+            Effect.map((runtime): RuntimeService => ({
+              ...runtime,
+              start: () =>
+                runtime.start().pipe(
+                  Effect.tap((started) =>
+                    Effect.sync(() => {
+                      activeSessionId = started.sessionId;
+                    }),
+                  ),
+                ),
+              handleSessionUpdate: (handler) =>
+                Effect.sync(() => {
+                  sessionUpdate = handler;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  const send = (update: EffectAcpSchema.SessionUpdate) =>
+                    sessionUpdate === undefined
+                      ? Effect.die("the adapter must handle session updates")
+                      : sessionUpdate(
+                          normalizeAntigravitySessionUpdate({
+                            sessionId: activeSessionId,
+                            update,
+                          }),
+                        );
+
+                  const conversationsDir = path.join(
+                    profileDirectory,
+                    "antigravity-acp",
+                    "conversations",
+                  );
+                  const tasksDir = path.join(
+                    profileDirectory,
+                    "antigravity-acp",
+                    "brain",
+                    activeSessionId,
+                    ".system_generated",
+                    "tasks",
+                  );
+                  yield* Effect.promise(async () => {
+                    await NodeFSP.mkdir(conversationsDir, { recursive: true });
+                    await NodeFSP.mkdir(tasksDir, { recursive: true });
+                    const db = new NodeSqlite.DatabaseSync(
+                      path.join(conversationsDir, `${activeSessionId}.db`),
+                    );
+                    try {
+                      const encoder = new TextEncoder();
+                      const encodeField = (field: number, bytes: Uint8Array) =>
+                        Uint8Array.from([field * 8 + 2, bytes.byteLength, ...bytes]);
+                      const idBytes = encodeField(1, encoder.encode("cmd-tail-1"));
+                      const nameBytes = encodeField(2, encoder.encode("run_command"));
+                      const metadata = encodeField(4, Uint8Array.from([...idBytes, ...nameBytes]));
+                      db.exec(
+                        "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB)",
+                      );
+                      db.prepare(
+                        "INSERT INTO steps (idx, step_type, metadata) VALUES (?, ?, ?)",
+                      ).run(7, 132, metadata);
+                    } finally {
+                      db.close();
+                    }
+                    await NodeFSP.writeFile(
+                      path.join(tasksDir, "task-7.log"),
+                      "building module 1\n",
+                      "utf8",
+                    );
+                  });
+
+                  yield* send({
+                    sessionUpdate: "tool_call",
+                    toolCallId: "cmd-tail-1",
+                    title: "npm run build",
+                    kind: "execute",
+                    status: "in_progress",
+                    rawInput: { command: "npm run build" },
+                  });
+                  yield* Deferred.await(firstDeltaReceived);
+                  yield* Effect.promise(() =>
+                    NodeFSP.appendFile(
+                      path.join(tasksDir, "task-7.log"),
+                      "building module 2\n",
+                      "utf8",
+                    ),
+                  );
+                  yield* Deferred.await(releasePrompt);
+                  yield* send({
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "cmd-tail-1",
+                    status: "completed",
+                    rawOutput: "done",
+                  });
+                  return { stopReason: "end_turn" as const };
+                }),
+            })),
+          ),
+        withProcess: (_stop, task) => task,
+        defaultModel: Effect.undefined,
+      });
+
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "gemini-test-low" } as const;
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-antigravity-cmd-tail"),
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = yield* session.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      const turnFiber = yield* session
+        .startTurn({
+          appThread: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project-antigravity-cmd-tail"),
+            title: "Antigravity command tail",
+            providerInstanceId: instanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: process.cwd(),
+            activeProviderThreadId: providerThread.id,
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+          threadId,
+          runId: RunId.make("run-antigravity-cmd-tail"),
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: RunAttemptId.make("attempt-antigravity-cmd-tail"),
+          rootNodeId: NodeId.make("node-antigravity-cmd-tail"),
+          providerThread,
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-antigravity-cmd-tail"),
+            text: "run build",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.forkScoped);
+
+      const deltas: Array<string> = [];
+      const events = Array.from(
+        yield* session.events.pipe(
+          Stream.tap((event) =>
+            Effect.gen(function* () {
+              if (event.type !== "command_output.delta") return;
+              deltas.push(event.chunk);
+              const combined = deltas.join("");
+              if (combined.includes("building module 1\n")) {
+                yield* Deferred.succeed(firstDeltaReceived, undefined);
+              }
+              if (combined.includes("building module 2\n")) {
+                yield* Deferred.succeed(releasePrompt, undefined);
+              }
+            }),
+          ),
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      );
+      yield* Fiber.join(turnFiber);
+      assert.include(deltas.join(""), "building module 1\n");
+      assert.include(deltas.join(""), "building module 2\n");
+      const lastDeltaIdx = events.findLastIndex((event) => event.type === "command_output.delta");
+      const completedCommandIdx = events.findIndex(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "command_execution" &&
+          event.turnItem.status === "completed",
+      );
+      assert.isAbove(completedCommandIdx, lastDeltaIdx);
+    }).pipe(Effect.provide(layerSession)),
   );
 });
