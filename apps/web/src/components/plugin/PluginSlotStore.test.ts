@@ -53,9 +53,26 @@ describe("PluginSlotStore real-time ByteDock UI control bus", () => {
     expect(getPluginSlotSnapshot().modalOpen).toBe(true);
     expect(getPluginSlotSnapshot().modalTab).toBe("xray");
 
+    const openBots = applyUiControlCommand({
+      commandId: "cmd-open-bots",
+      action: "open_control_center",
+      tab: "bots",
+    });
+    expect(openBots.applied).toBe(true);
+    expect(getPluginSlotSnapshot().modalOpen).toBe(true);
+    expect(getPluginSlotSnapshot().modalTab).toBe("bots");
+
     const beforeRev = getPluginSlotSnapshot().configRevision;
-    handleControlPlaneStreamPayload({ kind: "config-changed" });
+    handleControlPlaneStreamPayload({ kind: "state-updated" });
     expect(getPluginSlotSnapshot().configRevision).toBe(beforeRev + 1);
+
+    handleControlPlaneStreamPayload({ kind: "decision-gate-created", pendingDecisionGates: 2 });
+    expect(getPluginSlotSnapshot().pendingDecisionGateCount).toBe(2);
+    handleControlPlaneStreamPayload({ kind: "decision-gate-resolved", pendingDecisionGates: 1 });
+    expect(getPluginSlotSnapshot().pendingDecisionGateCount).toBe(1);
+    const beforeBotsRev = getPluginSlotSnapshot().botsRevision;
+    handleControlPlaneStreamPayload({ kind: "napcat-event", direction: "inbound" });
+    expect(getPluginSlotSnapshot().botsRevision).toBe(beforeBotsRev + 1);
   });
 
   it("opens and closes right plugin dock panels with validated JsonNode trees", () => {

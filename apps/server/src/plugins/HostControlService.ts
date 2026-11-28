@@ -507,7 +507,7 @@ export interface HostControlServiceShape {
   readonly runUiControl: (input: {
     readonly action: UiControlCommand["action"];
     readonly actor: ControlPlaneActor;
-    readonly tab?: "plugins" | "xray" | "import" | undefined;
+    readonly tab?: "plugins" | "xray" | "bots" | "import" | undefined;
     readonly pluginId?: string | undefined;
     readonly node?: unknown;
     readonly path?: string | undefined;
@@ -1026,7 +1026,7 @@ export const makeHostControlService = (deps: HostControlDependencies): HostContr
               action: "open_control_center",
               risk: "low-risk",
               description:
-                "Open ByteDock Control Center modal on 'plugins', 'xray', or 'import' tab.",
+                "Open ByteDock Control Center modal on 'plugins', 'xray', 'bots', or 'import' tab.",
             },
             {
               action: "close_control_center",
@@ -1633,6 +1633,27 @@ export const makeHostControlService = (deps: HostControlDependencies): HostContr
           'Use action="legacy_import" so legacy T3 import passes through ByteDock human approval.',
       });
     }
+    const callerKind: "host-client" | "mcp" =
+      input.actor.kind === "host-client" ? "host-client" : "mcp";
+    if (callerKind === "mcp") {
+      const hostOnlyBotsMethods = new Set(["resolveGate", "upsertBot", "updateSoul", "deleteBot"]);
+      const hostOnlyNapcatMethods = new Set([
+        "setTokenSecret",
+        "clearTokenSecret",
+        "simulateInbound",
+        "sendReply",
+      ]);
+      if (
+        (pluginId === "builtin.bots-core" && hostOnlyBotsMethods.has(method)) ||
+        (pluginId === "community.napcat-qq" && hostOnlyNapcatMethods.has(method))
+      ) {
+        return yield* new ControlPlaneError({
+          code: "host_client_required",
+          pluginId,
+          message: `Direct MCP invocation of "${pluginId}.${method}" is forbidden; this operation requires a local ByteDock host UI client.`,
+        });
+      }
+    }
     const enabled = yield* controlPlane.isPluginEnabled(pluginId);
     if (!enabled) {
       return yield* new ControlPlaneError({
@@ -1649,6 +1670,7 @@ export const makeHostControlService = (deps: HostControlDependencies): HostContr
       method,
       payload: input.payload ?? {},
       hostActorId: actorToLabel(input.actor),
+      callerKind,
     }).pipe(
       Effect.mapError(
         (err) =>

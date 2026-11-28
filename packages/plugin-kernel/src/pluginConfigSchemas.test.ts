@@ -112,6 +112,95 @@ describe("pluginConfigSchemas", () => {
       },
     });
     expect(napcatHostExpand.requiresApproval).toBe(true);
+
+    const napcatAllowlistChange = assessConfigPatchPrivilege({
+      pluginId: "community.napcat-qq",
+      prevConfig: {
+        oneBotBaseUrl: "http://127.0.0.1:3000",
+        allowedUserIds: ["10001"],
+        requireAtInGroup: true,
+      },
+      nextConfig: {
+        oneBotBaseUrl: "http://127.0.0.1:3000",
+        allowedUserIds: ["10001", "20002"],
+        requireAtInGroup: true,
+      },
+    });
+    expect(napcatAllowlistChange.requiresApproval).toBe(true);
+
+    const napcatBaseUrlChange = assessConfigPatchPrivilege({
+      pluginId: "community.napcat-qq",
+      prevConfig: { oneBotBaseUrl: "http://127.0.0.1:3000" },
+      nextConfig: { oneBotBaseUrl: "http://127.0.0.1:9999" },
+    });
+    expect(napcatBaseUrlChange.requiresApproval).toBe(true);
+
+    const botsDisableSoul = assessConfigPatchPrivilege({
+      pluginId: "builtin.bots-core",
+      prevConfig: { soulPrefixGuard: true },
+      nextConfig: { soulPrefixGuard: false },
+    });
+    expect(botsDisableSoul.requiresApproval).toBe(true);
+  });
+
+  it("validates NapCatQQ loopback URLs, namespace secretRefs, webhook routes, and legacy defaults", () => {
+    const legacyMerged = validatePluginConfig("community.napcat-qq", {
+      rateLimitPerMin: 60,
+    });
+    expect(legacyMerged.ok).toBe(true);
+    if (legacyMerged.ok) {
+      expect(legacyMerged.config.oneBotBaseUrl).toBe("http://127.0.0.1:3000");
+      expect(legacyMerged.config.webhookAuthMode).toBe("onebot-hmac");
+      expect(legacyMerged.config.tokenSecretRef).toBe("bytedock.napcat.webhook_token");
+      expect(legacyMerged.config.allowedUserIds).toEqual([]);
+      expect(legacyMerged.config.allowedHosts).toContain("::1");
+    }
+
+    const ipv6Valid = validatePluginConfig("community.napcat-qq", {
+      oneBotBaseUrl: "http://[::1]:3000/",
+      allowedUserIds: ["10001"],
+      allowedGroupIds: ["90001"],
+    });
+    expect(ipv6Valid.ok).toBe(true);
+    if (ipv6Valid.ok) {
+      expect(ipv6Valid.config.oneBotBaseUrl).toBe("http://[::1]:3000");
+    }
+
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        oneBotBaseUrl: "https://evil.example/onebot",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        oneBotBaseUrl: "http://user:pass@127.0.0.1:3000",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        tokenSecretRef: "bytedock.other.token",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        tokenSecretRef: "bytedock.napcat.prod.token",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        webhookRoute: "/api/plugins/other/event",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        webhookRoute: "/api/plugins/community.napcat-qq/health",
+      }).ok,
+    ).toBe(false);
+    expect(
+      validatePluginConfig("community.napcat-qq", {
+        allowedUserIds: ["not-a-qq-id"],
+      }).ok,
+    ).toBe(false);
   });
 
   it("produces deterministic permission fingerprints that change on permission escalation", () => {

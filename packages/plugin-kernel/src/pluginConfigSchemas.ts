@@ -29,16 +29,25 @@ export type TokenOptimizerConfig = typeof TokenOptimizerConfigSchema.Type;
 export const BotsCoreConfigSchema = Schema.Struct({
   soulPrefixGuard: Schema.Boolean,
   memoryMode: Schema.Literals(["append-only"]),
+  autoReplyEnabled: Schema.Boolean,
+  replyMaxChars: Schema.Int.check(Schema.isBetween({ minimum: 200, maximum: 4000 })),
+  turnWaitTimeoutSec: Schema.Int.check(Schema.isBetween({ minimum: 15, maximum: 600 })),
 });
 export type BotsCoreConfig = typeof BotsCoreConfigSchema.Type;
 
 export const NapcatQqConfigSchema = Schema.Struct({
   endpointMode: Schema.Literals(["loopback-only"]),
+  oneBotBaseUrl: Schema.String.check(Schema.isMinLength(1)),
   allowedHosts: Schema.Array(Schema.String.check(Schema.isMinLength(1))).check(
     Schema.isMinLength(1),
   ),
   rateLimitPerMin: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 600 })),
   webhookRoute: Schema.String.check(Schema.isMinLength(1)),
+  webhookAuthMode: Schema.Literals(["onebot-hmac", "hmac-and-bearer"]),
+  tokenSecretRef: Schema.String.check(Schema.isMinLength(1)),
+  allowedUserIds: Schema.Array(Schema.String.check(Schema.isMinLength(1))),
+  allowedGroupIds: Schema.Array(Schema.String.check(Schema.isMinLength(1))),
+  requireAtInGroup: Schema.Boolean,
 });
 export type NapcatQqConfig = typeof NapcatQqConfigSchema.Type;
 
@@ -69,12 +78,21 @@ export const DEFAULT_BUILTIN_PLUGIN_CONFIGS: Readonly<
   "builtin.bots-core": {
     soulPrefixGuard: true,
     memoryMode: "append-only",
+    autoReplyEnabled: true,
+    replyMaxChars: 1500,
+    turnWaitTimeoutSec: 120,
   } satisfies BotsCoreConfig,
   "community.napcat-qq": {
     endpointMode: "loopback-only",
-    allowedHosts: ["127.0.0.1", "localhost"],
+    oneBotBaseUrl: "http://127.0.0.1:3000",
+    allowedHosts: ["127.0.0.1", "localhost", "::1"],
     rateLimitPerMin: 50,
     webhookRoute: "/api/plugins/community.napcat-qq/onebot/event",
+    webhookAuthMode: "onebot-hmac",
+    tokenSecretRef: "bytedock.napcat.webhook_token",
+    allowedUserIds: [],
+    allowedGroupIds: [],
+    requireAtInGroup: true,
   } satisfies NapcatQqConfig,
   "builtin.legacy-importer": {
     deferLockedStateDb: true,
@@ -273,6 +291,25 @@ export function validatePluginConfig(
         };
       }
     }
+    if (pluginId === "community.napcat-qq") {
+      const cfg = decoded as unknown as NapcatQqConfig;
+      const napcatErr = validateNapcatQqSemantics(cfg);
+      if (napcatErr) {
+        return { ok: false, message: napcatErr };
+      }
+      return {
+        ok: true,
+        config: {
+          ...cfg,
+          oneBotBaseUrl: cfg.oneBotBaseUrl.trim().replace(/\/+$/, ""),
+          allowedHosts: [...normalizeHostList(cfg.allowedHosts)],
+          webhookRoute: cfg.webhookRoute.trim(),
+          tokenSecretRef: cfg.tokenSecretRef.trim(),
+          allowedUserIds: [...normalizeNumericIdList(cfg.allowedUserIds)],
+          allowedGroupIds: [...normalizeNumericIdList(cfg.allowedGroupIds)],
+        },
+      };
+    }
     return { ok: true, config: decoded };
   } catch (cause) {
     return {
@@ -302,6 +339,82 @@ export interface PrivilegeAssessment {
   readonly requiresApproval: boolean;
   readonly riskLevel: "normal" | "high";
   readonly reasons: ReadonlyArray<string>;
+}
+
+const NAPCAT_WEBHOOK_ROUTE_RE = /^\/api\/plugins\/community\.napcat-qq\/[A-Za-z0-9._/-]{1,128}$/;
+const NAPCAT_SECRET_REF_RE = /^bytedock\.napcat\.[A-Za-z0-9_-]{1,128}$/;
+const QQ_NUMERIC_ID_RE = /^[1-9]\d{0,15}$/;
+const STRICT_LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+function normalizeNumericIdList(items: ReadonlyArray<string>): ReadonlyArray<string> {
+  const seen = new Set<string>();
+  const out: Array<string> = [];
+  for (const item of items) {
+    const clean = item.trim();
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+function validateNapcatQqSemantics(cfg: NapcatQqConfig): string | undefined {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(cfg.oneBotBaseUrl.trim());
+  } catch {
+    return 'Invalid config for "community.napcat-qq": oneBotBaseUrl must be a valid http(s) URL.';
+  }
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    return 'Invalid config for "community.napcat-qq": oneBotBaseUrl protocol must be http or https.';
+  }
+  if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+    return 'Invalid config for "community.napcat-qq": oneBotBaseUrl must not contain credentials, query parameters, or fragments.';
+  }
+  const normalizedHost = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (cfg.endpointMode === "loopback-only" && !STRICT_LOOPBACK_HOSTS.has(normalizedHost)) {
+    return `Invalid config for "community.napcat-qq": oneBotBaseUrl host "${normalizedHost}" is forbidden in loopback-only mode (allowed: 127.0.0.1, localhost, ::1).`;
+  }
+  if (cfg.endpointMode === "loopback-only") {
+    for (const allowedHost of cfg.allowedHosts) {
+      const cleanHost = allowedHost
+        .trim()
+        .toLowerCase()
+        .replace(/^\[|\]$/g, "");
+      if (!STRICT_LOOPBACK_HOSTS.has(cleanHost)) {
+        return `Invalid config for "community.napcat-qq": allowedHosts entry "${allowedHost}" is forbidden in loopback-only mode.`;
+      }
+    }
+  }
+
+  const route = cfg.webhookRoute.trim();
+  if (
+    !NAPCAT_WEBHOOK_ROUTE_RE.test(route) ||
+    route.includes("..") ||
+    route.includes("//") ||
+    route.endsWith("/") ||
+    route === "/api/plugins/community.napcat-qq/health"
+  ) {
+    return 'Invalid config for "community.napcat-qq": webhookRoute must stay under "/api/plugins/community.napcat-qq/<path>" without traversal or /health collision.';
+  }
+
+  const secretRef = cfg.tokenSecretRef.trim();
+  if (!NAPCAT_SECRET_REF_RE.test(secretRef)) {
+    return 'Invalid config for "community.napcat-qq": tokenSecretRef must match "bytedock.napcat.<key>" with [A-Za-z0-9_-] key characters.';
+  }
+
+  for (const id of cfg.allowedUserIds) {
+    if (!QQ_NUMERIC_ID_RE.test(id.trim())) {
+      return `Invalid config for "community.napcat-qq": allowedUserIds entry "${id}" must be a positive numeric QQ ID.`;
+    }
+  }
+  for (const id of cfg.allowedGroupIds) {
+    if (!QQ_NUMERIC_ID_RE.test(id.trim())) {
+      return `Invalid config for "community.napcat-qq": allowedGroupIds entry "${id}" must be a positive numeric QQ group ID.`;
+    }
+  }
+  return undefined;
 }
 
 function listAddedStrings(
@@ -392,6 +505,57 @@ export function assessConfigPatchPrivilege(input: {
       const added = listAddedStrings(prevVals, nextVals);
       if (added.length > 0) {
         reasons.push(`plugin-${privKey}-expanded:${added.join(",")}`);
+      }
+    }
+
+    if (input.pluginId === "builtin.bots-core") {
+      const prevGuard = input.prevConfig.soulPrefixGuard !== false;
+      const nextGuard = input.nextConfig.soulPrefixGuard !== false;
+      if (prevGuard && !nextGuard) {
+        reasons.push("bots-soul-prefix-guard-disabled");
+      }
+    }
+
+    if (input.pluginId === "community.napcat-qq") {
+      const strChanged = (field: string): boolean => {
+        const prevVal = typeof input.prevConfig[field] === "string" ? input.prevConfig[field] : "";
+        const nextVal = typeof input.nextConfig[field] === "string" ? input.nextConfig[field] : "";
+        return prevVal.trim() !== nextVal.trim();
+      };
+      if (strChanged("oneBotBaseUrl")) {
+        reasons.push("napcat-onebot-base-url-changed");
+      }
+      if (strChanged("tokenSecretRef")) {
+        reasons.push("napcat-token-secret-ref-changed");
+      }
+      if (strChanged("webhookRoute")) {
+        reasons.push("napcat-webhook-route-changed");
+      }
+      if (strChanged("webhookAuthMode")) {
+        reasons.push("napcat-webhook-auth-mode-changed");
+      }
+      const prevRequireAt = input.prevConfig.requireAtInGroup !== false;
+      const nextRequireAt = input.nextConfig.requireAtInGroup !== false;
+      if (prevRequireAt && !nextRequireAt) {
+        reasons.push("napcat-group-at-requirement-disabled");
+      }
+      for (const listField of ["allowedUserIds", "allowedGroupIds"] as const) {
+        const prevList = Array.isArray(input.prevConfig[listField])
+          ? (input.prevConfig[listField] as ReadonlyArray<unknown>).filter(
+              (v): v is string => typeof v === "string",
+            )
+          : [];
+        const nextList = Array.isArray(input.nextConfig[listField])
+          ? (input.nextConfig[listField] as ReadonlyArray<unknown>).filter(
+              (v): v is string => typeof v === "string",
+            )
+          : [];
+        if (
+          listAddedStrings(prevList, nextList).length > 0 ||
+          listRemovedStrings(prevList, nextList).length > 0
+        ) {
+          reasons.push(`napcat-${listField}-changed`);
+        }
       }
     }
   }

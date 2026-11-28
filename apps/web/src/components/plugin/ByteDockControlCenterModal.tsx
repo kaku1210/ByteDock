@@ -6,6 +6,7 @@ import { T, useGT, Var } from "gt-react";
 import {
   ActivityIcon,
   AlertTriangleIcon,
+  BotIcon,
   CheckIcon,
   DownloadIcon,
   PuzzleIcon,
@@ -22,6 +23,7 @@ import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
+import { BotsNapCatPanel } from "./BotsNapCatPanel";
 import { PluginNodeRenderer } from "./PluginNodeRenderer";
 import { PluginSandboxFrame } from "./PluginSandboxFrame";
 import { TokenOptimizerXRayPanel } from "./TokenOptimizerXRayPanel";
@@ -302,14 +304,15 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks mounted modal hosts so AI commands target a live host and unmount clears stale open state
   useEffect(() => registerByteDockModalHost(host), [host]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches live ByteDock control-plane state from the server when the modal opens
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches live ByteDock control-plane state from the server when the modal opens or config revision advances
   useEffect(() => {
     if (!isVisible || !environmentId) return;
     let cancelled = false;
+    const rev = slotState.configRevision;
     void (async () => {
       const cpRes = await runInvoke({
         environmentId,
-        input: { pluginId: "builtin.control-plane", method: "getState", payload: {} },
+        input: { pluginId: "builtin.control-plane", method: "getState", payload: { rev } },
       });
       if (cancelled) return;
       if (AsyncResult.isSuccess(cpRes) && cpRes.value.result) {
@@ -343,7 +346,7 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
     return () => {
       cancelled = true;
     };
-  }, [isVisible, environmentId, runInvoke, runList]);
+  }, [isVisible, environmentId, runInvoke, runList, slotState.configRevision]);
 
   const handleLoadPlugins = async () => {
     const envId = requireEnvId();
@@ -589,6 +592,20 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
           >
             <ActivityIcon className="size-3.5" />
             <T>Context X-Ray</T>
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant={slotState.modalTab === "bots" ? "default" : "ghost"}
+            onClick={() => setByteDockModalTab("bots")}
+          >
+            <BotIcon className="size-3.5" />
+            <T>Bots &amp; QQ</T>
+            {slotState.pendingDecisionGateCount > 0 ? (
+              <span className="ml-1 rounded-full bg-warning/20 px-1.5 font-mono text-3xs text-warning">
+                {slotState.pendingDecisionGateCount}
+              </span>
+            ) : null}
           </Button>
           <Button
             type="button"
@@ -884,6 +901,16 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
             </>
           ) : slotState.modalTab === "xray" ? (
             <TokenOptimizerXRayPanel
+              environmentId={environmentId}
+              configMtimeMs={configMtimeMs}
+              onConfigSaved={() => {
+                if (environmentId) {
+                  void refreshControlPlane(environmentId);
+                }
+              }}
+            />
+          ) : slotState.modalTab === "bots" ? (
+            <BotsNapCatPanel
               environmentId={environmentId}
               configMtimeMs={configMtimeMs}
               onConfigSaved={() => {

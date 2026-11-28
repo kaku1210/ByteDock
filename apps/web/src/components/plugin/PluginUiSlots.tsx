@@ -2,18 +2,22 @@ import { useAtomValue } from "@effect/atom-react";
 import { useRouter } from "@tanstack/react-router";
 import type { EnvironmentSupervisor } from "@t3tools/client-runtime/connection";
 import { subscribe } from "@t3tools/client-runtime/rpc";
-import { followStreamInEnvironment } from "@t3tools/client-runtime/state/runtime";
+import {
+  createEnvironmentRpcCommand,
+  followStreamInEnvironment,
+} from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS, type EnvironmentId, type PluginsStreamEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 import { T, useGT } from "gt-react";
-import { DownloadIcon, PuzzleIcon, ShieldCheckIcon, XIcon } from "lucide-react";
+import { BotIcon, DownloadIcon, PuzzleIcon, ShieldCheckIcon, XIcon } from "lucide-react";
 import { useEffect } from "react";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { cn } from "../../lib/utils";
 import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { ByteDockControlCenterModal } from "./ByteDockControlCenterModal";
@@ -24,6 +28,7 @@ import {
   handleControlPlaneStreamPayload,
   openByteDockModal,
   registerUiNavigateHandler,
+  setPendingDecisionGateCount,
   usePluginSlotState,
 } from "./PluginSlotStore";
 import {
@@ -64,12 +69,41 @@ const idleControlPlaneAtom = Atom.make<null>(null).pipe(
   Atom.withLabel("bytedock-control-plane-events:idle"),
 );
 
+const botsStatusHydrateCommand = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "bytedock:bots:status-hydrate",
+  tag: WS_METHODS.pluginsInvoke,
+});
+
 function PluginControlBusBridge() {
   const environmentId = useAtomValue(primaryEnvironmentIdAtom);
   const router = useRouter();
+  const runInvoke = useAtomCommand(botsStatusHydrateCommand);
 
   // Keep a single deduplicated control-plane stream subscription per connected environment.
   useAtomValue(environmentId ? controlPlaneEventsAtom(environmentId) : idleControlPlaneAtom);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hydrates initial pending Bot Decision Gate count on connect so badges are accurate before opening Control Center
+  useEffect(() => {
+    if (!environmentId) return;
+    let cancelled = false;
+    void (async () => {
+      const res = await runInvoke({
+        environmentId,
+        input: { pluginId: "builtin.bots-core", method: "status", payload: {} },
+      });
+      if (cancelled) return;
+      if (AsyncResult.isSuccess(res) && res.value.result && typeof res.value.result === "object") {
+        const pending = (res.value.result as { readonly pendingDecisionGates?: unknown })
+          .pendingDecisionGates;
+        if (typeof pending === "number") {
+          setPendingDecisionGateCount(pending);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [environmentId, runInvoke]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers TanStack Router navigation sink for real-time MCP UI control commands
   useEffect(() => {
@@ -122,7 +156,7 @@ export function PluginSettingsSidebarGroup({
 }: {
   readonly compactSearchOpen: boolean;
 }) {
-  const { pendingApprovalCount } = usePluginSlotState();
+  const { pendingApprovalCount, pendingDecisionGateCount } = usePluginSlotState();
   return (
     <div
       data-bytedock-slot="settingsSection"
@@ -150,6 +184,22 @@ export function PluginSettingsSidebarGroup({
             {pendingApprovalCount > 0 ? (
               <span className="ml-auto rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning">
                 {pendingApprovalCount}
+              </span>
+            ) : null}
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            data-settings-section="/settings/bots"
+            onClick={() => openByteDockModal("bots", "settings")}
+          >
+            <BotIcon className="size-4 shrink-0 text-(--sidebar-icon-color)" />
+            <span className={cn("truncate", !compactSearchOpen && "max-md:sr-only")}>
+              <T>Bots &amp; QQ</T>
+            </span>
+            {pendingDecisionGateCount > 0 ? (
+              <span className="ml-auto rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning">
+                {pendingDecisionGateCount}
               </span>
             ) : null}
           </SidebarMenuButton>
@@ -198,7 +248,8 @@ export function PluginTimelineCardHost({ rowId }: { readonly rowId: string }) {
  */
 export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }) {
   const gt = useGT();
-  const { pendingApprovalCount, activeNotification } = usePluginSlotState();
+  const { pendingApprovalCount, pendingDecisionGateCount, activeNotification } =
+    usePluginSlotState();
   const { environmentId, summary, config } = useTokenOptimizerObservability(threadId);
   return (
     <div
@@ -258,6 +309,24 @@ export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }
                 className="rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning"
               >
                 {pendingApprovalCount}
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => openByteDockModal("bots", "chat", threadId)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+          >
+            <BotIcon className="size-3 text-primary" />
+            <span>
+              <T>Bots &amp; QQ</T>
+            </span>
+            {pendingDecisionGateCount > 0 ? (
+              <span
+                data-bytedock-pending-gates={pendingDecisionGateCount}
+                className="rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning"
+              >
+                {pendingDecisionGateCount}
               </span>
             ) : null}
           </button>

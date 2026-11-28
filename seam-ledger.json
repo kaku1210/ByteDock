@@ -36,12 +36,12 @@
       "id": "kernel-mount",
       "file": "apps/server/src/server.ts",
       "anchor": "both",
-      "tagCount": 1,
+      "tagCount": 2,
       "mode": "strict",
       "driftThresholdPct": 5,
       "review": "auto",
       "cutOrder": "W1",
-      "note": "静态 import 是 knip kernel workspace 闭包前提；另含 ws.ts handler 块 tag seam:plugins-rpc-handlers"
+      "note": "静态 import 是 knip kernel workspace 闭包前提；含 PluginControlPlane/ServerSecretStore 与 PluginWebhookHttp.routeLayer 挂载；另含 ws.ts handler 块 tag seam:plugins-rpc-handlers"
     },
     {
       "id": "plugins-rpc-handlers",

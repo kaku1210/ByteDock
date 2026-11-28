@@ -90,7 +90,7 @@ export const BUILTIN_PLUGIN_MANIFESTS: ReadonlyArray<ByteDockPluginManifest> = [
     permissions: {
       rpcScopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
       secretNamespaces: ["bytedock.napcat"],
-      networkHosts: ["127.0.0.1", "localhost"],
+      networkHosts: ["127.0.0.1", "localhost", "::1"],
       storage: "kv",
       hooks: [{ name: "egress.request.before", onError: "deny", timeoutMs: 2_000 }],
     },
@@ -148,7 +148,64 @@ export const BUILTIN_METHODS: ReadonlyArray<{
     minScopes: [AuthOrchestrationReadScope],
   },
   { pluginId: "builtin.bots-core", method: "status", minScopes: [AuthOrchestrationReadScope] },
+  { pluginId: "builtin.bots-core", method: "getState", minScopes: [AuthOrchestrationReadScope] },
+  { pluginId: "builtin.bots-core", method: "listThreads", minScopes: [AuthOrchestrationReadScope] },
+  {
+    pluginId: "builtin.bots-core",
+    method: "upsertBot",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "builtin.bots-core",
+    method: "deleteBot",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "builtin.bots-core",
+    method: "updateSoul",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "builtin.bots-core",
+    method: "appendMemory",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "builtin.bots-core",
+    method: "openGate",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "builtin.bots-core",
+    method: "resolveGate",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
   { pluginId: "community.napcat-qq", method: "status", minScopes: [AuthOrchestrationReadScope] },
+  {
+    pluginId: "community.napcat-qq",
+    method: "testConnection",
+    minScopes: [AuthOrchestrationReadScope],
+  },
+  {
+    pluginId: "community.napcat-qq",
+    method: "setTokenSecret",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "community.napcat-qq",
+    method: "clearTokenSecret",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "community.napcat-qq",
+    method: "simulateInbound",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
+  {
+    pluginId: "community.napcat-qq",
+    method: "sendReply",
+    minScopes: [AuthOrchestrationOperateScope],
+  },
   { pluginId: "builtin.legacy-importer", method: "scan", minScopes: [AuthOrchestrationReadScope] },
   {
     pluginId: "builtin.legacy-importer",

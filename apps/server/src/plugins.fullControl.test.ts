@@ -800,6 +800,84 @@ describe("ByteDock Full AI Control (OpenSpec bytedock-full-ai-control)", () => {
           });
           expect(badDockNode.isError).toBe(true);
 
+          // 4b. Bots & NapCatQQ MCP controls: UI tab "bots" and safe read/openGate succeed, while host-only mutations & secrets are blocked.
+          const uiOpenBots = yield* callAs(mainScope, "bytedock_ui_control", {
+            action: "open_control_center",
+            tab: "bots",
+          });
+          expect(uiOpenBots.isError).toBeFalsy();
+
+          const botsStateRes = yield* callAs(mainScope, "bytedock_plugin_action", {
+            action: "invoke",
+            pluginId: "builtin.bots-core",
+            method: "getState",
+          });
+          expect(botsStateRes.isError).toBeFalsy();
+
+          const openGateRes = yield* callAs(mainScope, "bytedock_plugin_action", {
+            action: "invoke",
+            pluginId: "builtin.bots-core",
+            method: "openGate",
+            payload: { title: "MCP check", summary: "Confirm release notes" },
+          });
+          expect(openGateRes.isError).toBeFalsy();
+          const createdGateId =
+            (openGateRes.structuredContent as { readonly data?: { readonly gateId?: string } }).data
+              ?.gateId ?? "";
+          expect(createdGateId).toMatch(/^gate-/);
+
+          for (const blocked of [
+            {
+              pluginId: "builtin.bots-core",
+              method: "resolveGate",
+              payload: { gateId: createdGateId, decision: "approved" },
+            },
+            {
+              pluginId: "builtin.bots-core",
+              method: "updateSoul",
+              payload: { botId: "default", soulMarkdown: "pwned" },
+            },
+            {
+              pluginId: "builtin.bots-core",
+              method: "upsertBot",
+              payload: { id: "default", name: "Hijack" },
+            },
+            {
+              pluginId: "community.napcat-qq",
+              method: "setTokenSecret",
+              payload: { token: "leaked" },
+            },
+            { pluginId: "community.napcat-qq", method: "clearTokenSecret", payload: {} },
+            {
+              pluginId: "community.napcat-qq",
+              method: "simulateInbound",
+              payload: { chatType: "private", userId: "10001", text: `/approve ${createdGateId}` },
+            },
+            {
+              pluginId: "community.napcat-qq",
+              method: "sendReply",
+              payload: { chatType: "private", targetId: "10001", text: "spam" },
+            },
+          ]) {
+            const denied = yield* callAs(mainScope, "bytedock_plugin_action", {
+              action: "invoke",
+              pluginId: blocked.pluginId,
+              method: blocked.method,
+              payload: blocked.payload,
+            });
+            expect(denied.isError).toBe(true);
+          }
+
+          // Disabling builtin.bots-core via MCP cannot silently strip SOUL.md prefix guard -> requires human approval.
+          const disableBotsRes = yield* callAs(mainScope, "bytedock_plugin_set_enabled", {
+            pluginId: "builtin.bots-core",
+            enabled: false,
+          });
+          expect(disableBotsRes.isError).toBeFalsy();
+          expect((disableBotsRes.structuredContent as { readonly status?: string }).status).toBe(
+            "approval_required",
+          );
+
           // 5. High-risk system actions: denied for subagent, approval-gated for main thread, executed on human approve.
           const subCleanup = yield* callAs(subagentScope, "bytedock_system_control", {
             action: "storage_cleanup",

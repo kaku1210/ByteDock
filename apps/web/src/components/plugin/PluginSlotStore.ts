@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { JsonNode } from "@bytedock/plugin-ui-renderer/protocol";
 
-export type ByteDockModalTab = "plugins" | "xray" | "import";
+export type ByteDockModalTab = "plugins" | "xray" | "bots" | "import";
 export type ByteDockModalHost = "settings" | "chat";
 
 export interface TokenOptimizerRuntimeConfig {
@@ -66,9 +66,11 @@ export interface PluginSlotState {
   readonly activeDockTree: JsonNode | null;
   readonly timelineCards: Readonly<Record<string, PluginTimelineCardEntry>>;
   readonly pendingApprovalCount: number;
+  readonly pendingDecisionGateCount: number;
   readonly activeNotification: ByteDockUiNotification | null;
   readonly tokenOptimizerConfig: TokenOptimizerRuntimeConfig;
   readonly configRevision: number;
+  readonly botsRevision: number;
 }
 
 let state: PluginSlotState = {
@@ -80,9 +82,11 @@ let state: PluginSlotState = {
   activeDockTree: null,
   timelineCards: {},
   pendingApprovalCount: 0,
+  pendingDecisionGateCount: 0,
   activeNotification: null,
   tokenOptimizerConfig: DEFAULT_TOKEN_OPTIMIZER_RUNTIME_CONFIG,
   configRevision: 0,
+  botsRevision: 0,
 };
 
 const listeners = new Set<() => void>();
@@ -230,6 +234,13 @@ export function setPendingApprovalCount(count: number) {
   emit();
 }
 
+export function setPendingDecisionGateCount(count: number) {
+  const normalized = Math.max(0, Math.trunc(count));
+  if (state.pendingDecisionGateCount === normalized) return;
+  state = { ...state, pendingDecisionGateCount: normalized };
+  emit();
+}
+
 function adjustPendingApprovalCount(delta: number) {
   setPendingApprovalCount(state.pendingApprovalCount + delta);
 }
@@ -263,7 +274,13 @@ export function applyUiControlCommand(
 
   if (command.action === "open_control_center") {
     const tab: ByteDockModalTab =
-      command.tab === "import" ? "import" : command.tab === "xray" ? "xray" : "plugins";
+      command.tab === "import"
+        ? "import"
+        : command.tab === "xray"
+          ? "xray"
+          : command.tab === "bots"
+            ? "bots"
+            : "plugins";
     openByteDockModal(tab, resolvePreferredModalHost());
     return { applied: true };
   }
@@ -331,12 +348,56 @@ export function handleControlPlaneStreamPayload(payload: unknown): void {
     adjustPendingApprovalCount(-1);
     return;
   }
+  if (record.kind === "decision-gate-created") {
+    const nextPending =
+      typeof record.pendingDecisionGates === "number"
+        ? Math.max(0, Math.trunc(record.pendingDecisionGates))
+        : state.pendingDecisionGateCount + 1;
+    state = {
+      ...state,
+      pendingDecisionGateCount: nextPending,
+      botsRevision: state.botsRevision + 1,
+    };
+    emit();
+    return;
+  }
+  if (record.kind === "decision-gate-resolved") {
+    const nextPending =
+      typeof record.pendingDecisionGates === "number"
+        ? Math.max(0, Math.trunc(record.pendingDecisionGates))
+        : Math.max(0, state.pendingDecisionGateCount - 1);
+    state = {
+      ...state,
+      pendingDecisionGateCount: nextPending,
+      botsRevision: state.botsRevision + 1,
+    };
+    emit();
+    return;
+  }
+  if (record.kind === "bots-updated" || record.kind === "napcat-event") {
+    const nextPending =
+      typeof record.pendingDecisionGates === "number"
+        ? Math.max(0, Math.trunc(record.pendingDecisionGates))
+        : state.pendingDecisionGateCount;
+    state = {
+      ...state,
+      pendingDecisionGateCount: nextPending,
+      botsRevision: state.botsRevision + 1,
+    };
+    emit();
+    return;
+  }
   if (
+    record.kind === "state-updated" ||
     record.kind === "config-changed" ||
     record.kind === "plugin-enabled-changed" ||
     record.kind === "reloaded"
   ) {
-    state = { ...state, configRevision: state.configRevision + 1 };
+    state = {
+      ...state,
+      configRevision: state.configRevision + 1,
+      botsRevision: state.botsRevision + 1,
+    };
     emit();
   }
 }
@@ -355,9 +416,11 @@ export function resetPluginSlotStoreForTest() {
     activeDockTree: null,
     timelineCards: {},
     pendingApprovalCount: 0,
+    pendingDecisionGateCount: 0,
     activeNotification: null,
     tokenOptimizerConfig: DEFAULT_TOKEN_OPTIMIZER_RUNTIME_CONFIG,
     configRevision: 0,
+    botsRevision: 0,
   };
   emit();
 }

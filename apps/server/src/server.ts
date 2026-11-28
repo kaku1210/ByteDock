@@ -262,6 +262,7 @@ import {
 import * as ServerActivation from "./serverActivation.ts";
 import * as PluginKernel from "@bytedock/plugin-kernel"; // bytedock-seam-import:kernel-mount
 import * as PluginControlPlane from "./plugins/PluginControlPlane.ts"; // bytedock-seam-import:kernel-mount
+import * as PluginWebhookHttp from "./plugins/PluginWebhookHttp.ts"; // bytedock-seam-import:kernel-mount
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
 const HTTP_ROUTER_CONFIG = {
@@ -905,7 +906,10 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(VcsAutomaticFetchInterval.layer.pipe(Layer.provide(layerServerSettings))),
   // bytedock-seam:kernel-mount
   Layer.provideMerge(
-    PluginControlPlane.layer.pipe(Layer.provideMerge(PluginKernel.PluginKernelLive)),
+    PluginControlPlane.layer.pipe(
+      Layer.provide(ServerSecretStore.layer),
+      Layer.provideMerge(PluginKernel.PluginKernelLive),
+    ),
   ),
   // end-bytedock-seam:kernel-mount
   Layer.provide(NetService.layer),
@@ -946,6 +950,9 @@ const layerMakeRoutes = Layer.mergeAll(
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
+    // bytedock-seam:kernel-mount
+    PluginWebhookHttp.routeLayer,
+    // end-bytedock-seam:kernel-mount
     speechStreamRouteLayer,
   ),
   McpHttpServer.layer.pipe(

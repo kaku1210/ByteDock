@@ -57,11 +57,16 @@ export interface IncomingWebhookRequest {
   readonly replayKey?: string | undefined;
   readonly seq?: number | undefined;
   readonly nowMs?: number | undefined;
+  readonly validateBeforeCommit?:
+    | (() =>
+        | { readonly ok: true }
+        | { readonly ok: false; readonly status: 400 | 409; readonly reason: string })
+    | undefined;
 }
 
 export interface WebhookGuardOutcome {
   readonly allowed: boolean;
-  readonly status: 200 | 401 | 403 | 409 | 429;
+  readonly status: 200 | 400 | 401 | 403 | 409 | 429;
   readonly reason: string;
   readonly headers: Readonly<Record<string, string>>;
 }
@@ -98,11 +103,20 @@ export interface WebhookRouteGuard {
 export function createWebhookRouteGuard(options: {
   readonly contribution: PluginWebhookContribution;
   readonly resolveSecret: (secretRef: string) => string | undefined;
+  readonly requireBearer?: boolean | undefined;
+  readonly acceptedHmacAlgorithms?: ReadonlyArray<"sha1" | "sha256"> | undefined;
 }): WebhookRouteGuard {
   const rateLimit = options.contribution.rateLimitPerMin ?? DEFAULT_WEBHOOK_RATE_LIMIT_PER_MIN;
   const windowMs =
     (options.contribution.replayDefense?.windowSeconds ?? DEFAULT_REPLAY_WINDOW_SECONDS) * 1_000;
   const requireMonotonicSeq = options.contribution.replayDefense?.requireMonotonicSeq ?? true;
+  const requireBearer = options.requireBearer ?? options.contribution.auth === "token";
+  const acceptedHmacAlgorithms: ReadonlyArray<"sha1" | "sha256"> =
+    options.acceptedHmacAlgorithms && options.acceptedHmacAlgorithms.length > 0
+      ? options.acceptedHmacAlgorithms
+      : options.contribution.hmac
+        ? [options.contribution.hmac.algorithm]
+        : [];
 
   const baseHeaders: Readonly<Record<string, string>> = {
     "X-Frame-Options": options.contribution.frameOptions ?? "DENY",
@@ -113,7 +127,7 @@ export function createWebhookRouteGuard(options: {
   const seenKeys = new Map<string, number>();
   let lastAcceptedSeq = -1;
 
-  const deny = (status: 401 | 403 | 409 | 429, reason: string): WebhookGuardOutcome => ({
+  const deny = (status: 400 | 401 | 403 | 409 | 429, reason: string): WebhookGuardOutcome => ({
     allowed: false,
     status,
     reason,
@@ -137,7 +151,7 @@ export function createWebhookRouteGuard(options: {
     }
 
     let resolvedSecret: string | undefined;
-    if (options.contribution.auth === "token") {
+    if (requireBearer) {
       const ref = options.contribution.tokenSecretRef;
       resolvedSecret = ref ? options.resolveSecret(ref) : undefined;
       if (!resolvedSecret) {
@@ -150,7 +164,7 @@ export function createWebhookRouteGuard(options: {
       }
     }
 
-    // 3. Raw-body HMAC verification (OneBot v11 x-signature: sha1=<hex>)
+    // 3. Raw-body HMAC verification (OneBot v11 x-signature: sha1=<hex> or sha256=<hex>)
     if (options.contribution.hmac) {
       const secret =
         resolvedSecret ??
@@ -164,37 +178,48 @@ export function createWebhookRouteGuard(options: {
       if (!sigHeader) {
         return deny(403, "missing-hmac-signature");
       }
-      const expected = computeRawBodyHmac(
-        req.rawBody,
-        secret,
-        options.contribution.hmac.algorithm,
-      ).toLowerCase();
-      const expectedHexOnly = expected.slice(expected.indexOf("=") + 1);
-      const valid =
-        timingSafeStringEqual(sigHeader, expected) ||
-        (options.contribution.hmac.mode === "standard-hex" &&
-          timingSafeStringEqual(sigHeader, expectedHexOnly));
+      let valid = false;
+      for (const alg of acceptedHmacAlgorithms) {
+        const expected = computeRawBodyHmac(req.rawBody, secret, alg).toLowerCase();
+        const expectedHexOnly = expected.slice(expected.indexOf("=") + 1);
+        if (
+          timingSafeStringEqual(sigHeader, expected) ||
+          (options.contribution.hmac.mode === "standard-hex" &&
+            timingSafeStringEqual(sigHeader, expectedHexOnly))
+        ) {
+          valid = true;
+          break;
+        }
+      }
       if (!valid) {
         return deny(403, "raw-body-hmac-mismatch");
       }
     }
 
-    // 4. Replay defense (300s sliding window + monotonic seq)
+    // 4. Optional authenticated payload validation before mutating replay state.
+    if (req.validateBeforeCommit) {
+      const precheck = req.validateBeforeCommit();
+      if (!precheck.ok) {
+        return deny(precheck.status, precheck.reason);
+      }
+    }
+
+    // 5. Replay defense (300s sliding window + monotonic seq) - validate BOTH before mutating state!
     for (const [key, seenAt] of seenKeys.entries()) {
       if (now - seenAt > windowMs) {
         seenKeys.delete(key);
       }
     }
+    if (requireMonotonicSeq && req.seq !== undefined && req.seq <= lastAcceptedSeq) {
+      return deny(409, `replay-non-monotonic-seq:${req.seq}<=${lastAcceptedSeq}`);
+    }
+    if (req.replayKey && seenKeys.has(req.replayKey)) {
+      return deny(409, `replay-duplicate-key:${req.replayKey}`);
+    }
     if (requireMonotonicSeq && req.seq !== undefined) {
-      if (req.seq <= lastAcceptedSeq) {
-        return deny(409, `replay-non-monotonic-seq:${req.seq}<=${lastAcceptedSeq}`);
-      }
       lastAcceptedSeq = req.seq;
     }
     if (req.replayKey) {
-      if (seenKeys.has(req.replayKey)) {
-        return deny(409, `replay-duplicate-key:${req.replayKey}`);
-      }
       seenKeys.set(req.replayKey, now);
     }
 

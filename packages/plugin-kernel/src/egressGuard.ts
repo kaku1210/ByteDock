@@ -246,6 +246,17 @@ export interface EgressGuardController {
   readonly getPolicy: () => EgressPolicy;
   readonly updatePolicy: (next: EgressPolicy) => void;
   readonly recordAudit: (event: Omit<EgressAuditEvent, "ts">) => EgressAuditEvent;
+  readonly evaluateRequest: (input: {
+    readonly pluginId: string;
+    readonly url: string;
+    readonly method?: string | undefined;
+  }) => {
+    readonly allowed: boolean;
+    readonly verdict: EgressVerdictKind;
+    readonly reason: string;
+    readonly host: string;
+    readonly port: number;
+  };
   readonly recordNamedPipe: (pipePath: string) => void;
   readonly recordUncoveredNative: (record: UncoveredNativeRecord) => void;
   readonly getEvents: () => ReadonlyArray<EgressAuditEvent>;
@@ -574,6 +585,48 @@ export function createEgressGuard(input: {
       currentPolicy = next;
     },
     recordAudit,
+    evaluateRequest: (req) => {
+      let host = "";
+      let port = 80;
+      try {
+        const parsed = new NodeURL.URL(req.url);
+        host = parsed.hostname;
+        port = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+      } catch {
+        recordAudit({
+          layer: "dispatcher",
+          host: req.url,
+          verdict: "egress-denied",
+          reason: "invalid-url",
+          pluginId: req.pluginId,
+          origin: "host-js",
+        });
+        return {
+          allowed: false,
+          verdict: "egress-denied",
+          reason: "invalid-url",
+          host: "",
+          port: 0,
+        };
+      }
+      const res = evaluateHostPolicy(host, currentPolicy);
+      recordAudit({
+        layer: "dispatcher",
+        host,
+        port,
+        verdict: res.verdict,
+        reason: req.method ? `${res.reason}:${req.method.toUpperCase()}` : res.reason,
+        pluginId: req.pluginId,
+        origin: "host-js",
+      });
+      return {
+        allowed: res.allowed,
+        verdict: res.verdict,
+        reason: res.reason,
+        host,
+        port,
+      };
+    },
     recordNamedPipe: (pipePath) => {
       namedPipeCount += 1;
       recordAudit({

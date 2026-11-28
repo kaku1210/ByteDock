@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -23,8 +24,15 @@ import {
 import * as PluginKernel from "@bytedock/plugin-kernel";
 import type { ByteDockPluginManifest, PluginRuntimeDescriptor } from "@bytedock/plugin-kernel";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
+import { makeBotsCoreService, type BotsCoreService } from "./BotsCoreService.ts";
 import { BUILTIN_METHODS, BUILTIN_PLUGIN_MANIFESTS } from "./BuiltinPluginManifests.ts";
+import {
+  makeNapCatChannelService,
+  type BotsThreadBridge,
+  type NapCatChannelService,
+} from "./NapCatChannelService.ts";
 import {
   makePluginApprovalStore,
   type ApprovalKind,
@@ -72,7 +80,7 @@ export interface UiControlCommand {
     | "close_dock_panel"
     | "navigate"
     | "notify";
-  readonly tab?: "plugins" | "xray" | "import" | undefined;
+  readonly tab?: "plugins" | "xray" | "bots" | "import" | undefined;
   readonly pluginId?: string | undefined;
   readonly node?: unknown;
   readonly path?: string | undefined;
@@ -190,9 +198,12 @@ export interface PluginControlPlaneService {
   readonly kernel: PluginKernel.PluginKernelService;
   readonly approvals: PluginApprovalStoreService;
   readonly tokenOptimizer: TokenOptimizerTelemetryService;
+  readonly botsCore: BotsCoreService;
+  readonly napcat: NapCatChannelService;
   readonly stateDir: string;
   readonly pluginConfigPath: string;
   readonly pluginsDir: string;
+  readonly setThreadBridge: (bridge: BotsThreadBridge | undefined) => void;
   readonly getState: () => Effect.Effect<ControlPlaneStateSnapshot>;
   readonly listDescriptors: () => Effect.Effect<ReadonlyArray<PluginRuntimeDescriptor>>;
   readonly isPluginEnabled: (pluginId: string) => Effect.Effect<boolean>;
@@ -407,6 +418,8 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
   readonly logsDir: string;
   readonly pluginConfigPath: string;
   readonly pluginsDir: string;
+  readonly secretStore?: ServerSecretStore.ServerSecretStore["Service"] | undefined;
+  readonly fetchImpl?: typeof globalThis.fetch | undefined;
   readonly watchFiles?: boolean | undefined;
   readonly approvalTtlMs?: number | undefined;
 }) {
@@ -423,6 +436,43 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
   const lastUiCommandRef = yield* Ref.make<UiControlCommand | undefined>(undefined);
   const eventsPubSub = yield* PubSub.unbounded<PluginsStreamEvent>();
   let hostMutationExecutor: HostMutationExecutor | undefined;
+
+  const emitControlEvent = Effect.fn("PluginControlPlane.emitControlEvent")(function* (
+    kind: string,
+    payload: Readonly<Record<string, unknown>>,
+  ) {
+    const active = yield* options.kernel.revisions.active();
+    const cursor = yield* Ref.modify(stateRef, (s) => {
+      const nextCursor = s.cursor + 1;
+      return [nextCursor, { ...s, cursor: nextCursor }] as const;
+    });
+    yield* PubSub.publish(eventsPubSub, {
+      cursor: String(cursor),
+      revision: active.rev,
+      pluginId: CONTROL_PLANE_PLUGIN_ID,
+      topic: CONTROL_PLANE_EVENTS_TOPIC,
+      qos: "interactive",
+      payload: { kind, ...payload },
+    });
+  });
+
+  const bootNowMs = yield* Clock.currentTimeMillis;
+  const botsCore = makeBotsCoreService({
+    stateDir: options.stateDir,
+    emitEvent: (kind, payload) => emitControlEvent(kind, payload),
+    initialNowMs: bootNowMs,
+  });
+  const napcat = yield* makeNapCatChannelService({
+    kernel: options.kernel,
+    botsCore,
+    secretStore: options.secretStore,
+    hasControlPlaneApproval: (requestId) =>
+      approvals
+        .listApprovals()
+        .pipe(Effect.map((list) => list.some((a) => a.requestId === requestId))),
+    emitEvent: (kind, payload) => emitControlEvent(kind, payload),
+    fetchImpl: options.fetchImpl,
+  });
 
   // Ensure builtin manifests and broker methods are registered once on the shared kernel.
   const registerBuiltinsOnce = Effect.gen(function* () {
@@ -452,6 +502,7 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
       });
     }
     yield* tokenOptimizer.attachKernelHooks(options.kernel, active.rev);
+    yield* botsCore.attachKernelHooks(options.kernel, active.rev);
   });
 
   const syncRuntimeEffects = Effect.fn("PluginControlPlane.syncRuntimeEffects")(function* (
@@ -476,24 +527,17 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
       PluginKernel.getDefaultPluginConfig("builtin.egress-guard");
     const effectivePolicy = PluginKernel.buildEffectiveEgressPolicy(egressCfg);
     options.kernel.egress.updatePolicy(effectivePolicy);
-  });
 
-  const emitControlEvent = Effect.fn("PluginControlPlane.emitControlEvent")(function* (
-    kind: string,
-    payload: Readonly<Record<string, unknown>>,
-  ) {
-    const active = yield* options.kernel.revisions.active();
-    const cursor = yield* Ref.modify(stateRef, (s) => {
-      const nextCursor = s.cursor + 1;
-      return [nextCursor, { ...s, cursor: nextCursor }] as const;
-    });
-    yield* PubSub.publish(eventsPubSub, {
-      cursor: String(cursor),
-      revision: active.rev,
-      pluginId: CONTROL_PLANE_PLUGIN_ID,
-      topic: CONTROL_PLANE_EVENTS_TOPIC,
-      qos: "interactive",
-      payload: { kind, ...payload },
+    const botsCfg =
+      next.configByPlugin["builtin.bots-core"] ??
+      PluginKernel.getDefaultPluginConfig("builtin.bots-core");
+    const napcatCfg =
+      next.configByPlugin["community.napcat-qq"] ??
+      PluginKernel.getDefaultPluginConfig("community.napcat-qq");
+    botsCore.syncConfig(botsCfg);
+    yield* napcat.syncConfig({
+      napcatConfig: napcatCfg,
+      botsConfig: botsCfg,
     });
   });
 
@@ -828,6 +872,12 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
 
           if (isFirewall && !input.enabled) {
             reasons.push("disable-egress-guard");
+          }
+          if (input.pluginId === "builtin.bots-core" && !input.enabled) {
+            reasons.push("disable-bots-core-soul-guard");
+          }
+          if (input.pluginId === "community.napcat-qq" && input.enabled && !prevEnabled) {
+            reasons.push("enable-napcat-qq-channel");
           }
           if (found.kind === "local" && input.enabled) {
             const fp = found.local.permissionsFingerprint;
@@ -1341,9 +1391,14 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
     kernel: options.kernel,
     approvals,
     tokenOptimizer,
+    botsCore,
+    napcat,
     stateDir: options.stateDir,
     pluginConfigPath: options.pluginConfigPath,
     pluginsDir: options.pluginsDir,
+    setThreadBridge: (bridge) => {
+      napcat.setThreadBridge(bridge);
+    },
     getState,
     listDescriptors,
     isPluginEnabled,
@@ -1365,12 +1420,14 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const kernel = yield* PluginKernel.PluginKernel;
+    const maybeSecretStore = yield* Effect.serviceOption(ServerSecretStore.ServerSecretStore);
     return yield* makePluginControlPlane({
       kernel,
       stateDir: config.stateDir,
       logsDir: config.logsDir,
       pluginConfigPath: config.pluginConfigPath,
       pluginsDir: config.pluginsDir,
+      secretStore: Option.getOrUndefined(maybeSecretStore),
       watchFiles: true,
     });
   }),
