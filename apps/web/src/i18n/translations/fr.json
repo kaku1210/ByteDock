@@ -3395,6 +3395,8 @@
   "ce1ae357f1587f4a": "Split subtask",
   "649a252a58aa39ba": "Escalate selection to new L1 under root",
   "2e1ad0ed8d6b67b7": "Escalate to L1",
+  "effde45eb45f3c7e": "aucune nouvelle sortie depuis {duration}",
+  "1a6ad987dcf3a605": "Aucune sortie depuis {duration}",
   "b1d8a5a24bd684e3": "sous-agent",
   "5a805b37d8940816": "commande",
   "da2da87e78bd6b11": "moniteur",
@@ -6489,6 +6491,130 @@
   "7f5a37821edc1814": "Autorisé",
   "86a2917f997a6e61": "Autoriser",
   "40baaf84b74b6875": "Impossible de vérifier les autorisations. Nous réessaierons automatiquement.",
+  "217d1ed46704f498": "Aucun environnement serveur ByteDock connecté.",
+  "98fd37a97bb31987": "Échec du chargement du registre de plugins ByteDock.",
+  "7bba172816e57759": "Échec du rechargement des plugins.",
+  "933cbd6dbc5368df": "Échec de la mise à jour de l’état d’activation du plugin.",
+  "6473b95b459d894c": "JSON invalide dans l’éditeur de configuration du plugin.",
+  "d2d6ee31d459a093": "La configuration du plugin doit être un objet JSON.",
+  "5dbb92f41564144f": "Échec de l’enregistrement de la configuration du plugin (validation ou conflit de modification concurrente).",
+  "35678b21a92c0d0b": "Échec du traitement de la demande d’approbation.",
+  "8ab33bffc9556876": "Échec de l’exécution du contrôle EgressProof en deux segments.",
+  "5ece5dc7893dfcc4": "Échec de l’analyse des répertoires locaux T3 Code / T3 Code Plus.",
+  "cc22c9da2d5205f6": "Échec de l’importation héritée en lecture seule.",
+  "94289a28173e294d": "Désactiver",
+  "2c291721a16e936d": "Activer",
+  "d217934b2450618b": "Configuration JSON du plugin",
+  "ae3c1da18cc97a2f": "Masquer l’aperçu sandbox",
+  "ebd0407ab88124b0": "Tester le cadre sandbox",
+  "f648af3c8b2c0c1a": "Autovérification sandbox ByteDock",
+  "d908104fe37414f4": "Chemin personnalisé facultatif du dossier T3 / T3 Plus",
+  "2238389d9b61720c": "T3 Code Plus (~/.t3-plus)",
+  "f41b94d75b4edd9b": "T3 Code (~/.t3)",
+  "3550186cb00aab84": "Compatible",
+  "9fec8d8f72a0de4d": "Vide",
+  "cda5dbbd7b38f362": "Introuvable",
+  "8ba6cc4e0ef0282a": "Plugins et importateur de données ByteDock",
+  "5a27775c5739f616": "Plugins et Egress Guard",
+  "08d05006ab28b327": "Importer T3 Code / Plus",
+  "61f73c3690a50df6": [
+    "Révision active : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "cb463c79c765c12e": "Actualiser le registre",
+  "7f8d86808adc346f": "Rechargement à chaud",
+  "413eaf5c7ab91db9": "Lancer EgressProof",
+  "8046f37feda1ae35": "Diagnostic de rechargement à chaud (dernier état valide conservé)",
+  "eb77cf463e69fcda": [
+    "Approbations de permissions privilégiées (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " en attente)"
+  ],
+  "b8cdfff5c128f754": "Refuser",
+  "774670b3ccdacf6c": "Approuver et appliquer",
+  "9208946441302eea": "Limites de sécurité sortante (déclarations transparentes)",
+  "fb22b01323adc25d": "Plugins enregistrés",
+  "0a2a100ff195776e": "Cliquez sur Actualiser le registre pour inspecter les plugins actifs du serveur ByteDock.",
+  "95ffed6a289d0928": "Configuration",
+  "ba7d8e3dbb56d9ec": "Enregistrer et recharger",
+  "45df724f55484940": "Autovérification du cadre sandbox Track-2",
+  "ed504bc333835d59": [
+    "État du handshake : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "fcc2ded973e4b82f": "Lit ~/.t3 (T3 Code) et ~/.t3-plus (T3 Code Plus) strictement en lecture seule. Ne modifie jamais les dossiers sources et exclut les artefacts de télémétrie/Clerk.",
+  "c12bda78bda7f6cf": "Analyser les sources locales",
+  "36462eeb7f773ba5": [
+    "Données utilisateur ByteDock cibles : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "a83b56111ef24f71": [
+    "Projets : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " · Fils : ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    }
+  ],
+  "d9c79ac080634342": "Sélectionner les catégories à importer (copie source en lecture seule)",
+  "f1a6fe4b0193e83b": "Lancer l’importation en lecture seule",
+  "d32d6aa8aa6e9201": "Importation terminée. Redémarrez ByteDock pour activer l’instantané préparé statev2.sqlite.",
+  "794bfcc61aa6eb07": "Importation terminée en toute sécurité sans aucune écriture dans le répertoire source.",
+  "87b3b0dc9c007de1": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " : ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " (",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " fichiers, ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    },
+    ")"
+  ],
+  "7a3df630fbb07c17": "Fermer le panneau de plugins",
+  "dea3a2118378111b": "Ignorer la notification",
+  "ab6ac33bf3726848": "ByteDock",
+  "7e5cbc9d17621df1": "Plugins et protection",
+  "b258d87b5bde8b2d": "Importer des données T3",
+  "5bf094535c199ae5": "ByteDock Guard",
+  "ea31972ba61e25f6": "Importer T3",
   "32fe2ebd935fa02d": "Erreur réseau",
   "11657a3265f539e2": "Afficher dans le Finder",
   "a41d6c3a9ed7fde7": "Afficher dans l’Explorateur de fichiers",
@@ -7809,7 +7935,6 @@
   "f8d29f698314bb6e": "Création…",
   "647bd066558e1add": "Par défaut",
   "84dc0da709ddecd1": "Configurer",
-  "94289a28173e294d": "Désactiver",
   "568aae4a722512f5": "Portées accordées",
   "95e792b0c8b0121a": "Créez un nouveau lien à partager depuis ce client.",
   "c70997735272aa6c": "Copiez le jeton et appairez-vous depuis un autre client avec l’hôte joignable de ce backend.",
@@ -8386,7 +8511,6 @@
   "d9b97f4f5da2517e": "Désactiver WSL",
   "68916f6f608ece80": "Changer de distribution",
   "afd31786b2fd29f0": "Point de terminaison MagicDNS en attente",
-  "2c291721a16e936d": "Activer",
   "d087da5017f20fa2": "Aucun environnement sélectionné",
   "cb553d31c9d1b1c7": "Connectez un environnement pour voir ses paramètres et ses accès.",
   "9a84dc0e80037e05": "Cette app",
@@ -10395,7 +10519,6 @@
   "76e826b2f89a9943": "Activé",
   "183b2599d9617750": "Désactivé",
   "302410fc09c914ad": "{count, plural, one {{count} jour} other {{count} jours}}",
-  "9fec8d8f72a0de4d": "Vide",
   "5ea3612df785efd2": "{count, plural, one {{count} élément} other {{count} éléments}}",
   "7f11b5e6dfa0bc56": "Personnalisé",
   "aea25315995268e1": "Hérite",
@@ -12352,7 +12475,7 @@
   "10e3b1efa85ed4b3": "Branches",
   "300a948f90c4d75c": "Revenir en arrière",
   "2a50e229df85d553": "Avancer",
-  "8aa6404c8018ea67": "Accueil T3 Code",
+  "04ddf9f1e6ae9166": "Accueil ByteDock",
   "8e9626aa27cb188a": "Tickets",
   "9d2fc1003e82feb1": "Utilisation",
   "20283eb1dd6119f9": "{count, plural, one {{count} pièce jointe} other {{count} pièces jointes}}",
@@ -12540,7 +12663,6 @@
   "35062fc45c2b1216": "Erreur copiée",
   "63790659557f315e": "Afficher les détails",
   "7423eb22b2f1768f": "Notifications",
-  "dea3a2118378111b": "Ignorer la notification",
   "c6cf1b06e0433ca3": "Progression de la configuration",
   "e0167c02ca493094": "{step}, étape {number}, {summary}",
   "6389dee75a7cb536": "{step}, étape {number}",
@@ -13215,7 +13337,5 @@
   "27d76249d09eb69f": "Guide de revue prêt",
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
-  "effde45eb45f3c7e": "aucune nouvelle sortie depuis {duration}",
-  "1a6ad987dcf3a605": "Aucune sortie depuis {duration}"
+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
 }

@@ -3395,6 +3395,8 @@
   "ce1ae357f1587f4a": "Split subtask",
   "649a252a58aa39ba": "Escalate selection to new L1 under root",
   "2e1ad0ed8d6b67b7": "Escalate to L1",
+  "effde45eb45f3c7e": "ingen ny utdata på {duration}",
+  "1a6ad987dcf3a605": "Ingen utdata på {duration}",
   "b1d8a5a24bd684e3": "subagent",
   "5a805b37d8940816": "kommando",
   "da2da87e78bd6b11": "övervakare",
@@ -6490,6 +6492,130 @@
   "7f5a37821edc1814": "Tillåten",
   "86a2917f997a6e61": "Tillåt",
   "40baaf84b74b6875": "Kunde inte kontrollera behörigheter. Vi försöker igen automatiskt.",
+  "217d1ed46704f498": "Ingen ansluten ByteDock-servermiljö.",
+  "98fd37a97bb31987": "Kunde inte läsa in ByteDock-tilläggsregistret.",
+  "7bba172816e57759": "Det gick inte att läsa om tilläggen.",
+  "933cbd6dbc5368df": "Kunde inte uppdatera tilläggets aktiveringsstatus.",
+  "6473b95b459d894c": "Ogiltig JSON i redigeraren för tilläggskonfiguration.",
+  "d2d6ee31d459a093": "Tilläggskonfigurationen måste vara ett JSON-objekt.",
+  "5dbb92f41564144f": "Kunde inte spara tilläggskonfigurationen (valideringsfel eller samtidig redigeringskonflikt).",
+  "35678b21a92c0d0b": "Kunde inte hantera godkännandebegäran.",
+  "8ab33bffc9556876": "Kunde inte köra tvåstegs-EgressProof.",
+  "5ece5dc7893dfcc4": "Kunde inte skanna lokala mappar för T3 Code / T3 Code Plus.",
+  "cc22c9da2d5205f6": "Skrivskyddad import av äldre data misslyckades.",
+  "94289a28173e294d": "Inaktivera",
+  "2c291721a16e936d": "Aktivera",
+  "d217934b2450618b": "JSON-konfiguration för tillägg",
+  "ae3c1da18cc97a2f": "Dölj förhandsvisning av sandlåda",
+  "ebd0407ab88124b0": "Testa sandlåderam",
+  "f648af3c8b2c0c1a": "Självtest av ByteDock-sandlåda",
+  "d908104fe37414f4": "Valfri anpassad mappsökväg för T3 / T3 Plus",
+  "2238389d9b61720c": "T3 Code Plus (~/.t3-plus)",
+  "f41b94d75b4edd9b": "T3 Code (~/.t3)",
+  "3550186cb00aab84": "Kompatibel",
+  "9fec8d8f72a0de4d": "Tom",
+  "cda5dbbd7b38f362": "Hittades inte",
+  "8ba6cc4e0ef0282a": "ByteDock-tillägg och dataimport",
+  "5a27775c5739f616": "Tillägg och Egress Guard",
+  "08d05006ab28b327": "Importera T3 Code / Plus",
+  "61f73c3690a50df6": [
+    "Aktiv revision: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "cb463c79c765c12e": "Uppdatera register",
+  "7f8d86808adc346f": "Snabb omladdning",
+  "413eaf5c7ab91db9": "Kör EgressProof",
+  "8046f37feda1ae35": "Diagnostik för snabb omladdning (föregående giltiga läge behålls)",
+  "eb77cf463e69fcda": [
+    "Godkännanden för förhöjda behörigheter (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " väntar)"
+  ],
+  "b8cdfff5c128f754": "Avvisa",
+  "774670b3ccdacf6c": "Godkänn och tillämpa",
+  "9208946441302eea": "Säkerhetsgränser för utgående trafik (öppen redovisning)",
+  "fb22b01323adc25d": "Registrerade tillägg",
+  "0a2a100ff195776e": "Klicka på Uppdatera register för att visa aktiva tillägg från ByteDock-servern.",
+  "95ffed6a289d0928": "Konfiguration",
+  "ba7d8e3dbb56d9ec": "Spara och ladda om",
+  "45df724f55484940": "Självtest av Track-2 sandlåderam",
+  "ed504bc333835d59": [
+    "Handskakningsstatus: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "fcc2ded973e4b82f": "Läser ~/.t3 (T3 Code) och ~/.t3-plus (T3 Code Plus) strikt skrivskyddat. Ändrar aldrig källmappar och exkluderar telemetri-/Clerk-artefakter.",
+  "c12bda78bda7f6cf": "Skanna lokala källor",
+  "36462eeb7f773ba5": [
+    "Målmapp för ByteDock-användardata: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "a83b56111ef24f71": [
+    "Projekt: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " · Trådar: ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    }
+  ],
+  "d9c79ac080634342": "Välj kategorier att importera (skrivskyddad källkopia)",
+  "f1a6fe4b0193e83b": "Kör skrivskyddad import",
+  "d32d6aa8aa6e9201": "Importen är klar. Starta om ByteDock för att aktivera den förberedda statev2.sqlite-ögonblicksbilden.",
+  "794bfcc61aa6eb07": "Importen slutfördes säkert utan några skrivningar till källkatalogen.",
+  "87b3b0dc9c007de1": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " (",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " filer, ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    },
+    ")"
+  ],
+  "7a3df630fbb07c17": "Stäng tilläggspanel",
+  "dea3a2118378111b": "Stäng aviseringen",
+  "ab6ac33bf3726848": "ByteDock",
+  "7e5cbc9d17621df1": "Tillägg och skydd",
+  "b258d87b5bde8b2d": "Importera T3-data",
+  "5bf094535c199ae5": "ByteDock Guard",
+  "ea31972ba61e25f6": "Importera T3",
   "32fe2ebd935fa02d": "Nätverksfel",
   "11657a3265f539e2": "Visa i Finder",
   "a41d6c3a9ed7fde7": "Visa i Utforskaren",
@@ -7814,7 +7940,6 @@
   "f8d29f698314bb6e": "Skapar…",
   "647bd066558e1add": "Standard",
   "84dc0da709ddecd1": "Konfigurera",
-  "94289a28173e294d": "Inaktivera",
   "568aae4a722512f5": "Beviljade omfång",
   "95e792b0c8b0121a": "Skapa en ny länk att dela från den här klienten.",
   "c70997735272aa6c": "Kopiera token och parkoppla från en annan klient med den här backendens nåbara värd.",
@@ -8391,7 +8516,6 @@
   "d9b97f4f5da2517e": "Inaktivera WSL",
   "68916f6f608ece80": "Byt distribution",
   "afd31786b2fd29f0": "Väntande MagicDNS-slutpunkt",
-  "2c291721a16e936d": "Aktivera",
   "d087da5017f20fa2": "Ingen miljö vald",
   "cb553d31c9d1b1c7": "Anslut en miljö för att visa dess inställningar och åtkomst.",
   "9a84dc0e80037e05": "Den här appen",
@@ -10403,7 +10527,6 @@
   "76e826b2f89a9943": "På",
   "183b2599d9617750": "Av",
   "302410fc09c914ad": "{count, plural, one {{count} dag} other {{count} dagar}}",
-  "9fec8d8f72a0de4d": "Tom",
   "5ea3612df785efd2": "{count, plural, one {{count} objekt} other {{count} objekt}}",
   "7f11b5e6dfa0bc56": "Anpassad",
   "aea25315995268e1": "Ärver",
@@ -12360,7 +12483,7 @@
   "10e3b1efa85ed4b3": "Grenar",
   "300a948f90c4d75c": "Gå tillbaka",
   "2a50e229df85d553": "Gå framåt",
-  "8aa6404c8018ea67": "T3 Code start",
+  "04ddf9f1e6ae9166": "ByteDock startsida",
   "8e9626aa27cb188a": "Ärenden",
   "9d2fc1003e82feb1": "Användning",
   "20283eb1dd6119f9": "{count, plural, one {{count} bilaga} other {{count} bilagor}}",
@@ -12548,7 +12671,6 @@
   "35062fc45c2b1216": "Felet kopierades",
   "63790659557f315e": "Visa detaljer",
   "7423eb22b2f1768f": "Aviseringar",
-  "dea3a2118378111b": "Stäng aviseringen",
   "c6cf1b06e0433ca3": "Konfigurationsförlopp",
   "e0167c02ca493094": "{step}, steg {number}, {summary}",
   "6389dee75a7cb536": "{step}, steg {number}",
@@ -13222,7 +13344,5 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
-  "effde45eb45f3c7e": "ingen ny utdata på {duration}",
-  "1a6ad987dcf3a605": "Ingen utdata på {duration}"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
 }

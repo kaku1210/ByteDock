@@ -3395,6 +3395,8 @@
   "ce1ae357f1587f4a": "Split subtask",
   "649a252a58aa39ba": "Escalate selection to new L1 under root",
   "2e1ad0ed8d6b67b7": "Escalate to L1",
+  "effde45eb45f3c7e": "no new output for {duration}",
+  "1a6ad987dcf3a605": "No output for {duration}",
   "b1d8a5a24bd684e3": "subagent",
   "5a805b37d8940816": "command",
   "da2da87e78bd6b11": "monitor",
@@ -6491,6 +6493,132 @@
   "7f5a37821edc1814": "Allowed",
   "86a2917f997a6e61": "Allow",
   "40baaf84b74b6875": "Could not check permissions. We'll try again automatically.",
+  "217d1ed46704f498": "No connected ByteDock server environment.",
+  "98fd37a97bb31987": "Failed to load ByteDock plugin registry.",
+  "7bba172816e57759": "Plugin reload failed.",
+  "933cbd6dbc5368df": "Failed to update plugin enabled state.",
+  "6473b95b459d894c": "Invalid JSON in plugin config editor.",
+  "d2d6ee31d459a093": "Plugin config must be a JSON object.",
+  "5dbb92f41564144f": "Failed to save plugin config (validation or concurrent edit conflict).",
+  "35678b21a92c0d0b": "Failed to resolve approval request.",
+  "8ab33bffc9556876": "Failed to execute dual-segment EgressProof.",
+  "5ece5dc7893dfcc4": "Failed to scan local T3 Code / T3 Code Plus directories.",
+  "cc22c9da2d5205f6": "Legacy read-only import failed.",
+  "94289a28173e294d": "Disable",
+  "2c291721a16e936d": "Enable",
+  "d217934b2450618b": "Plugin JSON configuration",
+  "ae3c1da18cc97a2f": "Hide Sandbox Preview",
+  "ebd0407ab88124b0": "Test Sandbox Frame",
+  "f648af3c8b2c0c1a": "ByteDock Sandbox Self-Check",
+  "d908104fe37414f4": "Optional custom T3 / T3 Plus folder path",
+  "2238389d9b61720c": "T3 Code Plus (~/.t3-plus)",
+  "f41b94d75b4edd9b": "T3 Code (~/.t3)",
+  "3550186cb00aab84": "Compatible",
+  "9fec8d8f72a0de4d": "Empty",
+  "cda5dbbd7b38f362": "Not found",
+  "8ba6cc4e0ef0282a": "ByteDock Plugins & Data Importer",
+  "5a27775c5739f616": "Plugins & Egress Guard",
+  "08d05006ab28b327": "Import T3 Code / Plus",
+  "61f73c3690a50df6": [
+    "Active revision: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "cb463c79c765c12e": "Refresh Registry",
+  "7f8d86808adc346f": "Hot Reload",
+  "413eaf5c7ab91db9": "Run EgressProof",
+  "8046f37feda1ae35": "Hot-Reload Diagnostic (Previous Valid State Kept)",
+  "eb77cf463e69fcda": [
+    "Privileged Permission Approvals (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " pending)"
+  ],
+  "b8cdfff5c128f754": "Reject",
+  "774670b3ccdacf6c": "Approve & Apply",
+  "9208946441302eea": "Egress Security Boundaries (Honest Disclosures)",
+  "fb22b01323adc25d": "Registered Plugins",
+  "0a2a100ff195776e": "Click Refresh Registry to inspect live plugins from the ByteDock server.",
+  "95ffed6a289d0928": "Config",
+  "ba7d8e3dbb56d9ec": "Save & Hot Reload",
+  "45df724f55484940": "Track-2 Sandbox Frame Self-Check",
+  "ed504bc333835d59": [
+    "Handshake status: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "fcc2ded973e4b82f": "Reads ~/.t3 (T3 Code) and ~/.t3-plus (T3 Code Plus) strictly read-only. Never modifies source folders and excludes telemetry/Clerk artifacts.",
+  "c12bda78bda7f6cf": "Scan Local Sources",
+  "36462eeb7f773ba5": [
+    "Target ByteDock userdata: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "a83b56111ef24f71": [
+    "Projects: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " · Threads:",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    }
+  ],
+  "d9c79ac080634342": "Select Categories to Import (Read-Only Source Copy)",
+  "f1a6fe4b0193e83b": "Run Read-Only Import",
+  "d32d6aa8aa6e9201": "Import completed. Restart ByteDock to promote the staged statev2.sqlite snapshot.",
+  "794bfcc61aa6eb07": "Import completed safely with zero writes to the source directory.",
+  "87b3b0dc9c007de1": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ": ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " (",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    },
+    " files,",
+    " ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    },
+    ")"
+  ],
+  "7a3df630fbb07c17": "Close plugin panel",
+  "dea3a2118378111b": "Dismiss notification",
+  "ab6ac33bf3726848": "ByteDock",
+  "7e5cbc9d17621df1": "Plugins & Guard",
+  "b258d87b5bde8b2d": "Import T3 Data",
+  "5bf094535c199ae5": "ByteDock Guard",
+  "ea31972ba61e25f6": "Import T3",
   "32fe2ebd935fa02d": "Network error",
   "11657a3265f539e2": "Reveal in Finder",
   "a41d6c3a9ed7fde7": "Reveal in File Explorer",
@@ -7815,7 +7943,6 @@
   "f8d29f698314bb6e": "Creating…",
   "647bd066558e1add": "Default",
   "84dc0da709ddecd1": "Setup",
-  "94289a28173e294d": "Disable",
   "568aae4a722512f5": "Granted scopes",
   "95e792b0c8b0121a": "Create a new link to share from this client.",
   "c70997735272aa6c": "Copy the token and pair from another client using this backend's reachable host.",
@@ -8393,7 +8520,6 @@
   "d9b97f4f5da2517e": "Disable WSL",
   "68916f6f608ece80": "Switch distro",
   "afd31786b2fd29f0": "Pending MagicDNS endpoint",
-  "2c291721a16e936d": "Enable",
   "d087da5017f20fa2": "No environment selected",
   "cb553d31c9d1b1c7": "Connect an environment to view its settings and access.",
   "9a84dc0e80037e05": "This app",
@@ -10405,7 +10531,6 @@
   "76e826b2f89a9943": "On",
   "183b2599d9617750": "Off",
   "302410fc09c914ad": "{count, plural, one {{count} day} other {{count} days}}",
-  "9fec8d8f72a0de4d": "Empty",
   "5ea3612df785efd2": "{count, plural, one {{count} item} other {{count} items}}",
   "7f11b5e6dfa0bc56": "Custom",
   "aea25315995268e1": "Inherits",
@@ -12362,7 +12487,7 @@
   "10e3b1efa85ed4b3": "Branches",
   "300a948f90c4d75c": "Go back",
   "2a50e229df85d553": "Go forward",
-  "8aa6404c8018ea67": "T3 Code home",
+  "04ddf9f1e6ae9166": "ByteDock home",
   "8e9626aa27cb188a": "Issues",
   "9d2fc1003e82feb1": "Usage",
   "20283eb1dd6119f9": "{count, plural, one {{count} attachment} other {{count} attachments}}",
@@ -12550,7 +12675,6 @@
   "35062fc45c2b1216": "Copied error",
   "63790659557f315e": "Show details",
   "7423eb22b2f1768f": "Notifications",
-  "dea3a2118378111b": "Dismiss notification",
   "c6cf1b06e0433ca3": "Setup progress",
   "e0167c02ca493094": "{step}, step {number}, {summary}",
   "6389dee75a7cb536": "{step}, step {number}",
@@ -13224,7 +13348,5 @@
   "27d76249d09eb69f": "Review guide ready",
   "faa3bb26abb39c93": "Review guide failed",
   "b7df38b7d8792d78": "Open guide",
-  "9e91e9a77b664e4e": "Could not start a review guide",
-  "effde45eb45f3c7e": "no new output for {duration}",
-  "1a6ad987dcf3a605": "No output for {duration}"
+  "9e91e9a77b664e4e": "Could not start a review guide"
 }
