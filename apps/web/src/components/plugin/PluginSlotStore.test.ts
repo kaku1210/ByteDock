@@ -7,6 +7,8 @@ import {
   getPluginSlotSnapshot,
   handleControlPlaneStreamPayload,
   isSafeInternalRoutePath,
+  openByteDockModal,
+  registerByteDockModalHost,
   registerUiNavigateHandler,
   resetPluginSlotStoreForTest,
 } from "./PluginSlotStore";
@@ -143,5 +145,51 @@ describe("PluginSlotStore real-time ByteDock UI control bus", () => {
     handleControlPlaneStreamPayload({ kind: "approval-resolved", requestId: "req-2" });
     handleControlPlaneStreamPayload({ kind: "approval-resolved", requestId: "req-3" });
     expect(getPluginSlotSnapshot().pendingApprovalCount).toBe(0);
+  });
+
+  it("clears stale open state when Settings unmounts and routes subsequent AI open_control_center commands to Chat", () => {
+    const unregisterChat = registerByteDockModalHost("chat");
+    const unregisterSettings = registerByteDockModalHost("settings");
+
+    // While Settings is mounted, AI commands prefer the Settings host so the modal layers above Settings.
+    const openInSettings = applyUiControlCommand({
+      commandId: "cmd-host-settings-1",
+      action: "open_control_center",
+      tab: "plugins",
+    });
+    expect(openInSettings.applied).toBe(true);
+    expect(getPluginSlotSnapshot().modalOpen).toBe(true);
+    expect(getPluginSlotSnapshot().modalHost).toBe("settings");
+
+    // Leaving Settings without closing the modal resets modalOpen and falls back to the mounted Chat host.
+    unregisterSettings();
+    expect(getPluginSlotSnapshot().modalOpen).toBe(false);
+    expect(getPluginSlotSnapshot().modalHost).toBe("chat");
+
+    // After leaving Settings, AI commands must open on the live Chat host rather than stale "settings".
+    const openInChat = applyUiControlCommand({
+      commandId: "cmd-host-chat-1",
+      action: "open_control_center",
+      tab: "import",
+    });
+    expect(openInChat.applied).toBe(true);
+    expect(getPluginSlotSnapshot().modalOpen).toBe(true);
+    expect(getPluginSlotSnapshot().modalHost).toBe("chat");
+    expect(getPluginSlotSnapshot().modalTab).toBe("import");
+
+    // Re-opening from Settings, closing, and exiting Settings also leaves modalHost on Chat.
+    const unregisterSettingsAgain = registerByteDockModalHost("settings");
+    openByteDockModal("plugins", "settings");
+    expect(getPluginSlotSnapshot().modalHost).toBe("settings");
+    const closeCmd = applyUiControlCommand({
+      commandId: "cmd-host-close-1",
+      action: "close_control_center",
+    });
+    expect(closeCmd.applied).toBe(true);
+    expect(getPluginSlotSnapshot().modalOpen).toBe(false);
+    unregisterSettingsAgain();
+    expect(getPluginSlotSnapshot().modalHost).toBe("chat");
+
+    unregisterChat();
   });
 });

@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { JsonNode } from "@bytedock/plugin-ui-renderer/protocol";
 
 export type ByteDockModalTab = "plugins" | "import";
+export type ByteDockModalHost = "settings" | "chat";
 
 export interface PluginTimelineCardEntry {
   readonly rowId: string;
@@ -37,7 +38,7 @@ export interface ByteDockUiControlCommand {
 export interface PluginSlotState {
   readonly modalOpen: boolean;
   readonly modalTab: ByteDockModalTab;
-  readonly modalHost: "settings" | "chat";
+  readonly modalHost: ByteDockModalHost;
   readonly activeDockPluginId: string | null;
   readonly activeDockTree: JsonNode | null;
   readonly timelineCards: Readonly<Record<string, PluginTimelineCardEntry>>;
@@ -59,6 +60,16 @@ let state: PluginSlotState = {
 const listeners = new Set<() => void>();
 const processedCommandIds = new Set<string>();
 const navigateHandlers: Array<(safePath: string) => void> = [];
+const mountedModalHosts: Record<ByteDockModalHost, number> = {
+  settings: 0,
+  chat: 0,
+};
+
+function resolvePreferredModalHost(): ByteDockModalHost {
+  if (mountedModalHosts.settings > 0) return "settings";
+  if (mountedModalHosts.chat > 0) return "chat";
+  return state.modalHost;
+}
 
 function emit() {
   for (const listener of listeners) {
@@ -104,11 +115,26 @@ export function registerUiNavigateHandler(handler: (safePath: string) => void): 
   };
 }
 
-export function openByteDockModal(
-  tab: ByteDockModalTab = "plugins",
-  host: "settings" | "chat" = "chat",
-) {
-  state = { ...state, modalOpen: true, modalTab: tab, modalHost: host };
+export function registerByteDockModalHost(host: ByteDockModalHost): () => void {
+  mountedModalHosts[host] += 1;
+  let unregistered = false;
+  return () => {
+    if (unregistered) return;
+    unregistered = true;
+    mountedModalHosts[host] = Math.max(0, mountedModalHosts[host] - 1);
+    if (mountedModalHosts[host] === 0 && state.modalHost === host) {
+      const fallbackHost: ByteDockModalHost = mountedModalHosts.settings > 0 ? "settings" : "chat";
+      if (state.modalOpen || state.modalHost !== fallbackHost) {
+        state = { ...state, modalOpen: false, modalHost: fallbackHost };
+        emit();
+      }
+    }
+  };
+}
+
+export function openByteDockModal(tab: ByteDockModalTab = "plugins", host?: ByteDockModalHost) {
+  const targetHost = host ?? resolvePreferredModalHost();
+  state = { ...state, modalOpen: true, modalTab: tab, modalHost: targetHost };
   emit();
 }
 
@@ -175,7 +201,7 @@ export function applyUiControlCommand(
 
   if (command.action === "open_control_center") {
     const tab: ByteDockModalTab = command.tab === "import" ? "import" : "plugins";
-    openByteDockModal(tab, state.modalHost);
+    openByteDockModal(tab, resolvePreferredModalHost());
     return { applied: true };
   }
 
@@ -246,6 +272,8 @@ export function handleControlPlaneStreamPayload(payload: unknown): void {
 export function resetPluginSlotStoreForTest() {
   processedCommandIds.clear();
   navigateHandlers.length = 0;
+  mountedModalHosts.settings = 0;
+  mountedModalHosts.chat = 0;
   state = {
     modalOpen: false,
     modalTab: "plugins",

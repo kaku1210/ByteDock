@@ -12,7 +12,6 @@ import {
   ShieldAlertIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
-  XIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { JsonNode } from "@bytedock/plugin-ui-renderer/protocol";
@@ -21,13 +20,16 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
+import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
 import { PluginNodeRenderer } from "./PluginNodeRenderer";
 import { PluginSandboxFrame } from "./PluginSandboxFrame";
 import {
   closeByteDockModal,
+  registerByteDockModalHost,
   setByteDockModalTab,
   setPendingApprovalCount,
   usePluginSlotState,
+  type ByteDockModalHost,
 } from "./PluginSlotStore";
 
 const pluginsListCommand = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -213,7 +215,7 @@ function buildEgressKpiNode(
   };
 }
 
-export function ByteDockControlCenterModal({ host }: { readonly host: "settings" | "chat" }) {
+export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockModalHost }) {
   const gt = useGT();
   const slotState = usePluginSlotState();
   const environmentId = useAtomValue(primaryEnvironmentIdAtom);
@@ -295,6 +297,9 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
     }
   };
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks mounted modal hosts so AI commands target a live host and unmount clears stale open state
+  useEffect(() => registerByteDockModalHost(host), [host]);
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches live ByteDock control-plane state from the server when the modal opens
   useEffect(() => {
     if (!isVisible || !environmentId) return;
@@ -337,8 +342,6 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
       cancelled = true;
     };
   }, [isVisible, environmentId, runInvoke, runList]);
-
-  if (!isVisible) return null;
 
   const handleLoadPlugins = async () => {
     const envId = requireEnvId();
@@ -541,33 +544,27 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
   const pendingApprovals = approvals.filter((item) => item.status === "pending");
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={gt("ByteDock Control Center")}
-      data-bytedock-control-center="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-xs"
+    <Dialog
+      open={isVisible}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) closeByteDockModal();
+      }}
     >
-      <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-lg">
-        <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <div className="flex items-center gap-2">
-            <ShieldCheckIcon className="size-4 text-primary" />
-            <h2 className="text-sm font-semibold">
+      <DialogPopup
+        data-bytedock-control-center="true"
+        data-bytedock-modal-host={host}
+        className="max-h-[85dvh] overflow-hidden sm:max-w-3xl"
+      >
+        <DialogHeader>
+          <DialogTitle>
+            <span className="flex items-center gap-2 pr-8">
+              <ShieldCheckIcon className="size-4 shrink-0 text-primary" />
               <T>ByteDock Plugins &amp; Data Importer</T>
-            </h2>
-          </div>
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            aria-label={gt("Close ByteDock Control Center")}
-            onClick={closeByteDockModal}
-          >
-            <XIcon className="size-4" />
-          </Button>
-        </header>
+            </span>
+          </DialogTitle>
+        </DialogHeader>
 
-        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-2">
+        <div className="flex shrink-0 items-center gap-2 border-y border-border bg-muted/30 px-6 py-2">
           <Button
             type="button"
             size="xs"
@@ -1028,7 +1025,7 @@ export function ByteDockControlCenterModal({ host }: { readonly host: "settings"
             </>
           )}
         </div>
-      </div>
-    </div>
+      </DialogPopup>
+    </Dialog>
   );
 }
