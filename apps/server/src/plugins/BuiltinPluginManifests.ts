@@ -142,6 +142,11 @@ export const BUILTIN_METHODS: ReadonlyArray<{
     method: "status",
     minScopes: [AuthOrchestrationReadScope],
   },
+  {
+    pluginId: "builtin.token-optimizer",
+    method: "threadSummary",
+    minScopes: [AuthOrchestrationReadScope],
+  },
   { pluginId: "builtin.bots-core", method: "status", minScopes: [AuthOrchestrationReadScope] },
   { pluginId: "community.napcat-qq", method: "status", minScopes: [AuthOrchestrationReadScope] },
   { pluginId: "builtin.legacy-importer", method: "scan", minScopes: [AuthOrchestrationReadScope] },

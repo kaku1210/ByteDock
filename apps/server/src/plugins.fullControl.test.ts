@@ -651,6 +651,26 @@ describe("ByteDock Full AI Control (OpenSpec bytedock-full-ai-control)", () => {
           });
           expect(invokeOk.isError).toBeFalsy();
 
+          const invokeSummary = yield* callAs(mainScope, "bytedock_plugin_action", {
+            action: "invoke",
+            pluginId: "builtin.token-optimizer",
+            method: "threadSummary",
+            payload: { threadId: mainThreadId },
+          });
+          expect(invokeSummary.isError).toBeFalsy();
+          const summaryData = (
+            invokeSummary.structuredContent as {
+              readonly data: {
+                readonly threadId: string;
+                readonly config: { readonly watchdogWarnAfterSec: number };
+                readonly summary: { readonly prefixHashStable: boolean };
+              };
+            }
+          ).data;
+          expect(summaryData.threadId).toBe(mainThreadId);
+          expect(summaryData.config.watchdogWarnAfterSec).toBe(45);
+          expect(summaryData.summary.prefixHashStable).toBe(true);
+
           // Privileged control-plane and direct legacy import invoke are blocked.
           const invokeCp = yield* callAs(mainScope, "bytedock_plugin_action", {
             action: "invoke",
@@ -731,7 +751,7 @@ describe("ByteDock Full AI Control (OpenSpec bytedock-full-ai-control)", () => {
           // 4. UI control bus emits real-time events and blocks unsafe navigation/nodes.
           const uiFiber = yield* cp
             .subscribeEvents()
-            .pipe(Stream.take(2), Stream.runCollect, Effect.forkChild);
+            .pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
           yield* Effect.yieldNow;
 
           const uiOpen = yield* callAs(mainScope, "bytedock_ui_control", {
@@ -740,6 +760,12 @@ describe("ByteDock Full AI Control (OpenSpec bytedock-full-ai-control)", () => {
           });
           expect(uiOpen.isError).toBeFalsy();
 
+          const uiOpenXray = yield* callAs(mainScope, "bytedock_ui_control", {
+            action: "open_control_center",
+            tab: "xray",
+          });
+          expect(uiOpenXray.isError).toBeFalsy();
+
           const uiNav = yield* callAs(mainScope, "bytedock_ui_control", {
             action: "navigate",
             path: "/settings/general",
@@ -747,7 +773,7 @@ describe("ByteDock Full AI Control (OpenSpec bytedock-full-ai-control)", () => {
           expect(uiNav.isError).toBeFalsy();
 
           const streamedUi = yield* Fiber.join(uiFiber);
-          expect(streamedUi.length).toBe(2);
+          expect(streamedUi.length).toBe(3);
           expect((streamedUi[0]?.payload as { readonly kind?: string } | undefined)?.kind).toBe(
             "ui-command",
           );

@@ -6515,6 +6515,7 @@
   "cda5dbbd7b38f362": "Não encontrado",
   "8ba6cc4e0ef0282a": "Plugins e importador de dados do ByteDock",
   "5a27775c5739f616": "Plugins e Egress Guard",
+  "a0af7b967d2cbdf5": "Context X-Ray",
   "08d05006ab28b327": "Importar T3 Code / Plus",
   "61f73c3690a50df6": [
     "Revisão ativa: ",
@@ -6614,6 +6615,108 @@
   "b258d87b5bde8b2d": "Importar dados do T3",
   "5bf094535c199ae5": "ByteDock Guard",
   "ea31972ba61e25f6": "Importar T3",
+  "72837593238692f1": "Ferramenta em execução sem nova saída ({tool})",
+  "2b4177141bc3792e": "A execução da ferramenta não gerou nova saída",
+  "72fc1d509a6fec11": "Fluxo pausado no meio da resposta",
+  "4ce7124200ef97b4": "Aguardando o primeiro token do modelo",
+  "a804d1f52b5f6f81": "Dispensar alerta do Watchdog",
+  "ccb712596a7f9937": "transmitindo…",
+  "960de866851d1986": "nativo",
+  "3aa2438bb1b1f536": "opaco",
+  "9c21694ebc31b22e": "Abrir detalhes de desempenho do Context X-Ray",
+  "40ca2e7c0047091c": [
+    "Watchdog: sem saída há ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "dd2651da2d6443fa": "X-Ray",
+  "0be6b2546df12f66": "Parar",
+  "cde00d5560304625": [
+    "TTFT ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "60c79639dd019b72": [
+    "Total ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "11b8b84c094962e0": [
+    "Cache ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "d8865b46feee668a": "O limite crítico do Watchdog deve ser maior que o limite de aviso e estar dentro das faixas válidas.",
+  "291cb3f71ba8c07d": "Configurações do Token Optimizer e Watchdog salvas e recarregadas a quente.",
+  "6d552a0499575ee5": "Tópico: {threadId}",
+  "332d763f022e133f": "Abra um tópico de chat para inspecionar latência e uso de tokens por turno.",
+  "2a000ed7cff0d7c7": "N/D (opaco)",
+  "8c92c3fc6357c208": "Estável",
+  "9e17766f1e921f29": "Desvio",
+  "d5ebe5aa22c27574": "Resumo do Context X-Ray",
+  "07a0052deced5886": "Acerto de cache",
+  "1c3ba752e33e03eb": "Meta >= {pct}%",
+  "011ce39847a8151c": "Sem fabricação",
+  "2643401568a7f08b": "Último TTFT",
+  "62ecc0791ddb52fe": "Total {dur}",
+  "1297b09030ce3782": "Nenhum turno ainda",
+  "e6078aa23da65524": "TPS efetivo",
+  "2131406fe1f505fb": "Saída {tokens}",
+  "8962be00b1733134": "CacheGuard",
+  "e9f55a22209d2848": "Turnos: {turns} · Compactações: {compacts}",
+  "81ba8da2c4f5e52b": "Aguardando hook",
+  "223f0517d9e30928": "ao vivo",
+  "36aee8929dc43693": "Desempenho do tópico e Context X-Ray",
+  "eb02c29e18a70481": "Atualizar X-Ray",
+  "5b66cd792512a36c": "Garantia de transparência em 3 estados do X-Ray",
+  "92a8b0377e7f4f8d": "measured = tokens de leitura de cache informados; native = totais sem detalhamento de cache; opaque = provedor não expôs contadores (nunca fabricado).",
+  "b7f0f115a66cfdc9": "Detalhamento acumulado de tokens do tópico",
+  "0c752def810acab0": [
+    "Contexto: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "073748d140d6cebd": "Entrada total",
+  "1686f55387d9c8bc": "Leitura de cache",
+  "3ae26c64f7ab855e": "Gravação de cache",
+  "2508291fa7a57e1f": "Saída / Raciocínio",
+  "9cca5faa31040354": "Registro de latência e tokens por turno",
+  "39448219ddf7be71": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " turnos"
+  ],
+  "c8bf04a8ab6dcd6e": "Nenhum turno do provedor registrado neste tópico ainda. Envie uma mensagem para ver TTFT ao vivo, TPS efetivo e taxas reais de cache.",
+  "8257030da7a4ad4e": "Modelo",
+  "0e844dfc85fb831f": "TTFT",
+  "7853bd9e23f25bb6": "Total",
+  "97e6d74f4e1e4e34": "TPS",
+  "a267dfe357feee69": "Ent / Saí",
+  "896e2017b3a9f37c": "Cache",
+  "421101b1b99e21d2": "Barra de status e Watchdog antitravamento",
+  "e901e3b6faf20ef8": "Mostrar TTFT/TPS/Cache na barra de status",
+  "3685aad9170ac793": "Ativar alerta suave do Watchdog",
+  "c76aae6d33ad9a99": "Meta de cache (%)",
+  "90c50b9d79a93a10": "Aviso Watchdog (s)",
+  "acf4a37107ce4c48": "Crítico Watchdog (s)",
   "32fe2ebd935fa02d": "Erro de rede",
   "11657a3265f539e2": "Mostrar no Finder",
   "a41d6c3a9ed7fde7": "Mostrar no Explorador de Arquivos",
@@ -8252,7 +8355,6 @@
     " para usar o ditado do OpenRouter."
   ],
   "d7acad5dde4c1d1b": "Verificando se há uma chave de API…",
-  "8257030da7a4ad4e": "Modelo",
   "418d9b293a8983a9": [
     "Peça a um administrador de ",
     {
@@ -9461,7 +9563,6 @@
   "74e7837237a78a93": "Pausar gravação",
   "88838a688670154d": "Reproduzir gravação",
   "9aa5deeebe227be6": "Posição de reprodução da gravação",
-  "0be6b2546df12f66": "Parar",
   "7dbd7e8943e8931f": "Abrindo microfone…",
   "efa31f38b611e912": "Não foi possível reproduzir esta gravação. Tente gravar novamente.",
   "0cebac0a2a6bdc99": "iPhone e iPad",
@@ -12813,7 +12914,6 @@
   "b4ae29a86f8a6ade": "Tokens",
   "49c4cd88ca4d260a": "Nenhuma atividade nesta janela.",
   "0a492183a4c7bb3d": "Sem preço",
-  "7853bd9e23f25bb6": "Total",
   "873ae13250e5bc5c": "Todos os ambientes",
   "e051bdc6c63a0b4b": "Nenhum ambiente conectado.",
   "b11af3f3da3d494e": "Os totais são parciais enquanto os ambientes selecionados são verificados.",

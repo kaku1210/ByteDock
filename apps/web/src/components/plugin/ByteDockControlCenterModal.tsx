@@ -4,6 +4,7 @@ import { createEnvironmentRpcCommand } from "@t3tools/client-runtime/state/runti
 import { AsyncResult } from "effect/reactivity";
 import { T, useGT, Var } from "gt-react";
 import {
+  ActivityIcon,
   AlertTriangleIcon,
   CheckIcon,
   DownloadIcon,
@@ -23,6 +24,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
 import { PluginNodeRenderer } from "./PluginNodeRenderer";
 import { PluginSandboxFrame } from "./PluginSandboxFrame";
+import { TokenOptimizerXRayPanel } from "./TokenOptimizerXRayPanel";
 import {
   closeByteDockModal,
   registerByteDockModalHost,
@@ -582,6 +584,15 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
           <Button
             type="button"
             size="xs"
+            variant={slotState.modalTab === "xray" ? "default" : "ghost"}
+            onClick={() => setByteDockModalTab("xray")}
+          >
+            <ActivityIcon className="size-3.5" />
+            <T>Context X-Ray</T>
+          </Button>
+          <Button
+            type="button"
+            size="xs"
             variant={slotState.modalTab === "import" ? "default" : "ghost"}
             onClick={() => setByteDockModalTab("import")}
           >
@@ -871,6 +882,16 @@ export function ByteDockControlCenterModal({ host }: { readonly host: ByteDockMo
                 ) : null}
               </section>
             </>
+          ) : slotState.modalTab === "xray" ? (
+            <TokenOptimizerXRayPanel
+              environmentId={environmentId}
+              configMtimeMs={configMtimeMs}
+              onConfigSaved={() => {
+                if (environmentId) {
+                  void refreshControlPlane(environmentId);
+                }
+              }}
+            />
           ) : (
             <>
               <p className="text-xs text-muted-foreground">

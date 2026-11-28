@@ -256,7 +256,7 @@ const ByteDockPluginActionTool = Tool.make("bytedock_plugin_action", {
 const ByteDockUiControlTool = Tool.make("bytedock_ui_control", {
   ...shared,
   description:
-    "Control ByteDock Web/Desktop UI in real time via the control-plane event bus: open/close ByteDock Control Center ('plugins' or 'import' tab), open/close the right plugin dock panel with a validated 12-primitive JsonNode, navigate to a safe internal '/' route, or display a notification banner.",
+    "Control ByteDock Web/Desktop UI in real time via the control-plane event bus: open/close ByteDock Control Center ('plugins', 'xray', or 'import' tab), open/close the right plugin dock panel with a validated 12-primitive JsonNode, navigate to a safe internal '/' route, or display a notification banner.",
   parameters: Schema.Struct({
     action: Schema.Literals([
       "open_control_center",
@@ -266,7 +266,7 @@ const ByteDockUiControlTool = Tool.make("bytedock_ui_control", {
       "navigate",
       "notify",
     ]),
-    tab: Schema.optionalKey(Schema.Literals(["plugins", "import"])),
+    tab: Schema.optionalKey(Schema.Literals(["plugins", "xray", "import"])),
     pluginId: Schema.optionalKey(Schema.String),
     node: Schema.optionalKey(Schema.Unknown),
     path: Schema.optionalKey(Schema.String),

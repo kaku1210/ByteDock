@@ -6516,6 +6516,7 @@
   "cda5dbbd7b38f362": "Introuvable",
   "8ba6cc4e0ef0282a": "Plugins et importateur de données ByteDock",
   "5a27775c5739f616": "Plugins et Egress Guard",
+  "a0af7b967d2cbdf5": "Context X-Ray",
   "08d05006ab28b327": "Importer T3 Code / Plus",
   "61f73c3690a50df6": [
     "Révision active : ",
@@ -6615,6 +6616,108 @@
   "b258d87b5bde8b2d": "Importer des données T3",
   "5bf094535c199ae5": "ByteDock Guard",
   "ea31972ba61e25f6": "Importer T3",
+  "72837593238692f1": "Outil en cours sans nouvelle sortie ({tool})",
+  "2b4177141bc3792e": "L’exécution de l’outil n’a produit aucune nouvelle sortie",
+  "72fc1d509a6fec11": "Flux interrompu en cours de réponse",
+  "4ce7124200ef97b4": "En attente du premier jeton du modèle",
+  "a804d1f52b5f6f81": "Ignorer l’alerte Watchdog",
+  "ccb712596a7f9937": "diffusion…",
+  "960de866851d1986": "natif",
+  "3aa2438bb1b1f536": "opaque",
+  "9c21694ebc31b22e": "Ouvrir le détail des performances Context X-Ray",
+  "40ca2e7c0047091c": [
+    "Watchdog : silencieux depuis ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "dd2651da2d6443fa": "X-Ray",
+  "0be6b2546df12f66": "Arrêter",
+  "cde00d5560304625": [
+    "TTFT ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "60c79639dd019b72": [
+    "Total ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "11b8b84c094962e0": [
+    "Cache ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "d8865b46feee668a": "Le seuil critique du Watchdog doit être supérieur au seuil d’avertissement et dans les plages valides.",
+  "291cb3f71ba8c07d": "Paramètres Token Optimizer et Watchdog enregistrés et rechargés à chaud.",
+  "6d552a0499575ee5": "Fil : {threadId}",
+  "332d763f022e133f": "Ouvrez un fil de discussion pour inspecter la latence et les jetons par tour.",
+  "2a000ed7cff0d7c7": "N/A (opaque)",
+  "8c92c3fc6357c208": "Stable",
+  "9e17766f1e921f29": "Dérive",
+  "d5ebe5aa22c27574": "Synthèse Context X-Ray",
+  "07a0052deced5886": "Taux de cache",
+  "1c3ba752e33e03eb": "Cible >= {pct}%",
+  "011ce39847a8151c": "Aucune fabrication",
+  "2643401568a7f08b": "Dernier TTFT",
+  "62ecc0791ddb52fe": "Total {dur}",
+  "1297b09030ce3782": "Aucun tour encore",
+  "e6078aa23da65524": "TPS effectif",
+  "2131406fe1f505fb": "Sortie {tokens}",
+  "8962be00b1733134": "CacheGuard",
+  "e9f55a22209d2848": "Tours : {turns} · Compactions : {compacts}",
+  "81ba8da2c4f5e52b": "En attente de hook",
+  "223f0517d9e30928": "direct",
+  "36aee8929dc43693": "Performances du fil et Context X-Ray",
+  "eb02c29e18a70481": "Actualiser X-Ray",
+  "5b66cd792512a36c": "Garantie d’honnêteté tri-état X-Ray",
+  "92a8b0377e7f4f8d": "measured = jetons lus depuis le cache reportés ; native = totaux sans détail cache ; opaque = aucun compteur exposé (jamais inventé).",
+  "b7f0f115a66cfdc9": "Répartition cumulée des jetons du fil",
+  "0c752def810acab0": [
+    "Contexte : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "073748d140d6cebd": "Entrée totale",
+  "1686f55387d9c8bc": "Lecture cache",
+  "3ae26c64f7ab855e": "Écriture cache",
+  "2508291fa7a57e1f": "Sortie / Raisonnement",
+  "9cca5faa31040354": "Journal latence et jetons par tour",
+  "39448219ddf7be71": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " tours"
+  ],
+  "c8bf04a8ab6dcd6e": "Aucun tour fournisseur enregistré dans ce fil. Envoyez un message pour voir le TTFT, le TPS effectif et le taux de cache réel.",
+  "8257030da7a4ad4e": "Modèle",
+  "0e844dfc85fb831f": "TTFT",
+  "7853bd9e23f25bb6": "Total",
+  "97e6d74f4e1e4e34": "TPS",
+  "a267dfe357feee69": "Ent / Sort",
+  "896e2017b3a9f37c": "Cache",
+  "421101b1b99e21d2": "Barre d’état et Watchdog anti-blocage",
+  "e901e3b6faf20ef8": "Afficher TTFT/TPS/Cache dans la barre d’état",
+  "3685aad9170ac793": "Activer le Watchdog anti-blocage discret",
+  "c76aae6d33ad9a99": "Cible cache (%)",
+  "90c50b9d79a93a10": "Alerte Watchdog (s)",
+  "acf4a37107ce4c48": "Critique Watchdog (s)",
   "32fe2ebd935fa02d": "Erreur réseau",
   "11657a3265f539e2": "Afficher dans le Finder",
   "a41d6c3a9ed7fde7": "Afficher dans l’Explorateur de fichiers",
@@ -8253,7 +8356,6 @@
     " pour utiliser la dictée OpenRouter."
   ],
   "d7acad5dde4c1d1b": "Recherche d’une clé API…",
-  "8257030da7a4ad4e": "Modèle",
   "418d9b293a8983a9": [
     "Demandez à un administrateur de ",
     {
@@ -9462,7 +9564,6 @@
   "74e7837237a78a93": "Mettre l’enregistrement en pause",
   "88838a688670154d": "Lire l’enregistrement",
   "9aa5deeebe227be6": "Position de lecture de l’enregistrement",
-  "0be6b2546df12f66": "Arrêter",
   "7dbd7e8943e8931f": "Ouverture du microphone…",
   "efa31f38b611e912": "Impossible de lire cet enregistrement. Essayez de réenregistrer.",
   "0cebac0a2a6bdc99": "iPhone et iPad",
@@ -12813,7 +12914,6 @@
   "b4ae29a86f8a6ade": "Tokens",
   "49c4cd88ca4d260a": "Aucune activité dans cette fenêtre.",
   "0a492183a4c7bb3d": "Sans prix",
-  "7853bd9e23f25bb6": "Total",
   "873ae13250e5bc5c": "Tous les environnements",
   "e051bdc6c63a0b4b": "Aucun environnement connecté.",
   "b11af3f3da3d494e": "Les totaux sont partiels pendant l’analyse des environnements sélectionnés.",

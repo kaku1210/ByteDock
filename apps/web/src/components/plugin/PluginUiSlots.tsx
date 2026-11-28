@@ -26,6 +26,11 @@ import {
   registerUiNavigateHandler,
   usePluginSlotState,
 } from "./PluginSlotStore";
+import {
+  TokenOptimizerMetricsPill,
+  TokenOptimizerWatchdogBanner,
+  useTokenOptimizerObservability,
+} from "./TokenOptimizerStatusBar";
 
 type SubscribePluginEventsFn = (
   tag: typeof WS_METHODS.pluginsSubscribe,
@@ -188,11 +193,13 @@ export function PluginTimelineCardHost({ rowId }: { readonly rowId: string }) {
 
 /**
  * Seam 11d (`statusBarItem` slot in ChatView):
- * Compact bottom status strip exposing Egress Guard shield, Plugins, Legacy Import trigger, and AI UI notifications.
+ * Compact bottom status strip exposing live TTFT/TPS/Cache metrics, anti-stall Watchdog,
+ * Egress Guard shield, Plugins, Legacy Import trigger, and AI UI notifications.
  */
 export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }) {
   const gt = useGT();
   const { pendingApprovalCount, activeNotification } = usePluginSlotState();
+  const { environmentId, summary, config } = useTokenOptimizerObservability(threadId);
   return (
     <div
       data-bytedock-slot="statusBarItem"
@@ -200,6 +207,11 @@ export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }
       className="mt-1.5 flex flex-col gap-1 px-1 text-2xs text-muted-foreground"
     >
       <PluginControlBusBridge />
+      <TokenOptimizerWatchdogBanner
+        threadId={threadId}
+        environmentId={environmentId}
+        summary={summary}
+      />
       {activeNotification ? (
         <div
           data-bytedock-ui-notification="true"
@@ -226,35 +238,40 @@ export function PluginStatusBarStrip({ threadId }: { readonly threadId: string }
           </button>
         </div>
       ) : null}
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => openByteDockModal("plugins", "chat")}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
-        >
-          <ShieldCheckIcon className="size-3 text-success" />
-          <span>
-            <T>ByteDock Guard</T>
-          </span>
-          {pendingApprovalCount > 0 ? (
-            <span
-              data-bytedock-pending-approvals={pendingApprovalCount}
-              className="rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning"
-            >
-              {pendingApprovalCount}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center">
+          <TokenOptimizerMetricsPill threadId={threadId} summary={summary} config={config} />
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openByteDockModal("plugins", "chat", threadId)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+          >
+            <ShieldCheckIcon className="size-3 text-success" />
+            <span>
+              <T>ByteDock Guard</T>
             </span>
-          ) : null}
-        </button>
-        <button
-          type="button"
-          onClick={() => openByteDockModal("import", "chat")}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
-        >
-          <DownloadIcon className="size-3" />
-          <span>
-            <T>Import T3</T>
-          </span>
-        </button>
+            {pendingApprovalCount > 0 ? (
+              <span
+                data-bytedock-pending-approvals={pendingApprovalCount}
+                className="rounded-full bg-warning/20 px-1.5 py-0.5 font-mono text-3xs font-medium text-warning"
+              >
+                {pendingApprovalCount}
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            onClick={() => openByteDockModal("import", "chat", threadId)}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground"
+          >
+            <DownloadIcon className="size-3" />
+            <span>
+              <T>Import T3</T>
+            </span>
+          </button>
+        </div>
       </div>
       <ByteDockControlCenterModal host="chat" />
     </div>

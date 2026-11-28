@@ -6514,6 +6514,7 @@
   "cda5dbbd7b38f362": "Nicht gefunden",
   "8ba6cc4e0ef0282a": "ByteDock Plugins & Datenimport",
   "5a27775c5739f616": "Plugins & Egress Guard",
+  "a0af7b967d2cbdf5": "Context X-Ray",
   "08d05006ab28b327": "T3 Code / Plus importieren",
   "61f73c3690a50df6": [
     "Aktive Revision: ",
@@ -6613,6 +6614,109 @@
   "b258d87b5bde8b2d": "T3-Daten importieren",
   "5bf094535c199ae5": "ByteDock Guard",
   "ea31972ba61e25f6": "T3 importieren",
+  "72837593238692f1": "Tool läuft ohne neue Ausgabe ({tool})",
+  "2b4177141bc3792e": "Tool-Ausführung liefert keine neue Ausgabe",
+  "72fc1d509a6fec11": "Antwort-Stream pausiert",
+  "4ce7124200ef97b4": "Warte auf das erste Modell-Token",
+  "a804d1f52b5f6f81": "Watchdog-Hinweis schließen",
+  "ccb712596a7f9937": "streamt…",
+  "960de866851d1986": "nativ",
+  "3aa2438bb1b1f536": "opak",
+  "9c21694ebc31b22e": "Context X-Ray Leistungsdetails öffnen",
+  "40ca2e7c0047091c": [
+    "Watchdog: seit ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " still"
+  ],
+  "dd2651da2d6443fa": "X-Ray",
+  "0be6b2546df12f66": "Stoppen",
+  "cde00d5560304625": [
+    "TTFT ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "60c79639dd019b72": [
+    "Gesamt ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "11b8b84c094962e0": [
+    "Cache ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "d8865b46feee668a": "Der kritische Watchdog-Schwellenwert muss über dem Warnwert und innerhalb der gültigen Grenzen liegen.",
+  "291cb3f71ba8c07d": "Token Optimizer- & Watchdog-Einstellungen gespeichert und neu geladen.",
+  "6d552a0499575ee5": "Thread: {threadId}",
+  "332d763f022e133f": "Öffne einen Chat-Thread, um Latenz und Token-Nutzung pro Schritt zu prüfen.",
+  "2a000ed7cff0d7c7": "k. A. (opak)",
+  "8c92c3fc6357c208": "Stabil",
+  "9e17766f1e921f29": "Drift",
+  "d5ebe5aa22c27574": "Context X-Ray Übersicht",
+  "07a0052deced5886": "Cache-Treffer",
+  "1c3ba752e33e03eb": "Ziel >= {pct}%",
+  "011ce39847a8151c": "Streng unverfälscht",
+  "2643401568a7f08b": "Letzter TTFT",
+  "62ecc0791ddb52fe": "Gesamt {dur}",
+  "1297b09030ce3782": "Noch keine Schritte",
+  "e6078aa23da65524": "Effektive TPS",
+  "2131406fe1f505fb": "Ausgabe {tokens}",
+  "8962be00b1733134": "CacheGuard",
+  "e9f55a22209d2848": "Schritte: {turns} · Komprimierungen: {compacts}",
+  "81ba8da2c4f5e52b": "Wartet auf Hook",
+  "223f0517d9e30928": "live",
+  "36aee8929dc43693": "Thread-Leistung & Context X-Ray",
+  "eb02c29e18a70481": "X-Ray aktualisieren",
+  "5b66cd792512a36c": "Dreistufige X-Ray-Ehrlichkeitsgarantie",
+  "92a8b0377e7f4f8d": "measured = vom Anbieter gemeldete Cache-Lese-Tokens; native = Token-Summen ohne Cache-Aufschlüsselung; opaque = keine Zähler verfügbar (nie erfunden).",
+  "b7f0f115a66cfdc9": "Kumulierte Thread-Token-Aufschlüsselung",
+  "0c752def810acab0": [
+    "Kontext: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "073748d140d6cebd": "Eingabe gesamt",
+  "1686f55387d9c8bc": "Cache gelesen",
+  "3ae26c64f7ab855e": "Cache geschrieben",
+  "2508291fa7a57e1f": "Ausgabe / Reasoning",
+  "9cca5faa31040354": "Latenz- & Token-Protokoll pro Schritt",
+  "39448219ddf7be71": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " Schritte"
+  ],
+  "c8bf04a8ab6dcd6e": "Noch keine Anbieter-Schritte in diesem Thread. Sende eine Nachricht, um Live-TTFT, Streaming-TPS und echte Cache-Quoten zu sehen.",
+  "8257030da7a4ad4e": "Modell",
+  "0e844dfc85fb831f": "TTFT",
+  "7853bd9e23f25bb6": "Gesamt",
+  "97e6d74f4e1e4e34": "TPS",
+  "a267dfe357feee69": "Ein / Aus",
+  "896e2017b3a9f37c": "Cache",
+  "421101b1b99e21d2": "Statusleiste & Anti-Stall-Watchdog",
+  "e901e3b6faf20ef8": "TTFT/TPS/Cache in Statusleiste anzeigen",
+  "3685aad9170ac793": "Sanften Anti-Stall-Watchdog aktivieren",
+  "c76aae6d33ad9a99": "Cache-Ziel (%)",
+  "90c50b9d79a93a10": "Watchdog Warnung (Sek.)",
+  "acf4a37107ce4c48": "Watchdog Kritisch (Sek.)",
   "32fe2ebd935fa02d": "Netzwerkfehler",
   "11657a3265f539e2": "Im Finder anzeigen",
   "a41d6c3a9ed7fde7": "Im Explorer anzeigen",
@@ -8253,7 +8357,6 @@
     ", um OpenRouter-Diktat zu nutzen."
   ],
   "d7acad5dde4c1d1b": "Es wird nach einem API-Schlüssel gesucht…",
-  "8257030da7a4ad4e": "Modell",
   "418d9b293a8983a9": [
     "Bitte einen Administrator auf ",
     {
@@ -9462,7 +9565,6 @@
   "74e7837237a78a93": "Aufnahme pausieren",
   "88838a688670154d": "Aufnahme abspielen",
   "9aa5deeebe227be6": "Wiedergabeposition der Aufnahme",
-  "0be6b2546df12f66": "Stoppen",
   "7dbd7e8943e8931f": "Mikrofon wird geöffnet…",
   "efa31f38b611e912": "Diese Aufnahme konnte nicht abgespielt werden. Versuch erneut aufzunehmen.",
   "0cebac0a2a6bdc99": "iPhone und iPad",
@@ -12815,7 +12917,6 @@
   "b4ae29a86f8a6ade": "Tokens",
   "49c4cd88ca4d260a": "Keine Aktivität in diesem Zeitraum.",
   "0a492183a4c7bb3d": "Ohne Preis",
-  "7853bd9e23f25bb6": "Gesamt",
   "873ae13250e5bc5c": "Alle Umgebungen",
   "e051bdc6c63a0b4b": "Keine Umgebungen verbunden.",
   "b11af3f3da3d494e": "Die Summen sind unvollständig, während ausgewählte Umgebungen scannen.",

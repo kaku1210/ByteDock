@@ -32,6 +32,10 @@ import {
   type HostApprovalMutation,
   type PluginApprovalStoreService,
 } from "./PluginApprovalStore.ts";
+import {
+  makeTokenOptimizerTelemetry,
+  type TokenOptimizerTelemetryService,
+} from "./TokenOptimizerTelemetry.ts";
 
 export const CONTROL_PLANE_PLUGIN_ID = "builtin.control-plane";
 export const CONTROL_PLANE_EVENTS_TOPIC = "events";
@@ -68,7 +72,7 @@ export interface UiControlCommand {
     | "close_dock_panel"
     | "navigate"
     | "notify";
-  readonly tab?: "plugins" | "import" | undefined;
+  readonly tab?: "plugins" | "xray" | "import" | undefined;
   readonly pluginId?: string | undefined;
   readonly node?: unknown;
   readonly path?: string | undefined;
@@ -185,6 +189,7 @@ interface InternalRuntimeState {
 export interface PluginControlPlaneService {
   readonly kernel: PluginKernel.PluginKernelService;
   readonly approvals: PluginApprovalStoreService;
+  readonly tokenOptimizer: TokenOptimizerTelemetryService;
   readonly stateDir: string;
   readonly pluginConfigPath: string;
   readonly pluginsDir: string;
@@ -412,6 +417,7 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
     logsDir: options.logsDir,
     defaultTtlMs: options.approvalTtlMs,
   });
+  const tokenOptimizer = makeTokenOptimizerTelemetry();
   const stateRef = yield* Ref.make<InternalRuntimeState>(buildDefaultState());
   const lastWrittenMtimeRef = yield* Ref.make<number | undefined>(undefined);
   const lastUiCommandRef = yield* Ref.make<UiControlCommand | undefined>(undefined);
@@ -445,6 +451,7 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
         manifestScopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
       });
     }
+    yield* tokenOptimizer.attachKernelHooks(options.kernel, active.rev);
   });
 
   const syncRuntimeEffects = Effect.fn("PluginControlPlane.syncRuntimeEffects")(function* (
@@ -1333,6 +1340,7 @@ export const makePluginControlPlane = Effect.fn("PluginControlPlane.make")(funct
   return {
     kernel: options.kernel,
     approvals,
+    tokenOptimizer,
     stateDir: options.stateDir,
     pluginConfigPath: options.pluginConfigPath,
     pluginsDir: options.pluginsDir,

@@ -6518,6 +6518,7 @@
   "cda5dbbd7b38f362": "Not found",
   "8ba6cc4e0ef0282a": "ByteDock Plugins & Data Importer",
   "5a27775c5739f616": "Plugins & Egress Guard",
+  "a0af7b967d2cbdf5": "Context X-Ray",
   "08d05006ab28b327": "Import T3 Code / Plus",
   "61f73c3690a50df6": [
     "Active revision: ",
@@ -6619,6 +6620,108 @@
   "b258d87b5bde8b2d": "Import T3 Data",
   "5bf094535c199ae5": "ByteDock Guard",
   "ea31972ba61e25f6": "Import T3",
+  "72837593238692f1": "Tool running without new output ({tool})",
+  "2b4177141bc3792e": "Tool execution has produced no new output",
+  "72fc1d509a6fec11": "Stream paused mid-response",
+  "4ce7124200ef97b4": "Awaiting first model token",
+  "a804d1f52b5f6f81": "Dismiss watchdog alert",
+  "ccb712596a7f9937": "streaming…",
+  "960de866851d1986": "native",
+  "3aa2438bb1b1f536": "opaque",
+  "9c21694ebc31b22e": "Open Context X-Ray performance breakdown",
+  "40ca2e7c0047091c": [
+    "Watchdog: silent for ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "dd2651da2d6443fa": "X-Ray",
+  "0be6b2546df12f66": "Stop",
+  "cde00d5560304625": [
+    "TTFT ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "60c79639dd019b72": [
+    "Total ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "11b8b84c094962e0": [
+    "Cache ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "d8865b46feee668a": "Watchdog critical threshold must be greater than warning threshold and within valid ranges.",
+  "291cb3f71ba8c07d": "Token Optimizer & Watchdog settings saved and hot-reloaded.",
+  "6d552a0499575ee5": "Thread: {threadId}",
+  "332d763f022e133f": "Open a chat thread to inspect per-turn latency and token usage.",
+  "2a000ed7cff0d7c7": "N/A (opaque)",
+  "8c92c3fc6357c208": "Stable",
+  "9e17766f1e921f29": "Drift",
+  "d5ebe5aa22c27574": "Context X-Ray Summary",
+  "07a0052deced5886": "Cache Hit",
+  "1c3ba752e33e03eb": "Target >= {pct}%",
+  "011ce39847a8151c": "Strict no-fabrication",
+  "2643401568a7f08b": "Latest TTFT",
+  "62ecc0791ddb52fe": "Total {dur}",
+  "1297b09030ce3782": "No turns yet",
+  "e6078aa23da65524": "Effective TPS",
+  "2131406fe1f505fb": "Output {tokens}",
+  "8962be00b1733134": "CacheGuard",
+  "e9f55a22209d2848": "Turns: {turns} · Compacts: {compacts}",
+  "81ba8da2c4f5e52b": "Waiting for hook",
+  "223f0517d9e30928": "live",
+  "36aee8929dc43693": "Thread Performance & Context X-Ray",
+  "eb02c29e18a70481": "Refresh X-Ray",
+  "5b66cd792512a36c": "Tri-State X-Ray Honesty Guarantee",
+  "92a8b0377e7f4f8d": "measured = provider-reported cache read tokens; native = provider token totals without cache breakdown; opaque = provider did not expose counters (never fabricated).",
+  "b7f0f115a66cfdc9": "Cumulative Thread Token Breakdown",
+  "0c752def810acab0": [
+    "Context: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "073748d140d6cebd": "Input Total",
+  "1686f55387d9c8bc": "Cache Read",
+  "3ae26c64f7ab855e": "Cache Write",
+  "2508291fa7a57e1f": "Output / Reasoning",
+  "9cca5faa31040354": "Per-Turn Latency & Token Ledger",
+  "39448219ddf7be71": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " turns"
+  ],
+  "c8bf04a8ab6dcd6e": "No provider turns recorded in this thread yet. Send a message to see live TTFT, streaming TPS, and honest cache hit rates.",
+  "8257030da7a4ad4e": "Model",
+  "0e844dfc85fb831f": "TTFT",
+  "7853bd9e23f25bb6": "Total",
+  "97e6d74f4e1e4e34": "TPS",
+  "a267dfe357feee69": "In / Out",
+  "896e2017b3a9f37c": "Cache",
+  "421101b1b99e21d2": "Status Bar & Anti-Stall Watchdog Controls",
+  "e901e3b6faf20ef8": "Show TTFT/TPS/Cache in status bar",
+  "3685aad9170ac793": "Enable gentle anti-stall Watchdog",
+  "c76aae6d33ad9a99": "Cache Target (%)",
+  "90c50b9d79a93a10": "Watchdog Warn (sec)",
+  "acf4a37107ce4c48": "Watchdog Critical (sec)",
   "32fe2ebd935fa02d": "Network error",
   "11657a3265f539e2": "Reveal in Finder",
   "a41d6c3a9ed7fde7": "Reveal in File Explorer",
@@ -8262,7 +8365,6 @@
     " to use OpenRouter dictation."
   ],
   "d7acad5dde4c1d1b": "Checking for an API key…",
-  "8257030da7a4ad4e": "Model",
   "418d9b293a8983a9": [
     "Ask an administrator on ",
     {
@@ -9472,7 +9574,6 @@
   "74e7837237a78a93": "Pause recording",
   "88838a688670154d": "Play recording",
   "9aa5deeebe227be6": "Recording playback position",
-  "0be6b2546df12f66": "Stop",
   "7dbd7e8943e8931f": "Opening microphone…",
   "efa31f38b611e912": "Could not play this recording. Try recording again.",
   "0cebac0a2a6bdc99": "iPhone and iPad",
@@ -12825,7 +12926,6 @@
   "b4ae29a86f8a6ade": "Tokens",
   "49c4cd88ca4d260a": "No activity in this window.",
   "0a492183a4c7bb3d": "Unpriced",
-  "7853bd9e23f25bb6": "Total",
   "873ae13250e5bc5c": "All environments",
   "e051bdc6c63a0b4b": "No environments connected.",
   "b11af3f3da3d494e": "Totals are partial while selected environments scan.",

@@ -19,6 +19,10 @@ export const TokenOptimizerConfigSchema = Schema.Struct({
   cacheGuardActive: Schema.Boolean,
   steadyStateTargetPct: Schema.Int.check(Schema.isBetween({ minimum: 50, maximum: 99 })),
   xrayHonestyMode: Schema.Literals(["strict-no-fabrication"]),
+  showStatusBarMetrics: Schema.Boolean,
+  watchdogEnabled: Schema.Boolean,
+  watchdogWarnAfterSec: Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 600 })),
+  watchdogCriticalAfterSec: Schema.Int.check(Schema.isBetween({ minimum: 30, maximum: 1800 })),
 });
 export type TokenOptimizerConfig = typeof TokenOptimizerConfigSchema.Type;
 
@@ -57,6 +61,10 @@ export const DEFAULT_BUILTIN_PLUGIN_CONFIGS: Readonly<
     cacheGuardActive: true,
     steadyStateTargetPct: 90,
     xrayHonestyMode: "strict-no-fabrication",
+    showStatusBarMetrics: true,
+    watchdogEnabled: true,
+    watchdogWarnAfterSec: 45,
+    watchdogCriticalAfterSec: 120,
   } satisfies TokenOptimizerConfig,
   "builtin.bots-core": {
     soulPrefixGuard: true,
@@ -254,6 +262,16 @@ export function validatePluginConfig(
           allowUdp: effective.allowUdp,
         },
       };
+    }
+    if (pluginId === "builtin.token-optimizer") {
+      const cfg = decoded as unknown as TokenOptimizerConfig;
+      if (cfg.watchdogCriticalAfterSec <= cfg.watchdogWarnAfterSec) {
+        return {
+          ok: false,
+          message:
+            'Invalid config for "builtin.token-optimizer": watchdogCriticalAfterSec must be greater than watchdogWarnAfterSec.',
+        };
+      }
     }
     return { ok: true, config: decoded };
   } catch (cause) {

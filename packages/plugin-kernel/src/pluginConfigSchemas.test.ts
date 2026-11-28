@@ -14,17 +14,29 @@ describe("pluginConfigSchemas", () => {
     const validOpt = validatePluginConfig("builtin.token-optimizer", {
       cacheGuardActive: false,
       steadyStateTargetPct: 85,
+      watchdogWarnAfterSec: 30,
+      watchdogCriticalAfterSec: 90,
     });
     expect(validOpt.ok).toBe(true);
     if (validOpt.ok) {
       expect(validOpt.config.cacheGuardActive).toBe(false);
       expect(validOpt.config.steadyStateTargetPct).toBe(85);
+      expect(validOpt.config.showStatusBarMetrics).toBe(true);
+      expect(validOpt.config.watchdogEnabled).toBe(true);
+      expect(validOpt.config.watchdogWarnAfterSec).toBe(30);
+      expect(validOpt.config.watchdogCriticalAfterSec).toBe(90);
     }
 
     const badOpt = validatePluginConfig("builtin.token-optimizer", {
       steadyStateTargetPct: 120,
     });
     expect(badOpt.ok).toBe(false);
+
+    const badWatchdogOrder = validatePluginConfig("builtin.token-optimizer", {
+      watchdogWarnAfterSec: 120,
+      watchdogCriticalAfterSec: 60,
+    });
+    expect(badWatchdogOrder.ok).toBe(false);
 
     const badNapcat = validatePluginConfig("community.napcat-qq", {
       rateLimitPerMin: 0,

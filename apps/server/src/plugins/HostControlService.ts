@@ -507,7 +507,7 @@ export interface HostControlServiceShape {
   readonly runUiControl: (input: {
     readonly action: UiControlCommand["action"];
     readonly actor: ControlPlaneActor;
-    readonly tab?: "plugins" | "import" | undefined;
+    readonly tab?: "plugins" | "xray" | "import" | undefined;
     readonly pluginId?: string | undefined;
     readonly node?: unknown;
     readonly path?: string | undefined;
@@ -1025,7 +1025,8 @@ export const makeHostControlService = (deps: HostControlDependencies): HostContr
             {
               action: "open_control_center",
               risk: "low-risk",
-              description: "Open ByteDock Control Center modal on 'plugins' or 'import' tab.",
+              description:
+                "Open ByteDock Control Center modal on 'plugins', 'xray', or 'import' tab.",
             },
             {
               action: "close_control_center",

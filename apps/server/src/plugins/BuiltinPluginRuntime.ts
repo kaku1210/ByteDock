@@ -197,13 +197,59 @@ export const invokeBuiltinPluginMethod = Effect.fn(
     }
   }
 
-  if (input.pluginId === "builtin.token-optimizer" && input.method === "status") {
-    return {
-      tracks: ["stateless-api", "stateful-cli", "stateful-acp"],
+  if (input.pluginId === "builtin.token-optimizer") {
+    const configSummary = {
       cacheGuardActive: Boolean(pluginConfig.cacheGuardActive ?? true),
       steadyStateTargetPct: Number(pluginConfig.steadyStateTargetPct ?? 90),
       xrayHonestyMode: String(pluginConfig.xrayHonestyMode ?? "strict-no-fabrication"),
+      showStatusBarMetrics: Boolean(pluginConfig.showStatusBarMetrics ?? true),
+      watchdogEnabled: Boolean(pluginConfig.watchdogEnabled ?? true),
+      watchdogWarnAfterSec: Number(pluginConfig.watchdogWarnAfterSec ?? 45),
+      watchdogCriticalAfterSec: Number(pluginConfig.watchdogCriticalAfterSec ?? 120),
     };
+    if (input.method === "status") {
+      return {
+        tracks: ["stateless-api", "stateful-cli", "stateful-acp"],
+        ...configSummary,
+        hostOverview: input.controlPlane?.tokenOptimizer.getOverview() ?? {
+          trackedThreads: 0,
+          totalObservedTurns: 0,
+          totalCompactBoundaries: 0,
+          totalModelSwitches: 0,
+          prefixViolations: 0,
+        },
+      };
+    }
+    if (input.method === "threadSummary") {
+      const body = (input.payload ?? {}) as { readonly threadId?: unknown };
+      const threadId = typeof body.threadId === "string" ? body.threadId.trim() : "";
+      if (!threadId) {
+        return yield* new PluginRpcError({
+          code: "invoke_failed",
+          pluginId: input.pluginId,
+          message: "threadSummary requires a non-empty string threadId.",
+        });
+      }
+      return {
+        threadId,
+        config: configSummary,
+        summary: input.controlPlane?.tokenOptimizer.getThreadSummary(threadId) ?? {
+          threadId,
+          tracked: false,
+          pinnedRevision: null,
+          lastModelId: null,
+          openSessionCount: 0,
+          observedTurns: 0,
+          compactCount: 0,
+          modelSwitches: 0,
+          prefixHashStable: true,
+          mcpSnapshotStable: true,
+          lastHookAt: null,
+          lastCompactAt: null,
+          recentEvents: [],
+        },
+      };
+    }
   }
 
   if (input.pluginId === "builtin.bots-core" && input.method === "status") {

@@ -43,6 +43,19 @@ describe("PluginSlotStore real-time ByteDock UI control bus", () => {
     });
     expect(closed.applied).toBe(true);
     expect(getPluginSlotSnapshot().modalOpen).toBe(false);
+
+    const openXray = applyUiControlCommand({
+      commandId: "cmd-open-xray",
+      action: "open_control_center",
+      tab: "xray",
+    });
+    expect(openXray.applied).toBe(true);
+    expect(getPluginSlotSnapshot().modalOpen).toBe(true);
+    expect(getPluginSlotSnapshot().modalTab).toBe("xray");
+
+    const beforeRev = getPluginSlotSnapshot().configRevision;
+    handleControlPlaneStreamPayload({ kind: "config-changed" });
+    expect(getPluginSlotSnapshot().configRevision).toBe(beforeRev + 1);
   });
 
   it("opens and closes right plugin dock panels with validated JsonNode trees", () => {

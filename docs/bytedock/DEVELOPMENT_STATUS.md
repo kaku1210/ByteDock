@@ -39,14 +39,14 @@
 
 ## 四、当前内置能力与 UI 成熟度矩阵
 
-| 能力 / 内置插件                                | 后端与配置热更                                        | MCP AI 控制                                                | 前端 UI 状态                                                     |
-| ---------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
-| `builtin.egress-guard`（出站防火墙）           | ✅ 完整（L1 拦截 + 代理 + 审计）                      | ✅ 完整（主会话 + 审批 + `egress_proof`/`egress_audit`）   | ✅ 完整（Control Center 面板 + KPI + `EgressProof`）             |
-| `builtin.legacy-importer`（T3 只读导入）       | ✅ 完整（只读扫描 + 安全复制 + SQLite 延迟切换）      | ✅ 完整（`legacy_scan` + 审批制 `legacy_import`）          | ✅ 完整（Control Center Import 标签页）                          |
-| `builtin.control-plane` & `HostControlService` | ✅ 完整（`plugins.yml` 热更 + 统一审批 + 哈希链审计） | ✅ 完整（9 个 `bytedock_*` 工具）                          | ✅ 完整（审批队列、插件开关/配置编辑器、实时 UI 总线与通知横幅） |
-| `builtin.token-optimizer`                      | ✅ 内核与配置热更就绪                                 | ✅ 启停/配参/状态调用                                      | 🟡 待补前端专属 TTFT/TPS 实时底栏与 X-Ray 账单明细面板           |
-| `builtin.bots-core` & `community.napcat-qq`    | ✅ 内核、权限与配置热更就绪                           | ✅ 启停/配参/状态调用                                      | 🟡 待补前端专属 Bot 人格/记忆编辑与 QQ 通道连接管理面板          |
-| 外部本地插件（`~/.bytedock/plugins/`）         | ✅ 自动扫描、权限指纹审批与编译热重载                 | ✅ `scaffold_local_plugin` + `set_enabled` 审批 + `reload` | ✅ 在 Control Center 插件列表可见可管                            |
+| 能力 / 内置插件                                | 后端与配置热更                                            | MCP AI 控制                                                   | 前端 UI 状态                                                                              |
+| ---------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `builtin.egress-guard`（出站防火墙）           | ✅ 完整（L1 拦截 + 代理 + 审计）                          | ✅ 完整（主会话 + 审批 + `egress_proof`/`egress_audit`）      | ✅ 完整（Control Center 面板 + KPI + `EgressProof`）                                      |
+| `builtin.legacy-importer`（T3 只读导入）       | ✅ 完整（只读扫描 + 安全复制 + SQLite 延迟切换）          | ✅ 完整（`legacy_scan` + 审批制 `legacy_import`）             | ✅ 完整（Control Center Import 标签页）                                                   |
+| `builtin.control-plane` & `HostControlService` | ✅ 完整（`plugins.yml` 热更 + 统一审批 + 哈希链审计）     | ✅ 完整（9 个 `bytedock_*` 工具）                             | ✅ 完整（审批队列、插件开关/配置编辑器、实时 UI 总线与通知横幅）                          |
+| `builtin.token-optimizer`                      | ✅ 内核、Hook 观测（`TokenOptimizerTelemetry`）与热更就绪 | ✅ 启停/配参/`status`/`threadSummary` + AI 唤起 `xray` 标签页 | ✅ 完整（底栏 TTFT/总耗时/TPS/三态诚实缓存 + Context X-Ray 账单页 + 温和防挂死 Watchdog） |
+| `builtin.bots-core` & `community.napcat-qq`    | ✅ 内核、权限与配置热更就绪                               | ✅ 启停/配参/状态调用                                         | 🟡 待补前端专属 Bot 人格/记忆编辑与 QQ 通道连接管理面板                                   |
+| 外部本地插件（`~/.bytedock/plugins/`）         | ✅ 自动扫描、权限指纹审批与编译热重载                     | ✅ `scaffold_local_plugin` + `set_enabled` 审批 + `reload`    | ✅ 在 Control Center 插件列表可见可管                                                     |
 
 ---
 
@@ -60,7 +60,7 @@
 
 ### P1 · 下一阶段产品化增强
 
-- [ ] **Token Optimizer & 性能可观测 UI**：常驻单行底栏 `TTFT / 总耗时 / 有效 TPS / 缓存命中率`、单步请求延迟明细与防挂死 Watchdog 温和提醒。
+- [x] **Token Optimizer & 性能可观测 UI**：常驻单行底栏 `TTFT / 总耗时 / 有效 TPS / 缓存命中率`、单步请求延迟明细（Context X-Ray 三态诚实账单）与防挂死 Watchdog 温和提醒。
 - [ ] **工作区壳升级（Dockview 自由分屏）**：以 `Dockview` 替换静态右栏承载插件与多会话自由停靠/布局预设，复用现有 `PluginDockPanelHost` 与 `bytedock_ui_control` 接口。
 - [ ] **高频快捷指令与 Bots 完整业务 UI**：输入框固定快捷指令（Pinned Quick Commands）、`SOUL.md` / `MEMORY.md` 编辑器与 NapCatQQ 通道运行状态面板。
 

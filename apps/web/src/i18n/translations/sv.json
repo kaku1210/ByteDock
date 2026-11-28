@@ -6517,6 +6517,7 @@
   "cda5dbbd7b38f362": "Hittades inte",
   "8ba6cc4e0ef0282a": "ByteDock-tillägg och dataimport",
   "5a27775c5739f616": "Tillägg och Egress Guard",
+  "a0af7b967d2cbdf5": "Context X-Ray",
   "08d05006ab28b327": "Importera T3 Code / Plus",
   "61f73c3690a50df6": [
     "Aktiv revision: ",
@@ -6616,6 +6617,108 @@
   "b258d87b5bde8b2d": "Importera T3-data",
   "5bf094535c199ae5": "ByteDock Guard",
   "ea31972ba61e25f6": "Importera T3",
+  "72837593238692f1": "Verktyg kör utan ny utdata ({tool})",
+  "2b4177141bc3792e": "Verktygskörningen har inte gett någon ny utdata",
+  "72fc1d509a6fec11": "Svarsströmmen pausad mitt i svaret",
+  "4ce7124200ef97b4": "Väntar på modellens första token",
+  "a804d1f52b5f6f81": "Avfärda Watchdog-varning",
+  "ccb712596a7f9937": "strömmar…",
+  "960de866851d1986": "inbyggd",
+  "3aa2438bb1b1f536": "opak",
+  "9c21694ebc31b22e": "Öppna Context X-Ray prestandadetaljer",
+  "40ca2e7c0047091c": [
+    "Watchdog: tyst i ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "dd2651da2d6443fa": "X-Ray",
+  "0be6b2546df12f66": "Stoppa",
+  "cde00d5560304625": [
+    "TTFT ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "60c79639dd019b72": [
+    "Totalt ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "11b8b84c094962e0": [
+    "Cache ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "d8865b46feee668a": "Kritisk Watchdog-gräns måste vara högre än varningsgränsen och inom giltiga intervall.",
+  "291cb3f71ba8c07d": "Inställningar för Token Optimizer och Watchdog sparade och omladdade.",
+  "6d552a0499575ee5": "Tråd: {threadId}",
+  "332d763f022e133f": "Öppna en chatttråd för att se latens och tokenförbrukning per steg.",
+  "2a000ed7cff0d7c7": "Saknas (opak)",
+  "8c92c3fc6357c208": "Stabil",
+  "9e17766f1e921f29": "Avvikelse",
+  "d5ebe5aa22c27574": "Context X-Ray översikt",
+  "07a0052deced5886": "Cacheträff",
+  "1c3ba752e33e03eb": "Mål >= {pct}%",
+  "011ce39847a8151c": "Ingen uppskattning",
+  "2643401568a7f08b": "Senaste TTFT",
+  "62ecc0791ddb52fe": "Totalt {dur}",
+  "1297b09030ce3782": "Inga steg ännu",
+  "e6078aa23da65524": "Effektiv TPS",
+  "2131406fe1f505fb": "Utdata {tokens}",
+  "8962be00b1733134": "CacheGuard",
+  "e9f55a22209d2848": "Steg: {turns} · Komprimeringar: {compacts}",
+  "81ba8da2c4f5e52b": "Väntar på hook",
+  "223f0517d9e30928": "live",
+  "36aee8929dc43693": "Trådprestanda & Context X-Ray",
+  "eb02c29e18a70481": "Uppdatera X-Ray",
+  "5b66cd792512a36c": "Treläges X-Ray-ärlighetsgaranti",
+  "92a8b0377e7f4f8d": "measured = rapporterade cache-lästokens; native = totalsummor utan cachefördelning; opaque = inga räknare exponerade (aldrig påhittade).",
+  "b7f0f115a66cfdc9": "Ackumulerad tokenfördelning för tråden",
+  "0c752def810acab0": [
+    "Kontext: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "073748d140d6cebd": "Indata totalt",
+  "1686f55387d9c8bc": "Cachläsning",
+  "3ae26c64f7ab855e": "Cacheskrivning",
+  "2508291fa7a57e1f": "Utdata / Resonemang",
+  "9cca5faa31040354": "Latens- & tokenlogg per steg",
+  "39448219ddf7be71": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " steg"
+  ],
+  "c8bf04a8ab6dcd6e": "Inga leverantörssteg registrerade i denna tråd ännu. Skicka ett meddelande för att se live-TTFT, strömmande TPS och verklig cacheträff.",
+  "8257030da7a4ad4e": "Modell",
+  "0e844dfc85fb831f": "TTFT",
+  "7853bd9e23f25bb6": "Totalt",
+  "97e6d74f4e1e4e34": "TPS",
+  "a267dfe357feee69": "In / Ut",
+  "896e2017b3a9f37c": "Cache",
+  "421101b1b99e21d2": "Statusfält & Watchdog mot hängning",
+  "e901e3b6faf20ef8": "Visa TTFT/TPS/Cache i statusfältet",
+  "3685aad9170ac793": "Aktivera mjuk Watchdog mot hängning",
+  "c76aae6d33ad9a99": "Cachemål (%)",
+  "90c50b9d79a93a10": "Watchdog varning (sek)",
+  "acf4a37107ce4c48": "Watchdog kritisk (sek)",
   "32fe2ebd935fa02d": "Nätverksfel",
   "11657a3265f539e2": "Visa i Finder",
   "a41d6c3a9ed7fde7": "Visa i Utforskaren",
@@ -8258,7 +8361,6 @@
     " för att använda diktering med OpenRouter."
   ],
   "d7acad5dde4c1d1b": "Söker efter en API-nyckel…",
-  "8257030da7a4ad4e": "Modell",
   "418d9b293a8983a9": [
     "Be en administratör på ",
     {
@@ -9468,7 +9570,6 @@
   "74e7837237a78a93": "Pausa inspelningen",
   "88838a688670154d": "Spela upp inspelningen",
   "9aa5deeebe227be6": "Uppspelningsposition för inspelningen",
-  "0be6b2546df12f66": "Stoppa",
   "7dbd7e8943e8931f": "Öppnar mikrofonen…",
   "efa31f38b611e912": "Kunde inte spela upp inspelningen. Försök spela in igen.",
   "0cebac0a2a6bdc99": "iPhone och iPad",
@@ -12821,7 +12922,6 @@
   "b4ae29a86f8a6ade": "Token",
   "49c4cd88ca4d260a": "Ingen aktivitet i det här fönstret.",
   "0a492183a4c7bb3d": "Utan pris",
-  "7853bd9e23f25bb6": "Totalt",
   "873ae13250e5bc5c": "Alla miljöer",
   "e051bdc6c63a0b4b": "Inga miljöer anslutna.",
   "b11af3f3da3d494e": "Summorna är ofullständiga medan valda miljöer genomsöks.",

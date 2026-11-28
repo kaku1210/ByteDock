@@ -1,8 +1,30 @@
 import { useSyncExternalStore } from "react";
 import type { JsonNode } from "@bytedock/plugin-ui-renderer/protocol";
 
-export type ByteDockModalTab = "plugins" | "import";
+export type ByteDockModalTab = "plugins" | "xray" | "import";
 export type ByteDockModalHost = "settings" | "chat";
+
+export interface TokenOptimizerRuntimeConfig {
+  readonly enabled: boolean;
+  readonly cacheGuardActive: boolean;
+  readonly steadyStateTargetPct: number;
+  readonly xrayHonestyMode: "strict-no-fabrication";
+  readonly showStatusBarMetrics: boolean;
+  readonly watchdogEnabled: boolean;
+  readonly watchdogWarnAfterSec: number;
+  readonly watchdogCriticalAfterSec: number;
+}
+
+export const DEFAULT_TOKEN_OPTIMIZER_RUNTIME_CONFIG: TokenOptimizerRuntimeConfig = {
+  enabled: true,
+  cacheGuardActive: true,
+  steadyStateTargetPct: 90,
+  xrayHonestyMode: "strict-no-fabrication",
+  showStatusBarMetrics: true,
+  watchdogEnabled: true,
+  watchdogWarnAfterSec: 45,
+  watchdogCriticalAfterSec: 120,
+};
 
 export interface PluginTimelineCardEntry {
   readonly rowId: string;
@@ -39,22 +61,28 @@ export interface PluginSlotState {
   readonly modalOpen: boolean;
   readonly modalTab: ByteDockModalTab;
   readonly modalHost: ByteDockModalHost;
+  readonly activeThreadId: string | null;
   readonly activeDockPluginId: string | null;
   readonly activeDockTree: JsonNode | null;
   readonly timelineCards: Readonly<Record<string, PluginTimelineCardEntry>>;
   readonly pendingApprovalCount: number;
   readonly activeNotification: ByteDockUiNotification | null;
+  readonly tokenOptimizerConfig: TokenOptimizerRuntimeConfig;
+  readonly configRevision: number;
 }
 
 let state: PluginSlotState = {
   modalOpen: false,
   modalTab: "plugins",
   modalHost: "chat",
+  activeThreadId: null,
   activeDockPluginId: null,
   activeDockTree: null,
   timelineCards: {},
   pendingApprovalCount: 0,
   activeNotification: null,
+  tokenOptimizerConfig: DEFAULT_TOKEN_OPTIMIZER_RUNTIME_CONFIG,
+  configRevision: 0,
 };
 
 const listeners = new Set<() => void>();
@@ -132,9 +160,43 @@ export function registerByteDockModalHost(host: ByteDockModalHost): () => void {
   };
 }
 
-export function openByteDockModal(tab: ByteDockModalTab = "plugins", host?: ByteDockModalHost) {
+export function openByteDockModal(
+  tab: ByteDockModalTab = "plugins",
+  host?: ByteDockModalHost,
+  threadId?: string | null,
+) {
   const targetHost = host ?? resolvePreferredModalHost();
-  state = { ...state, modalOpen: true, modalTab: tab, modalHost: targetHost };
+  state = {
+    ...state,
+    modalOpen: true,
+    modalTab: tab,
+    modalHost: targetHost,
+    ...(threadId !== undefined ? { activeThreadId: threadId } : {}),
+  };
+  emit();
+}
+
+export function setActiveObservabilityThreadId(threadId: string | null) {
+  if (state.activeThreadId === threadId) return;
+  state = { ...state, activeThreadId: threadId };
+  emit();
+}
+
+export function setTokenOptimizerRuntimeConfig(config: TokenOptimizerRuntimeConfig) {
+  const prev = state.tokenOptimizerConfig;
+  if (
+    prev.enabled === config.enabled &&
+    prev.cacheGuardActive === config.cacheGuardActive &&
+    prev.steadyStateTargetPct === config.steadyStateTargetPct &&
+    prev.xrayHonestyMode === config.xrayHonestyMode &&
+    prev.showStatusBarMetrics === config.showStatusBarMetrics &&
+    prev.watchdogEnabled === config.watchdogEnabled &&
+    prev.watchdogWarnAfterSec === config.watchdogWarnAfterSec &&
+    prev.watchdogCriticalAfterSec === config.watchdogCriticalAfterSec
+  ) {
+    return;
+  }
+  state = { ...state, tokenOptimizerConfig: config };
   emit();
 }
 
@@ -200,7 +262,8 @@ export function applyUiControlCommand(
   }
 
   if (command.action === "open_control_center") {
-    const tab: ByteDockModalTab = command.tab === "import" ? "import" : "plugins";
+    const tab: ByteDockModalTab =
+      command.tab === "import" ? "import" : command.tab === "xray" ? "xray" : "plugins";
     openByteDockModal(tab, resolvePreferredModalHost());
     return { applied: true };
   }
@@ -266,6 +329,15 @@ export function handleControlPlaneStreamPayload(payload: unknown): void {
   }
   if (record.kind === "approval-resolved") {
     adjustPendingApprovalCount(-1);
+    return;
+  }
+  if (
+    record.kind === "config-changed" ||
+    record.kind === "plugin-enabled-changed" ||
+    record.kind === "reloaded"
+  ) {
+    state = { ...state, configRevision: state.configRevision + 1 };
+    emit();
   }
 }
 
@@ -278,11 +350,14 @@ export function resetPluginSlotStoreForTest() {
     modalOpen: false,
     modalTab: "plugins",
     modalHost: "chat",
+    activeThreadId: null,
     activeDockPluginId: null,
     activeDockTree: null,
     timelineCards: {},
     pendingApprovalCount: 0,
     activeNotification: null,
+    tokenOptimizerConfig: DEFAULT_TOKEN_OPTIMIZER_RUNTIME_CONFIG,
+    configRevision: 0,
   };
   emit();
 }
